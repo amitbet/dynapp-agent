@@ -1,0 +1,10 @@
+/dynapp-shell-agent
+/dynapp-shell-agent.exe
+/dynapp-agent
+/dynapp-agent.exe
+*.exe
+.DS_Store
+keys/macos-codesign.p12
+keys/macos-codesign.pass
+keys/*.key
+keys/*.token

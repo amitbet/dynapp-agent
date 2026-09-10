@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="dynapp-settings-csrf" content="__DYNAPP_SETTINGS_CSRF__" />
+    <title>DynApp Shell Agent</title>
+    <script>
+      (() => {
+        let theme = null;
+        try { theme = localStorage.getItem("dyner.theme"); } catch {}
+        document.documentElement.dataset.theme = theme === "light" || theme === "dark"
+          ? theme
+          : (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      })();
+    </script>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <div class="catalog-shell">
+      <header class="topbar">
+        <button class="brand" type="button" aria-label="DynApp Shell Agent">
+          <span class="brand-mark" aria-hidden="true">D</span>
+          <span class="brand-name">shell agent</span>
+        </button>
+        <nav class="primary-tabs" aria-label="Agent sections">
+          <button type="button" class="active" data-tab="settings">Settings</button>
+        </nav>
+      </header>
+      <main class="settings-main" id="settings-main">
+        <section class="settings-column" aria-labelledby="settings-title">
+          <div class="catalog-heading settings-heading">
+            <div>
+              <p class="section-kicker">This device</p>
+              <h1 id="settings-title">Settings</h1>
+              <p class="settings-lead">The same workspace and remote-environment controls as the Dyner client. Sign in to Dyner in the desktop app once so this agent can create a device credential automatically.</p>
+            </div>
+          </div>
+          <section class="settings-section" aria-labelledby="settings-workspace-title">
+            <h2 id="settings-workspace-title">Workspace management</h2>
+            <div id="settings-workspace-panel" class="settings-panel"></div>
+          </section>
+          <section class="settings-section" aria-labelledby="settings-remote-title">
+            <h2 id="settings-remote-title">Remote environments</h2>
+            <div id="settings-remote-panel" class="settings-panel"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/ui/bridge.js"></script>
+  </body>
+</html>
