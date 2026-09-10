@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/amitbet/dynapp-agent"
+	"github.com/amitbet/dynapp-agent/shellagent"
 	"github.com/kardianos/service"
 )
 

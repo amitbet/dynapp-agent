@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	shellagent "github.com/amitbet/dynapp-agent"
+	"github.com/amitbet/dynapp-agent/shellagent"
 )
 
 const macOSFirewallTool = "/usr/libexec/ApplicationFirewall/socketfilterfw"

@@ -4,12 +4,11 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: read
-
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,3 +19,11 @@ jobs:
         run: go test ./...
       - name: Vet
         run: go vet ./...
+
+  release:
+    needs: test
+    if: github.event_name == 'push' && !github.event.repository.fork && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: write
+    secrets: inherit
+    uses: ./.github/workflows/release.yml

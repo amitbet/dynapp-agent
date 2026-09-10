@@ -19,9 +19,10 @@ go build -o /tmp/dynapp-shell-agent ./cmd/dynapp-shell-agent
 node ./scripts/smoke-native-presentation.mjs /tmp/dynapp-shell-agent
 ```
 
-Every push runs the Go tests. Publish binaries with **Release** from the
-Actions tab, or by pushing a `v*.*.*` tag. Leave the version blank to
-patch-bump the latest `v*` tag.
+Every push runs the Go tests. A successful push to `main` also patch-bumps
+the latest `v*` tag and publishes signed binaries for macOS, Windows, and
+Linux. You can still run **Release** from the Actions tab, or push a
+`v*.*.*` tag.
 
 Release signing uses these repository secrets (copy them from `amitbet/dynapp`):
 

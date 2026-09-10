@@ -1,8 +1,8 @@
 name: release
 
 # Builds signed `dynapp-shell-agent` binaries for macOS, Windows, and Linux
-# and publishes them to a GitHub release. Triggered by a v* tag or from the
-# Actions tab.
+# and publishes them to a GitHub release. Triggered by a successful CI run on
+# the default branch, a v* tag, or the Actions tab.
 
 on:
   push:
@@ -14,6 +14,7 @@ on:
         description: Version to stamp, without a v prefix. Empty patch-bumps the latest v* tag.
         required: false
         type: string
+  workflow_call:
 
 permissions:
   contents: write
@@ -152,7 +153,7 @@ jobs:
           if [ "$GOOS" = windows ]; then suffix=".exe"; fi
           asset="dynapp-shell-agent-${VERSION}-${GOOS}-${GOARCH}${suffix}"
           GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 \
-            go build -trimpath -ldflags="-s -w -X github.com/amitbet/dynapp-agent.AgentVersion=${VERSION} -X github.com/amitbet/dynapp-agent.AgentRepository=${REPOSITORY}" \
+            go build -trimpath -ldflags="-s -w -X github.com/amitbet/dynapp-agent/shellagent.AgentVersion=${VERSION} -X github.com/amitbet/dynapp-agent/shellagent.AgentRepository=${REPOSITORY}" \
             -o "$asset" ./cmd/dynapp-shell-agent
           sha256sum "$asset" > "$asset.sha256"
           echo "asset=$asset" >> "$GITHUB_ENV"
@@ -206,7 +207,7 @@ jobs:
           set -euo pipefail
           asset="dynapp-shell-agent-${VERSION}-darwin-${GOARCH}"
           GOOS=darwin GOARCH="$GOARCH" CGO_ENABLED=1 \
-            go build -trimpath -ldflags="-s -w -X github.com/amitbet/dynapp-agent.AgentVersion=${VERSION} -X github.com/amitbet/dynapp-agent.AgentRepository=${REPOSITORY}" \
+            go build -trimpath -ldflags="-s -w -X github.com/amitbet/dynapp-agent/shellagent.AgentVersion=${VERSION} -X github.com/amitbet/dynapp-agent/shellagent.AgentRepository=${REPOSITORY}" \
             -o "$asset" ./cmd/dynapp-shell-agent
           MACOS_CODESIGN_IDENTIFIER="com.amitbet.dynapp.shell-agent" \
             node scripts/sign-macos-binary.mjs "$asset"

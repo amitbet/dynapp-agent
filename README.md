@@ -13,21 +13,52 @@ Related repositories: [`amitbet/dynapp`](https://github.com/amitbet/dynapp)
 (apps and PWA Shell) and [`amitbet/dyner`](https://github.com/amitbet/dyner)
 (catalog and hosting).
 
+## Layout
+
+The binary lives in `cmd/dynapp-shell-agent`. Protocol, handshake, RPC, and
+settings stay in `shellagent`. Feature implementations sit in subpackages so
+the orchestrator does not own filesystem, process, desktop, and network
+details:
+
+| Package | Role |
+| --- | --- |
+| `shellagent` | Server, handshake, RPC, settings, registration, LAN, relay, updater |
+| `shellagent/fs` | Local files, zip, watch, desktop open/trash/terminal |
+| `shellagent/proc` | Process and PTY set |
+| `shellagent/rdp` | RDP bridge |
+| `shellagent/connect` | HTTP `connect` allowlist |
+| `shellagent/catalog` | Permission catalog |
+| `shellagent/netfiles` | FTP/SFTP |
+| `shellagent/assoc` | File associations and hosted-app open |
+| `shellagent/desktop` | Tray, hotkeys, screen capture, file-promise, Chromium PWA |
+| `shellagent/apphost` | Node runtime, source snapshots, runnable zips |
+| `internal/agentutil` | Shared argument and path helpers |
+
+`cmd/dynapp-shell-agent` keeps importing `github.com/amitbet/dynapp-agent/shellagent`.
+Release ldflags stamp `shellagent.AgentVersion` and `shellagent.AgentRepository`.
+
 ## Release
 
-GitHub Actions builds signed `dynapp-shell-agent` binaries for macOS, Windows,
-and Linux (amd64 and arm64) and attaches them to a GitHub release.
+CI on `main` builds signed `dynapp-shell-agent` binaries for macOS, Windows,
+and Linux (amd64 and arm64) and attaches them to a GitHub release. Pull
+requests only run tests.
+
+A successful push to `main` patch-bumps the latest `v*` tag (first release is
+`0.1.0`) and publishes:
+
+- `darwin-amd64` / `darwin-arm64` (CGO, codesigned)
+- `linux-amd64` / `linux-arm64`
+- `windows-amd64` / `windows-arm64`
+
+Each asset has `.sha256` and `.sig` sidecars the agent updater verifies. You
+can still stamp a version yourself:
 
 ```sh
 # from the Actions tab, or:
 gh workflow run release
-# or stamp an explicit version:
+# or an explicit version:
 git tag v0.1.0 && git push origin v0.1.0
 ```
-
-Leave the workflow version blank to patch-bump the latest `v*` tag. First
-release is `0.1.0` unless you pass a version or push a tag. Each asset is
-published with `.sha256` and `.sig` sidecars the agent updater verifies.
 
 ## Run
 

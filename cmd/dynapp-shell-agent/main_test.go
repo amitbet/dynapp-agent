@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	shellagent "github.com/amitbet/dynapp-agent"
+	"github.com/amitbet/dynapp-agent/shellagent"
 )
 
 func TestStartupAddressDoesNotReuseLocalPortForLAN(t *testing.T) {

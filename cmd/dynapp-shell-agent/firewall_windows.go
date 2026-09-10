@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	shellagent "github.com/amitbet/dynapp-agent"
+	"github.com/amitbet/dynapp-agent/shellagent"
 )
 
 const windowsFirewallRuleName = "DynApp Shell Agent LAN"
