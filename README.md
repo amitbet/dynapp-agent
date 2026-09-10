@@ -15,10 +15,10 @@ Related repositories: [`amitbet/dynapp`](https://github.com/amitbet/dynapp)
 
 ## Layout
 
-The binary lives in `cmd/dynapp-shell-agent`. Protocol, handshake, RPC, and
-settings stay in `shellagent`. Feature implementations sit in subpackages so
-the orchestrator does not own filesystem, process, desktop, and network
-details:
+The binary is `package main` at the repository root (`go run .`). Protocol,
+handshake, RPC, and settings stay in `shellagent`. Feature implementations sit
+in subpackages so the orchestrator does not own filesystem, process, desktop,
+and network details:
 
 | Package | Role |
 | --- | --- |
@@ -34,14 +34,15 @@ details:
 | `shellagent/apphost` | Node runtime, source snapshots, runnable zips |
 | `internal/agentutil` | Shared argument and path helpers |
 
-`cmd/dynapp-shell-agent` keeps importing `github.com/amitbet/dynapp-agent/shellagent`.
+`main.go` imports `github.com/amitbet/dynapp-agent/shellagent`.
 Release ldflags stamp `shellagent.AgentVersion` and `shellagent.AgentRepository`.
 
 ## Release
 
 CI on `main` builds signed `dynapp-shell-agent` binaries for macOS, Windows,
-and Linux (amd64 and arm64) and attaches them to a GitHub release. Pull
-requests only run tests.
+and Linux (amd64 and arm64) and attaches them to a GitHub release when the
+signing secrets are configured. Pull requests only run tests. Without those
+secrets, `main` still runs tests and skips the publish.
 
 A successful push to `main` patch-bumps the latest `v*` tag (first release is
 `0.1.0`) and publishes:
@@ -70,7 +71,7 @@ Sign in to Dyner once; the agent then creates a device credential
 `DynApp/dyner/auth.json`) and names the environment after this hostname.
 
 ```sh
-go run ./cmd/dynapp-shell-agent
+go run .
 ```
 
 Expose the same listener on the LAN with one flag or env var (no address
@@ -155,7 +156,7 @@ passed as arguments to the system notification command.
 Run the native lifecycle smoke test in a signed-in desktop session:
 
 ```sh
-go build -o /tmp/dynapp-shell-agent ./cmd/dynapp-shell-agent
+go build -o /tmp/dynapp-shell-agent .
 node ./scripts/smoke-native-presentation.mjs /tmp/dynapp-shell-agent
 ```
 
@@ -224,7 +225,7 @@ Run it with:
 ```sh
 go test ./...
 go vet ./...
-go build ./cmd/dynapp-shell-agent
+go build -o dynapp-shell-agent .
 ```
 
 On Windows, build with CGo and a C++ toolchain enabled to include the native

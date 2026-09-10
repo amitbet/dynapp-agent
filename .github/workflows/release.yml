@@ -15,6 +15,11 @@ on:
         required: false
         type: string
   workflow_call:
+    inputs:
+      optional:
+        description: Skip publishing instead of failing when signing secrets are missing. CI sets this so a missing secret does not fail tests.
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -29,15 +34,18 @@ jobs:
     outputs:
       version: ${{ steps.compute.outputs.version }}
       tag: ${{ steps.compute.outputs.tag }}
+      ready: ${{ steps.secrets.outputs.ready }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Require release secrets
+        id: secrets
         env:
           HAS_PAYLOAD: ${{ secrets.PAINTJS_PAYLOAD_SIGNING_KEY != '' }}
           HAS_P12: ${{ secrets.MACOS_CODESIGN_P12_BASE64 != '' }}
           HAS_PASS: ${{ secrets.MACOS_CODESIGN_P12_PASSWORD != '' }}
+          OPTIONAL: ${{ inputs.optional }}
         run: |
           set -euo pipefail
           missing=0
@@ -55,9 +63,16 @@ jobs:
           fi
           if [ "$missing" -ne 0 ]; then
             echo "Copy these from amitbet/dynapp (Settings → Secrets and variables → Actions)." >&2
+            if [ "$OPTIONAL" = true ]; then
+              echo "Signing secrets are not configured; skipping publish so CI can stay green."
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             exit 1
           fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
       - id: compute
+        if: steps.secrets.outputs.ready == 'true'
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
@@ -82,6 +97,8 @@ jobs:
           echo "Previous tag: ${prev:-<none>} -> agent $next"
 
   test:
+    needs: version
+    if: needs.version.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -96,6 +113,7 @@ jobs:
 
   create-release:
     needs: [version, test]
+    if: needs.version.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +136,7 @@ jobs:
 
   binaries:
     needs: [version, create-release]
+    if: needs.version.outputs.ready == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -154,7 +173,7 @@ jobs:
           asset="dynapp-shell-agent-${VERSION}-${GOOS}-${GOARCH}${suffix}"
           GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 \
             go build -trimpath -ldflags="-s -w -X github.com/amitbet/dynapp-agent/shellagent.AgentVersion=${VERSION} -X github.com/amitbet/dynapp-agent/shellagent.AgentRepository=${REPOSITORY}" \
-            -o "$asset" ./cmd/dynapp-shell-agent
+            -o "$asset" .
           sha256sum "$asset" > "$asset.sha256"
           echo "asset=$asset" >> "$GITHUB_ENV"
       - name: Sign release asset
@@ -173,6 +192,7 @@ jobs:
 
   macos:
     needs: [version, create-release]
+    if: needs.version.outputs.ready == 'true'
     runs-on: macos-14
     strategy:
       fail-fast: false
@@ -208,7 +228,7 @@ jobs:
           asset="dynapp-shell-agent-${VERSION}-darwin-${GOARCH}"
           GOOS=darwin GOARCH="$GOARCH" CGO_ENABLED=1 \
             go build -trimpath -ldflags="-s -w -X github.com/amitbet/dynapp-agent/shellagent.AgentVersion=${VERSION} -X github.com/amitbet/dynapp-agent/shellagent.AgentRepository=${REPOSITORY}" \
-            -o "$asset" ./cmd/dynapp-shell-agent
+            -o "$asset" .
           MACOS_CODESIGN_IDENTIFIER="com.amitbet.dynapp.shell-agent" \
             node scripts/sign-macos-binary.mjs "$asset"
           codesign --verify --strict --verbose=2 "$asset"
@@ -230,6 +250,7 @@ jobs:
 
   summary:
     needs: [version, binaries, macos]
+    if: needs.version.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: List published assets

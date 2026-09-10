@@ -5,7 +5,7 @@
 ```sh
 go test ./...
 go vet ./...
-go build ./cmd/dynapp-shell-agent
+go build -o dynapp-shell-agent .
 ```
 
 On Windows, build with CGo and a C++ toolchain to include the native OLE
@@ -15,14 +15,15 @@ fallback. macOS tray, hotkeys, and ScreenCaptureKit need a CGO build.
 Native tray/hotkey smoke test in a signed-in desktop session:
 
 ```sh
-go build -o /tmp/dynapp-shell-agent ./cmd/dynapp-shell-agent
+go build -o /tmp/dynapp-shell-agent .
 node ./scripts/smoke-native-presentation.mjs /tmp/dynapp-shell-agent
 ```
 
 Every push runs the Go tests. A successful push to `main` also patch-bumps
 the latest `v*` tag and publishes signed binaries for macOS, Windows, and
-Linux. You can still run **Release** from the Actions tab, or push a
-`v*.*.*` tag.
+Linux when the signing secrets below are set. Without them, CI stays green
+and skips the publish. You can still run **Release** from the Actions tab,
+or push a `v*.*.*` tag.
 
 Release signing uses these repository secrets (copy them from `amitbet/dynapp`):
 
