@@ -217,7 +217,7 @@ func TestEmbeddedReleaseSigningKey(t *testing.T) {
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		t.Fatalf("embedded key = %v, %v", key, err)
 	}
-	if !strings.Contains(releaseSigningPublicKeyPEM, "MCowBQYDK2VwAyEAqL2M/7uEco7+Osb1xCHI1bpkYhHv/yutsvak/JZhxWQ=") {
+	if !strings.Contains(releaseSigningPublicKeyPEM, "MCowBQYDK2VwAyEAN7uT22H3riIuApXQfQYREO7jr78DgAdwz6EwgPTc7as=") {
 		t.Fatal("embedded key does not match the expected release public key")
 	}
 }

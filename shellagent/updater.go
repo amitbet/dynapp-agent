@@ -25,7 +25,7 @@ import (
 // releaseSigningPublicKeyPEM is the Ed25519 public key that verifies detached
 // signatures on release assets (`<asset>.sig` = base64(Ed25519(ASCII sha256-hex))).
 const releaseSigningPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAqL2M/7uEco7+Osb1xCHI1bpkYhHv/yutsvak/JZhxWQ=
+MCowBQYDK2VwAyEAN7uT22H3riIuApXQfQYREO7jr78DgAdwz6EwgPTc7as=
 -----END PUBLIC KEY-----
 `
 
