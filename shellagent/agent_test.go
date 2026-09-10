@@ -340,7 +340,9 @@ func TestStreamingPTYSupportsTerminalDetectionInputAndResize(t *testing.T) {
 	defer connection.Close(websocket.StatusNormalClosure, "")
 	sendRequest(t, ctx, connection, map[string]any{
 		"type": "exec", "id": "pty", "stream": true, "mode": "pty", "cols": 91, "rows": 37,
-		"file": "/bin/sh", "args": []string{"-c", "test -t 0 && stty size && printf 'TERM=%s\\n' \"$TERM\"; read value; printf ':%s' \"$value\""},
+		// dash (Ubuntu /bin/sh) aborts `read` on SIGWINCH; ignore WINCH so a
+		// live resize cannot make the PTY exit before stdin is echoed.
+		"file": "/bin/sh", "args": []string{"-c", "trap '' WINCH; test -t 0 && stty size && printf 'TERM=%s\\n' \"$TERM\"; read value; printf ':%s' \"$value\""},
 	})
 	started := receive(t, ctx, connection)
 	if started["type"] != "exec-start" || started["processId"] == nil {
@@ -353,12 +355,26 @@ func TestStreamingPTYSupportsTerminalDetectionInputAndResize(t *testing.T) {
 		if event["type"] == "exec-output" {
 			output += event["data"].(string)
 		}
+		if event["type"] == "exec-exit" {
+			t.Fatalf("PTY exited before terminal probe finished: %q", output)
+		}
+		if event["type"] == "exec-error" {
+			t.Fatalf("exec-error = %#v", event)
+		}
 	}
 	sendRequest(t, ctx, connection, map[string]any{"type": "process", "id": "resize", "processId": processID, "action": "resize", "cols": 100, "rows": 40})
 	for {
 		event := receive(t, ctx, connection)
 		if event["type"] == "process-result" && event["id"] == "resize" {
 			break
+		}
+		if event["type"] == "exec-output" {
+			if data, ok := event["data"].(string); ok {
+				output += data
+			}
+		}
+		if event["type"] == "exec-exit" {
+			t.Fatalf("PTY exited during resize: %q", output)
 		}
 	}
 	sendRequest(t, ctx, connection, map[string]any{"type": "process", "id": "write-pty", "processId": processID, "action": "write", "data": "input\n"})
