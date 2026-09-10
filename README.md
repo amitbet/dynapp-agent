@@ -7,22 +7,36 @@ Without it an app still renders, but those local features stay off.
 
 ## Install
 
-macOS or Linux with Homebrew:
+macOS, Homebrew:
 
 ```sh
 brew tap amitbet/dynapp-agent https://github.com/amitbet/dynapp-agent
 brew install dynapp-shell-agent
 ```
 
-Debian or Ubuntu:
+Debian or Ubuntu, apt:
 
 ```sh
-echo "deb [trusted=yes] https://amitbet.github.io/dynapp-agent ./" | sudo tee /etc/apt/sources.list.d/dynapp-agent.list
+echo "deb [trusted=yes] https://amitbet.github.io/dynapp-agent/deb ./" | sudo tee /etc/apt/sources.list.d/dynapp-agent.list
 sudo apt update
 sudo apt install dynapp-shell-agent
 ```
 
-Either platform can also run:
+Windows, PowerShell (elevated; installs into `C:\Program Files\DynApp` and the machine PATH):
+
+```powershell
+irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install.ps1 | iex
+```
+
+Windows, winget (portable package `AmitBet.DynAppShellAgent`):
+
+```powershell
+irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install-winget.ps1 | iex
+```
+
+From a clone, `winget install --manifest winget` uses the same files. Add `--scope machine` if you will register the Windows service. The package is not in the public winget community source, so `winget install AmitBet.DynAppShellAgent` without `--manifest` will not resolve.
+
+macOS or Linux one-liner (Homebrew or apt):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install.sh | sh
@@ -34,6 +48,8 @@ Then start it as an OS service:
 dynapp-shell-agent install
 dynapp-shell-agent start
 ```
+
+On Windows run those from an elevated prompt after the download.
 
 The binary is still named `dynapp-shell-agent`. Apps keep using the existing
 PWA Shell injectables; this process has no app UI. A loopback settings page
@@ -81,9 +97,9 @@ A successful push to `main` patch-bumps the latest `v*` tag (first release is
 - `linux-amd64` / `linux-arm64`
 - `windows-amd64` / `windows-arm64`
 
-Each release also uploads `.deb` packages, an apt repo on GitHub Pages,
-and a Homebrew formula at `Formula/dynapp-shell-agent.rb`.
-can still stamp a version yourself:
+Each release also uploads `.deb` packages, publishes an apt repo and winget
+manifests to GitHub Pages, and updates `Formula/dynapp-shell-agent.rb` plus
+`winget/`. You can still stamp a version yourself:
 
 ```sh
 # from the Actions tab, or:

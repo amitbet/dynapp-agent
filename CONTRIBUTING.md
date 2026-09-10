@@ -24,7 +24,8 @@ the latest `v*` tag and publishes signed binaries for macOS, Windows, and
 Linux when the signing secrets below are set. Without them, CI stays green
 and skips the publish. You can still run **Release** from the Actions tab,
 or push a `v*.*.*` tag. Each release also uploads `.deb` packages, publishes
-an apt repo to GitHub Pages, and updates `Formula/dynapp-shell-agent.rb`.
+an apt repo and winget manifests to GitHub Pages, and updates
+`Formula/dynapp-shell-agent.rb` plus `winget/`.
 
 Release signing uses these repository secrets:
 

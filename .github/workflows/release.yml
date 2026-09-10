@@ -295,11 +295,24 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "v${VERSION}" apt-repo/*.deb apt-repo/*.deb.sha256 apt-repo/*.deb.sig --repo "$REPOSITORY" --clobber
-      - name: Publish apt repository
+      - name: Update package manifests
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/bump-homebrew-formula.mjs "$VERSION" dist
+          node scripts/bump-winget-manifest.mjs "$VERSION" dist
+      - name: Assemble GitHub Pages
+        run: |
+          set -euo pipefail
+          mkdir -p pages/deb pages/winget
+          cp -a apt-repo/. pages/deb/
+          cp winget/*.yaml pages/winget/
+      - name: Publish apt and winget pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ github.token }}
-          publish_dir: apt-repo
+          publish_dir: pages
           force_orphan: true
       - name: Enable GitHub Pages
         env:
@@ -309,21 +322,20 @@ jobs:
           gh api -X POST "repos/${GITHUB_REPOSITORY}/pages" --input - <<'EOF' >/dev/null || true
 {"source":{"branch":"gh-pages","path":"/"}}
 EOF
-      - name: Update Homebrew formula
+      - name: Commit package manifests
         env:
           VERSION: ${{ needs.version.outputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          node scripts/bump-homebrew-formula.mjs "$VERSION" dist
-          if git diff --quiet -- Formula/dynapp-shell-agent.rb; then
-            echo "Homebrew formula already matches ${VERSION}"
+          if git diff --quiet -- Formula/dynapp-shell-agent.rb winget; then
+            echo "Package manifests already match ${VERSION}"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/dynapp-shell-agent.rb
-          git commit -m "Bump Homebrew formula to ${VERSION} [skip release]"
+          git add Formula/dynapp-shell-agent.rb winget
+          git commit -m "Bump package manifests to ${VERSION} [skip release]"
           git push origin HEAD:${{ github.event.repository.default_branch }}
 
   summary:

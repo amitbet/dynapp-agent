@@ -65,7 +65,15 @@ install_with_apt() {
   rm -rf "$tmpdir"
 }
 
-if [ "$(uname -s)" = Darwin ] && need_cmd brew; then
+os=$(uname -s)
+case "$os" in
+  MINGW* | MSYS* | CYGWIN*)
+    echo "On Windows use: irm https://raw.githubusercontent.com/${REPO}/main/scripts/install.ps1 | iex" >&2
+    exit 1
+    ;;
+esac
+
+if [ "$os" = Darwin ] && need_cmd brew; then
   install_with_brew
 elif need_cmd apt-get; then
   install_with_apt
