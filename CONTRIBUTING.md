@@ -19,11 +19,11 @@ go build -o /tmp/dynapp-shell-agent ./cmd/dynapp-shell-agent
 node ./scripts/smoke-native-presentation.mjs /tmp/dynapp-shell-agent
 ```
 
-Every push runs the Go tests. Trigger **Release** from the Actions tab to
-stamp a version, build signed assets, and publish a GitHub release. Leave the
-version blank to patch-bump the latest `v*` tag.
+Every push runs the Go tests. Publish binaries with **Release** from the
+Actions tab, or by pushing a `v*.*.*` tag. Leave the version blank to
+patch-bump the latest `v*` tag.
 
-Release signing uses these repository secrets:
+Release signing uses these repository secrets (copy them from `amitbet/dynapp`):
 
 - `PAINTJS_PAYLOAD_SIGNING_KEY` — Ed25519 private key; every asset gets a `.sig`
 - `MACOS_CODESIGN_P12_BASE64` / `MACOS_CODESIGN_P12_PASSWORD` — persistent

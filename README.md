@@ -13,6 +13,22 @@ Related repositories: [`amitbet/dynapp`](https://github.com/amitbet/dynapp)
 (apps and PWA Shell) and [`amitbet/dyner`](https://github.com/amitbet/dyner)
 (catalog and hosting).
 
+## Release
+
+GitHub Actions builds signed `dynapp-shell-agent` binaries for macOS, Windows,
+and Linux (amd64 and arm64) and attaches them to a GitHub release.
+
+```sh
+# from the Actions tab, or:
+gh workflow run release
+# or stamp an explicit version:
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Leave the workflow version blank to patch-bump the latest `v*` tag. First
+release is `0.1.0` unless you pass a version or push a tag. Each asset is
+published with `.sha256` and `.sig` sidecars the agent updater verifies.
+
 ## Run
 
 The agent starts a loopback HTTP/WebSocket endpoint on port 9011 for local PWA

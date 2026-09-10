@@ -1,8 +1,13 @@
 name: release
 
-# Manual-only. Tests and publishes the distributable `dynapp-shell-agent`.
+# Builds signed `dynapp-shell-agent` binaries for macOS, Windows, and Linux
+# and publishes them to a GitHub release. Triggered by a v* tag or from the
+# Actions tab.
 
 on:
+  push:
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       version:
@@ -27,13 +32,39 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Require release secrets
+        env:
+          HAS_PAYLOAD: ${{ secrets.PAINTJS_PAYLOAD_SIGNING_KEY != '' }}
+          HAS_P12: ${{ secrets.MACOS_CODESIGN_P12_BASE64 != '' }}
+          HAS_PASS: ${{ secrets.MACOS_CODESIGN_P12_PASSWORD != '' }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ "$HAS_PAYLOAD" != true ]; then
+            echo "Missing secret PAINTJS_PAYLOAD_SIGNING_KEY" >&2
+            missing=1
+          fi
+          if [ "$HAS_P12" != true ]; then
+            echo "Missing secret MACOS_CODESIGN_P12_BASE64" >&2
+            missing=1
+          fi
+          if [ "$HAS_PASS" != true ]; then
+            echo "Missing secret MACOS_CODESIGN_P12_PASSWORD" >&2
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            echo "Copy these from amitbet/dynapp (Settings → Secrets and variables → Actions)." >&2
+            exit 1
+          fi
       - id: compute
         env:
-          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
           prev="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
-          if [ -n "${INPUT_VERSION:-}" ]; then
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            next="${GITHUB_REF_NAME#v}"
+          elif [ -n "${INPUT_VERSION:-}" ]; then
             next="${INPUT_VERSION#v}"
           elif [ -z "$prev" ]; then
             next="0.1.0"
@@ -67,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Create the release tag if it is missing
+      - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
@@ -105,6 +136,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Build agent
         shell: bash
         env:
@@ -122,37 +156,11 @@ jobs:
             -o "$asset" ./cmd/dynapp-shell-agent
           sha256sum "$asset" > "$asset.sha256"
           echo "asset=$asset" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Sign agent asset with the payload signing key
-        shell: bash
+      - name: Sign release asset
         env:
           PAINTJS_PAYLOAD_SIGNING_KEY: ${{ secrets.PAINTJS_PAYLOAD_SIGNING_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "$PAINTJS_PAYLOAD_SIGNING_KEY" ]; then
-            echo "PAINTJS_PAYLOAD_SIGNING_KEY is not configured; the agent updater requires a .sig asset" >&2
-            exit 1
-          fi
-          node - "$asset" <<'NODE'
-          const fs = require("node:fs");
-          const crypto = require("node:crypto");
-          const asset = process.argv[2];
-          const raw = process.env.PAINTJS_PAYLOAD_SIGNING_KEY.trim();
-          const pem = raw.includes("BEGIN") ? raw : Buffer.from(raw, "base64").toString("utf8");
-          const key = crypto.createPrivateKey(pem);
-          const digest = crypto.createHash("sha256").update(fs.readFileSync(asset)).digest("hex");
-          const signature = crypto.sign(null, Buffer.from(digest, "ascii"), key).toString("base64");
-          fs.writeFileSync(`${asset}.sig`, signature + "\n");
-          const pub = crypto.createPublicKey(key);
-          if (!crypto.verify(null, Buffer.from(digest, "ascii"), pub, Buffer.from(signature, "base64"))) {
-            throw new Error("signature self-check failed");
-          }
-          console.log(`signed ${asset} (${digest})`);
-          NODE
-      - name: Upload agent assets
-        shell: bash
+        run: node scripts/sign-release-asset.mjs "$asset"
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
@@ -175,23 +183,20 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Restore persistent macOS signing identity
-        shell: bash
         env:
           MACOS_CODESIGN_P12_BASE64: ${{ secrets.MACOS_CODESIGN_P12_BASE64 }}
           MACOS_CODESIGN_P12_PASSWORD: ${{ secrets.MACOS_CODESIGN_P12_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "$MACOS_CODESIGN_P12_BASE64" ] || [ -z "$MACOS_CODESIGN_P12_PASSWORD" ]; then
-            echo "MACOS_CODESIGN_P12_BASE64 / MACOS_CODESIGN_P12_PASSWORD are not configured" >&2
-            exit 1
-          fi
           mkdir -p keys
           printf '%s' "$MACOS_CODESIGN_P12_BASE64" | base64 --decode > keys/macos-codesign.p12
           printf '%s' "$MACOS_CODESIGN_P12_PASSWORD" > keys/macos-codesign.pass
           chmod 600 keys/macos-codesign.p12 keys/macos-codesign.pass
-      - name: Build and sign agent
-        shell: bash
+      - name: Build and codesign agent
         env:
           GOOS: darwin
           GOARCH: ${{ matrix.goarch }}
@@ -208,37 +213,11 @@ jobs:
           codesign --verify --strict --verbose=2 "$asset"
           shasum -a 256 "$asset" > "$asset.sha256"
           echo "asset=$asset" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Sign agent asset with the payload signing key
-        shell: bash
+      - name: Sign release asset
         env:
           PAINTJS_PAYLOAD_SIGNING_KEY: ${{ secrets.PAINTJS_PAYLOAD_SIGNING_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "$PAINTJS_PAYLOAD_SIGNING_KEY" ]; then
-            echo "PAINTJS_PAYLOAD_SIGNING_KEY is not configured; the agent updater requires a .sig asset" >&2
-            exit 1
-          fi
-          node - "$asset" <<'NODE'
-          const fs = require("node:fs");
-          const crypto = require("node:crypto");
-          const asset = process.argv[2];
-          const raw = process.env.PAINTJS_PAYLOAD_SIGNING_KEY.trim();
-          const pem = raw.includes("BEGIN") ? raw : Buffer.from(raw, "base64").toString("utf8");
-          const key = crypto.createPrivateKey(pem);
-          const digest = crypto.createHash("sha256").update(fs.readFileSync(asset)).digest("hex");
-          const signature = crypto.sign(null, Buffer.from(digest, "ascii"), key).toString("base64");
-          fs.writeFileSync(`${asset}.sig`, signature + "\n");
-          const pub = crypto.createPublicKey(key);
-          if (!crypto.verify(null, Buffer.from(digest, "ascii"), pub, Buffer.from(signature, "base64"))) {
-            throw new Error("signature self-check failed");
-          }
-          console.log(`signed ${asset} (${digest})`);
-          NODE
-      - name: Upload agent assets
-        shell: bash
+        run: node scripts/sign-release-asset.mjs "$asset"
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
@@ -247,3 +226,16 @@ jobs:
           set -euo pipefail
           test -s "$asset.sig"
           gh release upload "v${VERSION}" "$asset" "$asset.sha256" "$asset.sig" --repo "$REPOSITORY" --clobber
+
+  summary:
+    needs: [version, binaries, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: List published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,url,assets \
+            --jq '{tag:.tagName, url:.url, assets:[.assets[].name]}'
