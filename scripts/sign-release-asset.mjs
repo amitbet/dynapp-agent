@@ -6,9 +6,9 @@ import * as NodeFs from "node:fs";
 const asset = process.argv[2];
 if (!asset) throw new Error("Usage: node scripts/sign-release-asset.mjs <asset>");
 
-const raw = process.env.PAINTJS_PAYLOAD_SIGNING_KEY?.trim();
+const raw = process.env.RELEASE_SIGNING_KEY?.trim();
 if (!raw) {
-  throw new Error("PAINTJS_PAYLOAD_SIGNING_KEY is not configured; the agent updater requires a .sig asset");
+  throw new Error("RELEASE_SIGNING_KEY is not configured; the agent updater requires a .sig asset");
 }
 
 const pem = raw.includes("BEGIN") ? raw : Buffer.from(raw, "base64").toString("utf8");

@@ -25,9 +25,9 @@ Linux when the signing secrets below are set. Without them, CI stays green
 and skips the publish. You can still run **Release** from the Actions tab,
 or push a `v*.*.*` tag.
 
-Release signing uses these repository secrets (copy them from `amitbet/dynapp`):
+Release signing uses these repository secrets:
 
-- `PAINTJS_PAYLOAD_SIGNING_KEY` — Ed25519 private key; every asset gets a `.sig`
+- `RELEASE_SIGNING_KEY` — Ed25519 private key; every asset gets a `.sig`
 - `MACOS_CODESIGN_P12_BASE64` / `MACOS_CODESIGN_P12_PASSWORD` — persistent
   `DynApp Local Signing` identity for macOS binaries
 

@@ -22,9 +22,8 @@ import (
 	"time"
 )
 
-// releaseSigningPublicKeyPEM is keys/payload-signing.pub: the Ed25519 key
-// that signs app payload manifests and, detached, every shell-agent release
-// asset (`<asset>.sig` = base64(Ed25519(ASCII sha256-hex of the asset))).
+// releaseSigningPublicKeyPEM is the Ed25519 public key that verifies detached
+// signatures on release assets (`<asset>.sig` = base64(Ed25519(ASCII sha256-hex))).
 const releaseSigningPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAqL2M/7uEco7+Osb1xCHI1bpkYhHv/yutsvak/JZhxWQ=
 -----END PUBLIC KEY-----
@@ -58,7 +57,7 @@ func parseEd25519PublicKey(pemText string) (ed25519.PublicKey, error) {
 }
 
 // verifyReleaseSignature checks a detached signature over the ASCII sha256
-// hex digest of an asset, matching shell/updater/payloadSigning.js.
+// hex digest of an asset.
 func verifyReleaseSignature(sha256Hex, signatureBase64 string) error {
 	signature, err := base64.StdEncoding.DecodeString(strings.TrimSpace(signatureBase64))
 	if err != nil || len(signature) != ed25519.SignatureSize {

@@ -212,13 +212,13 @@ func TestStagedUpdateIsReVerifiedBeforeUse(t *testing.T) {
 	}
 }
 
-func TestEmbeddedReleaseKeyMatchesPayloadSigningKey(t *testing.T) {
+func TestEmbeddedReleaseSigningKey(t *testing.T) {
 	key, err := parseEd25519PublicKey(releaseSigningPublicKeyPEM)
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		t.Fatalf("embedded key = %v, %v", key, err)
 	}
 	if !strings.Contains(releaseSigningPublicKeyPEM, "MCowBQYDK2VwAyEAqL2M/7uEco7+Osb1xCHI1bpkYhHv/yutsvak/JZhxWQ=") {
-		t.Fatal("embedded key does not match keys/payload-signing.pub")
+		t.Fatal("embedded key does not match the expected release public key")
 	}
 }
 

@@ -42,15 +42,15 @@ jobs:
       - name: Require release secrets
         id: secrets
         env:
-          HAS_PAYLOAD: ${{ secrets.PAINTJS_PAYLOAD_SIGNING_KEY != '' }}
+          HAS_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY != '' }}
           HAS_P12: ${{ secrets.MACOS_CODESIGN_P12_BASE64 != '' }}
           HAS_PASS: ${{ secrets.MACOS_CODESIGN_P12_PASSWORD != '' }}
           OPTIONAL: ${{ inputs.optional }}
         run: |
           set -euo pipefail
           missing=0
-          if [ "$HAS_PAYLOAD" != true ]; then
-            echo "Missing secret PAINTJS_PAYLOAD_SIGNING_KEY" >&2
+          if [ "$HAS_SIGNING_KEY" != true ]; then
+            echo "Missing secret RELEASE_SIGNING_KEY" >&2
             missing=1
           fi
           if [ "$HAS_P12" != true ]; then
@@ -62,7 +62,7 @@ jobs:
             missing=1
           fi
           if [ "$missing" -ne 0 ]; then
-            echo "Copy these from amitbet/dynapp (Settings → Secrets and variables → Actions)." >&2
+            echo "Set RELEASE_SIGNING_KEY and the macOS codesign secrets (Settings → Secrets and variables → Actions)." >&2
             if [ "$OPTIONAL" = true ]; then
               echo "Signing secrets are not configured; skipping publish so CI can stay green."
               echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -178,7 +178,7 @@ jobs:
           echo "asset=$asset" >> "$GITHUB_ENV"
       - name: Sign release asset
         env:
-          PAINTJS_PAYLOAD_SIGNING_KEY: ${{ secrets.PAINTJS_PAYLOAD_SIGNING_KEY }}
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: node scripts/sign-release-asset.mjs "$asset"
       - name: Upload release assets
         env:
@@ -236,7 +236,7 @@ jobs:
           echo "asset=$asset" >> "$GITHUB_ENV"
       - name: Sign release asset
         env:
-          PAINTJS_PAYLOAD_SIGNING_KEY: ${{ secrets.PAINTJS_PAYLOAD_SIGNING_KEY }}
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: node scripts/sign-release-asset.mjs "$asset"
       - name: Upload release assets
         env:
