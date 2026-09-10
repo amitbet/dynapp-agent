@@ -5,6 +5,36 @@ as a Windows service, a macOS LaunchAgent, or a Linux daemon. Hosted apps talk
 to it for local files, network, processes, and other approved capabilities.
 Without it an app still renders, but those local features stay off.
 
+## Install
+
+macOS or Linux with Homebrew:
+
+```sh
+brew tap amitbet/dynapp-agent https://github.com/amitbet/dynapp-agent
+brew install dynapp-shell-agent
+```
+
+Debian or Ubuntu:
+
+```sh
+echo "deb [trusted=yes] https://amitbet.github.io/dynapp-agent ./" | sudo tee /etc/apt/sources.list.d/dynapp-agent.list
+sudo apt update
+sudo apt install dynapp-shell-agent
+```
+
+Either platform can also run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install.sh | sh
+```
+
+Then start it as an OS service:
+
+```sh
+dynapp-shell-agent install
+dynapp-shell-agent start
+```
+
 The binary is still named `dynapp-shell-agent`. Apps keep using the existing
 PWA Shell injectables; this process has no app UI. A loopback settings page
 reuses Dyner's workspace and remote-environment panels.
@@ -51,7 +81,8 @@ A successful push to `main` patch-bumps the latest `v*` tag (first release is
 - `linux-amd64` / `linux-arm64`
 - `windows-amd64` / `windows-arm64`
 
-Each asset has `.sha256` and `.sig` sidecars the agent updater verifies. You
+Each release also uploads `.deb` packages, an apt repo on GitHub Pages,
+and a Homebrew formula at `Formula/dynapp-shell-agent.rb`.
 can still stamp a version yourself:
 
 ```sh

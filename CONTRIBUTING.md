@@ -23,7 +23,8 @@ Every push runs the Go tests. A successful push to `main` also patch-bumps
 the latest `v*` tag and publishes signed binaries for macOS, Windows, and
 Linux when the signing secrets below are set. Without them, CI stays green
 and skips the publish. You can still run **Release** from the Actions tab,
-or push a `v*.*.*` tag.
+or push a `v*.*.*` tag. Each release also uploads `.deb` packages, publishes
+an apt repo to GitHub Pages, and updates `Formula/dynapp-shell-agent.rb`.
 
 Release signing uses these repository secrets:
 

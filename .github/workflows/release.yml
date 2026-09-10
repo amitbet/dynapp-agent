@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: write
+  pages: write
 
 concurrency:
   group: agent-release
@@ -248,8 +249,86 @@ jobs:
           test -s "$asset.sig"
           gh release upload "v${VERSION}" "$asset" "$asset.sha256" "$asset.sig" --repo "$REPOSITORY" --clobber
 
-  summary:
+  packages:
     needs: [version, binaries, macos]
+    if: needs.version.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download signed binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist apt-repo
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'dynapp-shell-agent-*'
+      - name: Build Debian packages
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y dpkg-dev
+          chmod +x scripts/package-deb.sh scripts/publish-apt-repo.sh
+          for arch in amd64 arm64; do
+            ./scripts/package-deb.sh "dist/dynapp-shell-agent-${VERSION}-linux-${arch}" "$VERSION" "$arch"
+          done
+          mv dynapp-shell-agent_"${VERSION}"_amd64.deb dynapp-shell-agent_"${VERSION}"_arm64.deb apt-repo/
+          ./scripts/publish-apt-repo.sh apt-repo
+          cd apt-repo
+          for deb in *.deb; do
+            sha256sum "$deb" > "$deb.sha256"
+            node ../scripts/sign-release-asset.mjs "$deb"
+          done
+      - name: Upload Debian packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "v${VERSION}" apt-repo/*.deb apt-repo/*.deb.sha256 apt-repo/*.deb.sig --repo "$REPOSITORY" --clobber
+      - name: Publish apt repository
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ github.token }}
+          publish_dir: apt-repo
+          force_orphan: true
+      - name: Enable GitHub Pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/pages" \
+            -f build_type=legacy \
+            -f 'source[branch]=gh-pages' \
+            -f 'source[path]=/' >/dev/null 2>/dev/null || true
+      - name: Update Homebrew formula
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node scripts/bump-homebrew-formula.mjs "$VERSION" dist
+          if git diff --quiet -- Formula/dynapp-shell-agent.rb; then
+            echo "Homebrew formula already matches ${VERSION}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/dynapp-shell-agent.rb
+          git commit -m "Bump Homebrew formula to ${VERSION} [skip release]"
+          git push origin HEAD:${{ github.event.repository.default_branch }}
+
+  summary:
+    needs: [version, binaries, macos, packages]
     if: needs.version.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:

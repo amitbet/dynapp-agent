@@ -119,7 +119,12 @@ func main() {
 	updateSource := flag.String("update-source", "", "downloaded binary for the self-update helper")
 	updateTarget := flag.String("update-target", "", "installed binary for the self-update helper")
 	updateParent := flag.Int("update-parent", 0, "old agent PID for the self-update helper")
+	printVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *printVersion {
+		fmt.Println(shellagent.AgentVersion)
+		return
+	}
 	if len(flag.Args()) == 2 && flag.Arg(0) == "presentation-helper" {
 		token := os.Getenv("DYNAPP_PRESENTATION_TOKEN")
 		os.Unsetenv("DYNAPP_PRESENTATION_TOKEN")
