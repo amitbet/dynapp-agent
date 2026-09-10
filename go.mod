@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/aymanbagabas/go-pty v0.2.3
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/jlaffaye/ftp v0.2.0
 	github.com/kardianos/service v1.2.4
 	github.com/pkg/sftp v1.13.9

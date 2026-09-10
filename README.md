@@ -83,6 +83,14 @@ already occupied on a first no-argument launch, the agent selects an available
 loopback port, persists it, and registers that endpoint with Dyner so the PWA
 Shell can still present it as **This machine**.
 
+## Linux Chromium PWA shortcuts
+
+On container/webtop desktops, Chromium writes PWA `.desktop` files without
+`--no-sandbox`, so the shortcut exits immediately. When the agent is running
+inside a container it watches `~/Desktop` and
+`~/.local/share/applications` and inserts `--no-sandbox` into those `Exec=`
+lines.
+
 ## Tray and global shortcuts
 
 The hosted PWA Shell exposes `appShell.tray` and `appShell.globalShortcut`

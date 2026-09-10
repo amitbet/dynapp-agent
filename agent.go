@@ -89,13 +89,14 @@ type Server struct {
 	testWebSocket      bool
 	// autoApprovePairings lets in-process tests skip the authority decision;
 	// production never sets it.
-	autoApprovePairings bool
-	permissionState     *permissionsState
-	csrfMu              sync.Mutex
-	csrfToken           string
-	presentationMu      sync.Mutex
-	presentations       map[*presentationBridge]struct{}
-	presentationClosed  bool
+	autoApprovePairings  bool
+	permissionState      *permissionsState
+	csrfMu               sync.Mutex
+	csrfToken            string
+	presentationMu       sync.Mutex
+	presentations        map[*presentationBridge]struct{}
+	presentationClosed   bool
+	chromiumRepairCancel context.CancelFunc
 }
 
 type protocolSocket interface {
@@ -237,6 +238,7 @@ func (s *Server) ListenAndServe() error {
 	s.startIdentitySync()
 	s.startRelay()
 	s.startSelfUpdater()
+	s.startChromiumDesktopRepair()
 	hydrateExecutablePath()
 	if managedNodeAvailable(s.StateDir) {
 		prependPathDir(managedNodeBinDir(s.StateDir))
@@ -343,6 +345,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	relayCancel := s.relayCancel
 	identitySyncCancel := s.identitySyncCancel
 	selfUpdateCancel := s.selfUpdateCancel
+	chromiumRepairCancel := s.chromiumRepairCancel
 	lanClose := s.lanClose
 	s.mu.Unlock()
 	if relayCancel != nil {
@@ -353,6 +356,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if selfUpdateCancel != nil {
 		selfUpdateCancel()
+	}
+	if chromiumRepairCancel != nil {
+		chromiumRepairCancel()
 	}
 	if lanClose != nil {
 		_ = lanClose()
