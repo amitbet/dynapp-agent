@@ -183,6 +183,9 @@ func (p *Set) Start(request Request, args []string) {
 			p.send(map[string]any{"type": "exec-error", "id": request.ID, "error": err.Error()})
 			return
 		}
+		// Drop the parent's slave fd so child exit EOFs the master. Leaving it
+		// open forces Close() to unblock readers and can discard the last output.
+		closeParentPtySlave(terminal)
 		process, wait, stdin = command.Process, command.Wait, terminal
 		exitStatus = func() int {
 			if command.ProcessState == nil {
@@ -244,13 +247,19 @@ func (p *Set) Start(request Request, args []string) {
 	p.mu.Unlock()
 	p.send(map[string]any{"type": "exec-start", "id": request.ID, "processId": id})
 	budget := &execOutputBudget{remaining: MaxOutputBytes}
+	var outputWG sync.WaitGroup
 	for _, output := range outputs {
-		go p.copyOutput(id, output.stream, output.reader, budget)
+		outputWG.Add(1)
+		go func(stream string, reader io.Reader) {
+			defer outputWG.Done()
+			p.copyOutput(id, stream, reader, budget)
+		}(output.stream, output.reader)
 	}
 	go func() {
 		defer cancel()
 		defer closeTerminal()
 		err := wait()
+		outputWG.Wait()
 		code := 0
 		if err != nil {
 			if exit, ok := err.(*exec.ExitError); ok {
@@ -269,6 +278,16 @@ func (p *Set) Start(request Request, args []string) {
 		delete(p.records, id)
 		p.mu.Unlock()
 	}()
+}
+
+func closeParentPtySlave(terminal ptylib.Pty) {
+	unix, ok := terminal.(ptylib.UnixPty)
+	if !ok {
+		return
+	}
+	if slave := unix.Slave(); slave != nil {
+		_ = slave.Close()
+	}
 }
 
 func normalizeTerminalSize(value, fallback, minimum, maximum int) int {
