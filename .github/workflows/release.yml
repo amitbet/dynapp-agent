@@ -319,9 +319,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/pages" --input - <<'EOF' >/dev/null || true
-{"source":{"branch":"gh-pages","path":"/"}}
-EOF
+          printf '%s\n' '{"source":{"branch":"gh-pages","path":"/"}}' |
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/pages" --input - >/dev/null || true
       - name: Commit package manifests
         env:
           VERSION: ${{ needs.version.outputs.version }}
