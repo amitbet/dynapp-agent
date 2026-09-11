@@ -101,6 +101,13 @@ func (s *Server) publishClipboardPromises(socket protocolSocket, request message
 	if s.promises == nil {
 		s.promises = make(map[string]*clipboardPromise)
 	}
+	// A new offer replaces the app's previous one on the clipboard. Promises
+	// still being written finish on their own and are dropped afterwards.
+	for id, promise := range s.promises {
+		if promise.appID == request.AppID && promise.file == nil {
+			delete(s.promises, id)
+		}
+	}
 	for _, item := range raw {
 		value, ok := item.(map[string]any)
 		if !ok {
@@ -135,8 +142,18 @@ func (s *Server) publishClipboardPromises(socket protocolSocket, request message
 	return nil, err
 }
 
+// handleFilePromiseRequest serves a paste from the native file promise
+// helper. Any failure must reach the helper so Finder shows an error instead
+// of waiting forever for a file that will never arrive.
 func (s *Server) handleFilePromiseRequest(id, path string) {
-	_ = s.requestFilePromise(id, path, nil, "")
+	if err := s.requestFilePromise(id, path, nil, ""); err != nil {
+		s.promiseMu.Lock()
+		bridge := s.promiseBridge
+		s.promiseMu.Unlock()
+		if bridge != nil {
+			_ = bridge.complete(id, err)
+		}
+	}
 }
 
 func (s *Server) requestFilePromise(id, path string, destinationSocket protocolSocket, destinationAppID string) error {
@@ -161,12 +178,6 @@ func (s *Server) requestFilePromise(id, path string, destinationSocket protocolS
 	sourceID, name, size := promise.sourceID, promise.name, promise.size
 	s.promiseMu.Unlock()
 	if err != nil {
-		s.promiseMu.Lock()
-		bridge := s.promiseBridge
-		s.promiseMu.Unlock()
-		if bridge != nil {
-			_ = bridge.complete(id, err)
-		}
 		return err
 	}
 	if sourceSocket != nil {
@@ -304,6 +315,7 @@ func (s *Server) finishClipboardPromise(request message) (any, error) {
 	destinationSocket := promise.destinationSocket
 	destinationAppID := promise.destinationAppID
 	bridge := s.promiseBridge
+	path := promise.path
 	delete(s.promises, promise.id)
 	s.promiseMu.Unlock()
 	if bridge != nil {
@@ -311,14 +323,14 @@ func (s *Server) finishClipboardPromise(request message) (any, error) {
 	}
 	if destinationSocket != nil {
 		send(destinationSocket, context.Background(), map[string]any{"type": "rpc-event", "service": "clipboard", "event": map[string]any{
-			"type": "file-promise-complete", "promiseId": promise.id, "path": promise.path, "name": promise.name, "size": promise.size, "appId": destinationAppID,
+			"type": "file-promise-complete", "promiseId": promise.id, "path": path, "name": promise.name, "size": promise.size, "appId": destinationAppID,
 			"error": errorString(err),
 		}})
 	}
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"path": promise.path, "size": promise.size}, nil
+	return map[string]any{"path": path, "size": promise.size}, nil
 }
 
 func errorString(err error) string {
