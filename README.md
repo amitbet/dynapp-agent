@@ -7,10 +7,21 @@ Without it an app still renders, but those local features stay off.
 
 ## Install
 
+macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install.sh | sh
+```
+
+That downloads the latest GitHub release into `/usr/local/bin`. Debian and Ubuntu use apt when it is present.
+
 macOS, Homebrew:
+
+Trust the tap first. Homebrew 6 requires this for third-party taps.
 
 ```sh
 brew tap amitbet/dynapp-agent https://github.com/amitbet/dynapp-agent
+brew trust amitbet/dynapp-agent
 brew install dynapp-shell-agent
 ```
 
@@ -35,12 +46,6 @@ irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install-
 ```
 
 From a clone, `winget install --manifest winget` uses the same files. Add `--scope machine` if you will register the Windows service. The package is not in the public winget community source, so `winget install AmitBet.DynAppShellAgent` without `--manifest` will not resolve.
-
-macOS or Linux one-liner (Homebrew or apt):
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install.sh | sh
-```
 
 Then start it as an OS service:
 
@@ -252,9 +257,11 @@ macOS code requirement and can make previously granted permissions appear lost.
 
 The agent counts TCP, UDP, and RDP bridges across local and relay sessions. It
 does not replace itself while any bridge is active. Once the count reaches zero,
-it rejects new bridge opens, stops the listener, and lets a helper replace and
-restart the executable. This keeps the connection-free interruption short and
-works on Windows, where a running executable cannot be overwritten.
+it rejects new bridge opens and stops the listener. A service install then
+starts a detached helper: that helper stops/unloads the job so KeepAlive cannot
+respawn the old binary, replaces the installed file (following Homebrew
+symlinks into the keg), and starts the new service. Interactive Unix builds
+exec the new binary in the same process instead.
 
 Development builds do not poll because they carry the `dev` version. Use
 `--no-self-update` to disable checks for a release build, or

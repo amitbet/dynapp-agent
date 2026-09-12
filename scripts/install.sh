@@ -31,17 +31,74 @@ cpu() {
   esac
 }
 
+github_os() {
+  case "$(uname -s)" in
+    Darwin) echo darwin ;;
+    Linux) echo linux ;;
+    *)
+      echo "unsupported OS $(uname -s)" >&2
+      exit 1
+      ;;
+  esac
+}
+
 latest_tag() {
   curl -fsSL "$API" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1
 }
 
-install_with_brew() {
-  brew tap amitbet/dynapp-agent "https://github.com/${REPO}"
-  if brew list dynapp-shell-agent >/dev/null 2>&1; then
-    brew upgrade dynapp-shell-agent
+file_sha256() {
+  if need_cmd sha256sum; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  elif need_cmd shasum; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
   else
-    brew install dynapp-shell-agent
+    echo "need sha256sum or shasum to verify the download" >&2
+    exit 1
   fi
+}
+
+bin_dir() {
+  echo "${DYNAPP_AGENT_BIN_DIR:-/usr/local/bin}"
+}
+
+install_file() {
+  src=$1
+  dest_dir=$2
+  dest="${dest_dir}/dynapp-shell-agent"
+  if [ -d "$dest_dir" ] && [ -w "$dest_dir" ]; then
+    install -m 0755 "$src" "$dest"
+  elif mkdir -p "$dest_dir" 2>/dev/null && [ -w "$dest_dir" ]; then
+    install -m 0755 "$src" "$dest"
+  else
+    run_root mkdir -p "$dest_dir"
+    run_root install -m 0755 "$src" "$dest"
+  fi
+  echo "$dest"
+}
+
+install_from_github() {
+  arch=$(cpu)
+  goos=$(github_os)
+  tag=$(latest_tag)
+  if [ -z "$tag" ]; then
+    echo "could not resolve the latest GitHub release" >&2
+    exit 1
+  fi
+  version="${tag#v}"
+  asset="dynapp-shell-agent-${version}-${goos}-${arch}"
+  tmpdir=$(mktemp -d)
+  curl -fsSL "https://github.com/${REPO}/releases/download/${tag}/${asset}" -o "${tmpdir}/${asset}"
+  curl -fsSL "https://github.com/${REPO}/releases/download/${tag}/${asset}.sha256" -o "${tmpdir}/${asset}.sha256"
+  expected=$(awk '{print tolower($1); exit}' "${tmpdir}/${asset}.sha256")
+  actual=$(file_sha256 "${tmpdir}/${asset}")
+  if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+    rm -rf "$tmpdir"
+    echo "checksum mismatch for ${asset}" >&2
+    exit 1
+  fi
+  dest=$(install_file "${tmpdir}/${asset}" "$(bin_dir)")
+  rm -rf "$tmpdir"
+  echo "installed ${dest} from ${tag}"
 }
 
 install_with_apt() {
@@ -73,12 +130,14 @@ case "$os" in
     ;;
 esac
 
-if [ "$os" = Darwin ] && need_cmd brew; then
-  install_with_brew
+if [ "$os" = Darwin ]; then
+  install_from_github
 elif need_cmd apt-get; then
   install_with_apt
+elif [ "$os" = Linux ]; then
+  install_from_github
 else
-  echo "install Homebrew or apt, or download a release from https://github.com/${REPO}/releases/latest" >&2
+  echo "download a release from https://github.com/${REPO}/releases/latest" >&2
   exit 1
 fi
 
