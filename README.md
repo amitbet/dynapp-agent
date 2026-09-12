@@ -137,6 +137,14 @@ keep their existing behavior on all platforms.
 Apps that read these URLs must use macOS file coordination to receive the
 downloaded contents. A raw filesystem read does not trigger a download.
 
+### Native file dragging on macOS
+
+Apps with `drag.files` can start a native Finder drag with file promises. The
+agent creates placeholder URLs under its temporary directory and asks the app
+for each file only after another macOS app accepts the drop. Apps stream bytes
+with the same size, chunk, status, and completion operations used by clipboard
+promises. Cancelling the drag removes promises that never started.
+
 ### Agent listener
 
 The agent starts a loopback HTTP/WebSocket endpoint on port 9011 for local PWA

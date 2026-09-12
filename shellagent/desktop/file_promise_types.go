@@ -10,12 +10,15 @@ type filePromiseCommand struct {
 	Type  string                  `json:"type"`
 	Files []filePromiseDescriptor `json:"files,omitempty"`
 	ID    string                  `json:"id,omitempty"`
+	IDs   []string                `json:"ids,omitempty"`
 	Error string                  `json:"error,omitempty"`
 	Size  *int64                  `json:"size,omitempty"`
 }
 
 type filePromiseEvent struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
-	Path string `json:"path"`
+	Type      string   `json:"type"`
+	ID        string   `json:"id,omitempty"`
+	IDs       []string `json:"ids,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Operation string   `json:"operation,omitempty"`
 }

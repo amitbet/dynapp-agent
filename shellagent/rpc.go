@@ -33,6 +33,8 @@ func (s *Server) handleRPC(socket protocolSocket, ctx context.Context, agents *a
 		result, err = s.handleFileImportRPC(request)
 	case "clipboard":
 		result, err = s.handleClipboardRPCWithSocket(socket, request, body)
+	case "drag":
+		result, err = s.handleDragRPC(socket, request, body)
 	case "lan":
 		result, err = s.handleLANRPC(request)
 	case "sessions":

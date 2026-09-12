@@ -72,6 +72,7 @@ func (s *Server) writeClipboardPromiseBinary(request message, raw []byte) (any, 
 type clipboardPromise struct {
 	id                string
 	appID             string
+	service           string
 	sourceID          string
 	name              string
 	size              int64
@@ -95,6 +96,10 @@ func clipboardPromiseID() string {
 }
 
 func (s *Server) publishClipboardPromises(socket protocolSocket, request message) (any, error) {
+	return s.publishFilePromises(socket, request, "clipboard", false)
+}
+
+func (s *Server) publishFilePromises(socket protocolSocket, request message, service string, drag bool) (any, error) {
 	raw, ok := request.Args[0].([]any)
 	if !ok || len(raw) == 0 || len(raw) > maxClipboardFiles {
 		return nil, errors.New("clipboard promises require between 1 and 32 files")
@@ -107,7 +112,7 @@ func (s *Server) publishClipboardPromises(socket protocolSocket, request message
 	// A new offer replaces the app's previous one on the clipboard. Promises
 	// still being written finish on their own and are dropped afterwards.
 	for id, promise := range s.promises {
-		if promise.appID == request.AppID && promise.file == nil {
+		if promise.appID == request.AppID && promise.service == service && promise.file == nil {
 			delete(s.promises, id)
 		}
 	}
@@ -132,7 +137,7 @@ func (s *Server) publishClipboardPromises(socket protocolSocket, request message
 			return nil, errors.New("clipboard promise metadata is invalid")
 		}
 		id := clipboardPromiseID()
-		s.promises[id] = &clipboardPromise{id: id, appID: request.AppID, sourceID: sourceID, name: name, size: size, socket: socket}
+		s.promises[id] = &clipboardPromise{id: id, appID: request.AppID, service: service, sourceID: sourceID, name: name, size: size, socket: socket}
 		entries = append(entries, filePromiseDescriptor{ID: id, Name: name, Size: size})
 	}
 	s.promiseMu.Unlock()
@@ -144,7 +149,13 @@ func (s *Server) publishClipboardPromises(socket protocolSocket, request message
 			break
 		}
 		bridge.onRequest = s.handleFilePromiseRequest
-		if err = bridge.publish(entries); err == nil {
+		bridge.onDragEnd = s.handleFilePromiseDragEnd
+		if drag {
+			err = bridge.drag(entries)
+		} else {
+			err = bridge.publish(entries)
+		}
+		if err == nil {
 			return map[string]any{"count": len(entries)}, nil
 		}
 		s.discardFilePromiseBridge(bridge)
@@ -166,6 +177,29 @@ func (s *Server) handleFilePromiseRequest(id, path string) {
 	}
 }
 
+func (s *Server) handleFilePromiseDragEnd(ids []string, operation string) {
+	s.promiseMu.Lock()
+	apps := make(map[protocolSocket]struct{})
+	for _, id := range ids {
+		promise := s.promises[id]
+		if promise == nil || promise.service != "drag" {
+			continue
+		}
+		if promise.socket != nil {
+			apps[promise.socket] = struct{}{}
+		}
+		if promise.file == nil {
+			delete(s.promises, id)
+		}
+	}
+	s.promiseMu.Unlock()
+	for socket := range apps {
+		send(socket, context.Background(), map[string]any{"type": "rpc-event", "service": "drag", "event": map[string]any{
+			"type": "drag-ended", "operation": operation,
+		}})
+	}
+}
+
 func (s *Server) requestFilePromise(id, path string, destinationSocket protocolSocket, destinationAppID string) error {
 	s.promiseMu.Lock()
 	promise := s.promises[id]
@@ -184,14 +218,17 @@ func (s *Server) requestFilePromise(id, path string, destinationSocket protocolS
 		promise.destinationSocket = destinationSocket
 		promise.destinationAppID = destinationAppID
 	}
-	sourceSocket := promise.socket
+	sourceSocket, service := promise.socket, promise.service
+	if service == "" {
+		service = "clipboard"
+	}
 	sourceID, name, size := promise.sourceID, promise.name, promise.size
 	s.promiseMu.Unlock()
 	if err != nil {
 		return err
 	}
 	if sourceSocket != nil {
-		send(sourceSocket, context.Background(), map[string]any{"type": "rpc-event", "service": "clipboard", "event": map[string]any{
+		send(sourceSocket, context.Background(), map[string]any{"type": "rpc-event", "service": service, "event": map[string]any{
 			"type": "file-promise-request", "promiseId": id, "sourceId": sourceID, "name": name, "size": size,
 		}})
 	}
@@ -394,10 +431,14 @@ func errorString(err error) string {
 }
 
 func (s *Server) cancelClipboardPromises(request message) (any, error) {
+	return s.cancelFilePromises(request, "clipboard")
+}
+
+func (s *Server) cancelFilePromises(request message, service string) (any, error) {
 	s.promiseMu.Lock()
 	ids := make([]string, 0)
 	for id, promise := range s.promises {
-		if promise.appID == request.AppID {
+		if promise.appID == request.AppID && (promise.service == service || promise.service == "" && service == "clipboard") {
 			if promise.file != nil {
 				_ = promise.file.Close()
 				_ = os.Remove(promise.path)

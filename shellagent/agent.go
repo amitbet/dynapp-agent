@@ -721,6 +721,8 @@ func rpcCapability(request message) string {
 			return "clipboard.read"
 		}
 		return "clipboard.write"
+	case "drag":
+		return "drag.files"
 	case "externalOpen":
 		return "externalOpen.files"
 	case "apps":
@@ -741,6 +743,9 @@ func capabilities() []string {
 	result := []string{
 		"fs.remote", "fs.exec", "fs.execFile", "fs.home", "fs.roots", "fs.list", "fs.stat", "fs.readText", "fs.writeText", "fs.readBase64", "fs.writeBase64", "fs.mkdir", "fs.copy", "fs.move", "fs.remove", "fs.dirSize", "fs.diskUsage", "fs.readChunk", "fs.writeChunk", "fs.trash", "fs.openPath", "fs.openWith", "fs.execTerminal", "fs.pack", "fs.watch",
 		"net.tcp.connect", "net.udp.connect", "net.protocol.http", "net.protocol.https", "net.protocol.ftp", "net.protocol.sftp", "net.protocol.rdp", "agent.session", "calendar.read", "search.files", "secrets.manage", "sessions.manage", "system.ports.read", "system.processes.terminate", "fileAssociations.manage", "externalOpen.files", "file.import", "clipboard.read", "clipboard.write", "apps.manage", "apps.publish",
+	}
+	if runtime.GOOS == "darwin" {
+		result = append(result, "drag.files")
 	}
 	if presentationSupported() {
 		result = append(result, "tray.manage", "globalShortcut")

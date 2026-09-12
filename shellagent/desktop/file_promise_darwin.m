@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 
 extern void dynappGoFilePromiseRequested(char *identifier, char *path);
+extern void dynappGoFilePromiseDragEnded(char *identifiersJSON, char *operation);
 
 // Publish an existing placeholder URL immediately. Finder coordinates its
 // background copy with this presenter, which supplies the contents on demand.
@@ -30,6 +31,8 @@ static NSTextField *DynProgressName;
 static NSTextField *DynProgressDetail;
 static NSTimer *DynProgressTimer;
 static NSString *DynLastFailure;
+static NSWindow *DynDragWindow;
+static id DynDragSource;
 static const NSTimeInterval DynTransferTimeoutSeconds = 60 * 60;
 
 static NSString *DynAppPromiseRoot(void) {
@@ -187,11 +190,13 @@ void dynapp_file_promise_run(void) {
     }
 }
 
-static void DynPublishFileEntries(NSArray *entries, NSPasteboard *pasteboard) {
+static NSArray<NSURL *> *DynCreateFileEntries(NSArray *entries, BOOL retireExisting) {
     if (!DynFiles) DynFiles = [NSMutableDictionary dictionary];
-    for (DynAppClipboardFile *file in DynFiles.allValues) {
-        file.retired = YES;
-        DynDiscardRetiredFile(file);
+    if (retireExisting) {
+        for (DynAppClipboardFile *file in DynFiles.allValues) {
+            file.retired = YES;
+            DynDiscardRetiredFile(file);
+        }
     }
     NSMutableArray<NSURL *> *urls = [NSMutableArray array];
     for (NSDictionary *entry in entries) {
@@ -218,8 +223,82 @@ static void DynPublishFileEntries(NSArray *entries, NSPasteboard *pasteboard) {
         [NSFileCoordinator addFilePresenter:file];
         [urls addObject:file.presentedItemURL];
     }
+    return urls;
+}
+
+static void DynPublishFileEntries(NSArray *entries, NSPasteboard *pasteboard) {
+    NSArray<NSURL *> *urls = DynCreateFileEntries(entries, YES);
     [pasteboard clearContents];
     if (urls.count) [pasteboard writeObjects:urls];
+}
+
+@interface DynAppDragSource : NSObject <NSDraggingSource>
+@property(nonatomic, copy) NSArray<NSString *> *identifiers;
+@end
+
+@interface DynAppDragView : NSView
+@property(nonatomic, copy) NSArray<NSDraggingItem *> *draggingItems;
+@property(nonatomic, strong) DynAppDragSource *draggingSource;
+@end
+
+@implementation DynAppDragSource
+- (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+    return NSDragOperationCopy;
+}
+- (BOOL)ignoreModifierKeysForDraggingSession:(NSDraggingSession *)session { return YES; }
+- (void)draggingSession:(NSDraggingSession *)session endedAtPoint:(NSPoint)screenPoint operation:(NSDragOperation)operation {
+    NSArray *identifiers = self.identifiers ?: @[];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:identifiers options:0 error:nil];
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"[]";
+    NSString *result = operation == NSDragOperationNone ? @"cancelled" : @"copy";
+    [DynDragWindow orderOut:nil];
+    DynDragWindow = nil;
+    DynDragSource = nil;
+    dynappGoFilePromiseDragEnded((char *)json.UTF8String, (char *)result.UTF8String);
+}
+@end
+
+
+@implementation DynAppDragView
+- (void)mouseDragged:(NSEvent *)event {
+    if (!self.draggingItems.count || !self.draggingSource) return;
+    NSArray *items = self.draggingItems;
+    DynAppDragSource *source = self.draggingSource;
+    self.draggingItems = nil;
+    [self beginDraggingSessionWithItems:items event:event source:source];
+}
+@end
+
+static void DynStartFileDrag(NSArray *entries) {
+    NSArray<NSURL *> *urls = DynCreateFileEntries(entries, NO);
+    if (!urls.count) return;
+    NSPoint pointer = NSEvent.mouseLocation;
+    DynDragWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(pointer.x - 2, pointer.y - 2, 4, 4)
+        styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    DynDragWindow.opaque = NO;
+    DynDragWindow.backgroundColor = NSColor.clearColor;
+    DynDragWindow.level = NSStatusWindowLevel;
+    DynAppDragView *view = [[DynAppDragView alloc] initWithFrame:NSMakeRect(0, 0, 4, 4)];
+    DynDragWindow.contentView = view;
+    [DynDragWindow orderFrontRegardless];
+
+    NSMutableArray<NSDraggingItem *> *items = [NSMutableArray array];
+    for (NSURL *url in urls) {
+        NSDraggingItem *item = [[NSDraggingItem alloc] initWithPasteboardWriter:url];
+        NSImage *icon = [NSWorkspace.sharedWorkspace iconForFile:url.path];
+        [item setDraggingFrame:NSMakeRect(0, 0, 48, 48) contents:icon];
+        [items addObject:item];
+    }
+    DynAppDragSource *source = [DynAppDragSource new];
+    source.identifiers = [entries valueForKey:@"id"];
+    DynDragSource = source;
+    view.draggingItems = items;
+    view.draggingSource = source;
+    [NSApp activateIgnoringOtherApps:YES];
+    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged location:NSMakePoint(2, 2)
+        modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:DynDragWindow.windowNumber
+        context:nil eventNumber:0 clickCount:1 pressure:1.0];
+    [NSApp postEvent:event atStart:YES];
 }
 
 void dynapp_file_promise_publish(const char *json) {
@@ -227,6 +306,15 @@ void dynapp_file_promise_publish(const char *json) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSArray *entries = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
         DynPublishFileEntries(entries, [NSPasteboard generalPasteboard]);
+    });
+}
+
+void dynapp_file_promise_drag(const char *json) {
+    NSString *text = [NSString stringWithUTF8String:json ?: "[]"];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSArray *entries = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        if (![entries isKindOfClass:NSArray.class] || !entries.count || DynDragWindow) return;
+        DynStartFileDrag(entries);
     });
 }
 

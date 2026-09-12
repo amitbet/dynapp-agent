@@ -19,14 +19,17 @@ type filePromiseCommand struct {
 	Type  string                  `json:"type"`
 	Files []filePromiseDescriptor `json:"files,omitempty"`
 	ID    string                  `json:"id,omitempty"`
+	IDs   []string                `json:"ids,omitempty"`
 	Error string                  `json:"error,omitempty"`
 	Size  *int64                  `json:"size,omitempty"`
 }
 
 type filePromiseEvent struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
-	Path string `json:"path"`
+	Type      string   `json:"type"`
+	ID        string   `json:"id,omitempty"`
+	IDs       []string `json:"ids,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Operation string   `json:"operation,omitempty"`
 }
 
 type filePromiseBridge struct {
@@ -34,6 +37,7 @@ type filePromiseBridge struct {
 	command   *exec.Cmd
 	stdin     *json.Encoder
 	onRequest func(id, path string)
+	onDragEnd func(ids []string, operation string)
 }
 
 func (s *Server) ensureFilePromiseBridge() (*filePromiseBridge, error) {
@@ -68,8 +72,18 @@ func (s *Server) ensureFilePromiseBridge() (*filePromiseBridge, error) {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			var event filePromiseEvent
-			if json.Unmarshal(scanner.Bytes(), &event) == nil && event.Type == "request" && bridge.onRequest != nil {
-				bridge.onRequest(event.ID, event.Path)
+			if json.Unmarshal(scanner.Bytes(), &event) != nil {
+				continue
+			}
+			switch event.Type {
+			case "request":
+				if bridge.onRequest != nil {
+					bridge.onRequest(event.ID, event.Path)
+				}
+			case "drag-ended":
+				if bridge.onDragEnd != nil {
+					bridge.onDragEnd(event.IDs, event.Operation)
+				}
 			}
 		}
 		_ = command.Wait()
@@ -101,6 +115,10 @@ func (b *filePromiseBridge) send(command filePromiseCommand) error {
 
 func (b *filePromiseBridge) publish(files []filePromiseDescriptor) error {
 	return b.send(filePromiseCommand{Type: "publish", Files: files})
+}
+
+func (b *filePromiseBridge) drag(files []filePromiseDescriptor) error {
+	return b.send(filePromiseCommand{Type: "drag", Files: files})
 }
 
 func (b *filePromiseBridge) complete(id string, err error) error {

@@ -8,6 +8,7 @@ package desktop
 #include <stdlib.h>
 void dynapp_file_promise_run(void);
 void dynapp_file_promise_publish(const char *json);
+void dynapp_file_promise_drag(const char *json);
 void dynapp_file_promise_complete(const char *identifier, const char *errorMessage);
 void dynapp_file_promise_size(const char *identifier, long long size);
 */
@@ -40,6 +41,16 @@ func dynappGoFilePromiseRequested(identifier, path *C.char) {
 	promiseHelperOutput.Unlock()
 }
 
+//export dynappGoFilePromiseDragEnded
+func dynappGoFilePromiseDragEnded(jsonIDs, operation *C.char) {
+	var ids []string
+	_ = json.Unmarshal([]byte(C.GoString(jsonIDs)), &ids)
+	event := filePromiseEvent{Type: "drag-ended", IDs: ids, Operation: C.GoString(operation)}
+	promiseHelperOutput.Lock()
+	_ = json.NewEncoder(os.Stdout).Encode(event)
+	promiseHelperOutput.Unlock()
+}
+
 func RunFilePromiseHelper() error {
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
@@ -53,6 +64,11 @@ func RunFilePromiseHelper() error {
 				data, _ := json.Marshal(command.Files)
 				value := C.CString(string(data))
 				C.dynapp_file_promise_publish(value)
+				C.free(unsafe.Pointer(value))
+			case "drag":
+				data, _ := json.Marshal(command.Files)
+				value := C.CString(string(data))
+				C.dynapp_file_promise_drag(value)
 				C.free(unsafe.Pointer(value))
 			case "complete":
 				identifier, message := C.CString(command.ID), C.CString(command.Error)

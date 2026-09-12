@@ -6,6 +6,7 @@ static NSMutableArray *Requests;
 void dynappGoFilePromiseRequested(char *identifier, char *path) {
     [Requests addObject:@{ @"id":@(identifier), @"path":@(path) }];
 }
+void dynappGoFilePromiseDragEnded(char *identifiersJSON, char *operation) {}
 static void Check(BOOL ok, NSString *message) {
     if (!ok) { fprintf(stderr, "FAIL: %s\n", message.UTF8String); exit(1); }
 }
@@ -93,6 +94,8 @@ int main(void) { @autoreleasepool {
     [@"complete" writeToURL:url atomically:NO encoding:NSUTF8StringEncoding error:nil];
     dynapp_file_promise_complete("unknown", "");
     Until(^BOOL{return readDone;});
+    NSArray *dragURLs=DynCreateFileEntries(@[@{@"id":@"drag",@"name":@"drag.txt",@"size":@1}],NO);
+    Check(dragURLs.count==1 && !DynFiles[@"next"].retired,@"preparing a drag does not replace the clipboard offer");
     DynPublishFileEntries(@[],board);
     [board releaseGlobally];
     [DynProgressPanel orderOut:nil];
