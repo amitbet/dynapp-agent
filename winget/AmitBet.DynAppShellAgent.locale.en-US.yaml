@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 PackageIdentifier: AmitBet.DynAppShellAgent
-PackageVersion: 0.1.5
+PackageVersion: 0.1.6
 PackageLocale: en-US
 Publisher: Amit Bet
 PublisherUrl: https://github.com/amitbet
