@@ -19,6 +19,15 @@ go build -o /tmp/dynapp-shell-agent .
 node ./scripts/smoke-native-presentation.mjs /tmp/dynapp-shell-agent
 ```
 
+Native macOS file-clipboard regression tests use a private pasteboard and
+temporary files. They check deferred reads, progress, UI queue responsiveness,
+repeat pastes, failed downloads, and clipboard replacement during a copy:
+
+```sh
+clang -fobjc-arc -framework AppKit scripts/test-file-promises-darwin.m -o /tmp/test-file-promises
+/tmp/test-file-promises
+```
+
 Every push runs the Go tests. A successful push to `main` also patch-bumps
 the latest `v*` tag and publishes signed binaries for macOS, Windows, and
 Linux when the signing secrets below are set. Without them, CI stays green

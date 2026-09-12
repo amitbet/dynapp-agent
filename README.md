@@ -110,6 +110,23 @@ git tag v0.1.0 && git push origin v0.1.0
 
 ## Run
 
+### File clipboard on macOS
+
+Remote clipboard files are downloaded when Finder pastes them. The agent
+publishes local placeholder URLs and registers an `NSFilePresenter` for each
+file. Finder's coordinated background copy waits for the completed contents;
+the clipboard itself returns immediately, keeping Finder's file list responsive.
+A native progress window shows downloaded bytes and percentage, even when the
+hosted app is behind Finder. Closing that window hides it without cancelling
+the transfer. Completed files remain available for repeated pastes until the
+clipboard offer is replaced. Failed transfers remove the placeholder so Finder
+cannot copy an empty or partially downloaded file.
+
+Apps that read these URLs must use macOS file coordination to receive the
+downloaded contents. A raw filesystem read does not trigger a download.
+
+### Agent listener
+
 The agent starts a loopback HTTP/WebSocket endpoint on port 9011 for local PWA
 services, plus a certificate-pinned WebTransport listener for direct access.
 The loopback endpoint also serves health, native launcher control, and settings.

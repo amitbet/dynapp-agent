@@ -2,137 +2,231 @@
 
 extern void dynappGoFilePromiseRequested(char *identifier, char *path);
 
-// Remote files reach the Mac clipboard as ordinary file URLs whose data is
-// provided lazily. Finder, Mail, Slack and every other app enable Paste for
-// them like local files. The first reader of a URL triggers the transfer: the
-// agent streams the remote file into a private temporary folder while that
-// reader waits, then the URL is handed out and cached by the pasteboard
-// server for later pastes. Nothing is transferred until something asks.
-//
-// Finder does not accept file promises (NSFilePromiseProvider) from the
-// general pasteboard, and a global Cmd+V monitor needs Input Monitoring
-// access, so a real file URL is the only route that works without extra
-// permissions.
-@interface DynAppLazyFile : NSObject <NSPasteboardItemDataProvider>
+// Publish an existing placeholder URL immediately. Finder coordinates its
+// background copy with this presenter, which supplies the contents on demand.
+// Never wait inside a pasteboard callback: Finder reads that on its UI thread.
+@interface DynAppClipboardFile : NSObject <NSFilePresenter>
 @property(nonatomic, copy) NSString *identifier;
 @property(nonatomic, copy) NSString *fileName;
 @property(nonatomic, copy) NSString *directory;
-@property(nonatomic, copy) NSString *path;
-@property(nonatomic, strong) dispatch_semaphore_t completion;
-@property(nonatomic, copy) NSString *errorMessage;
+@property(nonatomic, copy) NSURL *presentedItemURL;
+@property(nonatomic, strong) NSOperationQueue *presentedItemOperationQueue;
+@property(nonatomic, strong) NSMutableArray *waiters;
+@property(nonatomic, copy) NSError *failure;
+@property(nonatomic) int64_t size;
 @property(nonatomic) BOOL requested;
 @property(nonatomic) BOOL finished;
+@property(nonatomic) BOOL retired;
+@property(nonatomic) NSUInteger readers;
+@property(nonatomic) NSTimeInterval startedAt;
 @end
 
-// The pasteboard server calls the data provider on the main thread and keeps
-// the reader waiting until the data is set, so the main queue cannot own any
-// state. Everything below is touched only on this serial queue.
-static dispatch_queue_t DynStateQueue(void) {
-    static dispatch_queue_t queue;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ queue = dispatch_queue_create("io.dynapp.file-promises", DISPATCH_QUEUE_SERIAL); });
-    return queue;
-}
-
-static NSMutableDictionary<NSString *, DynAppLazyFile *> *DynFiles;
-static const int64_t DynTransferTimeoutSeconds = 60 * 60;
+// State and UI belong to the main queue. Presenter callbacks enqueue work and
+// return; neither their operation queue nor the pasteboard server waits here.
+static NSMutableDictionary<NSString *, DynAppClipboardFile *> *DynFiles;
+static NSPanel *DynProgressPanel;
+static NSProgressIndicator *DynProgressBar;
+static NSTextField *DynProgressName;
+static NSTextField *DynProgressDetail;
+static NSTimer *DynProgressTimer;
+static NSString *DynLastFailure;
+static const NSTimeInterval DynTransferTimeoutSeconds = 60 * 60;
 
 static NSString *DynAppPromiseRoot(void) {
     return [NSTemporaryDirectory() stringByAppendingPathComponent:@"dynapp-file-promises"];
 }
 
-@implementation DynAppLazyFile
-- (void)pasteboard:(NSPasteboard *)pasteboard item:(NSPasteboardItem *)item provideDataForType:(NSPasteboardType)type {
-    if (![type isEqualToString:NSPasteboardTypeFileURL]) return;
-    __block BOOL start = NO;
-    dispatch_sync(DynStateQueue(), ^{
-        if (self.requested) return;
-        self.requested = YES;
-        self.completion = dispatch_semaphore_create(0);
-        // Keep the original filename; a private folder per file separates
-        // files that share a name without decorating the pasted name.
-        self.directory = [DynAppPromiseRoot() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
-        self.path = [self.directory stringByAppendingPathComponent:self.fileName];
-        NSError *error = nil;
-        if (![[NSFileManager defaultManager] createDirectoryAtPath:self.directory withIntermediateDirectories:YES attributes:nil error:&error]) {
-            self.errorMessage = error.localizedDescription ?: @"could not create the clipboard folder";
-            self.finished = YES;
+static void DynUpdateProgress(void);
+static void DynCompleteFile(DynAppClipboardFile *file, NSString *errorMessage);
+
+static void DynDiscardRetiredFile(DynAppClipboardFile *file) {
+    if (!file.retired || file.readers || file.waiters.count || (file.requested && !file.finished)) return;
+    [NSFileCoordinator removeFilePresenter:file];
+    [[NSFileManager defaultManager] removeItemAtPath:file.directory error:nil];
+    [DynFiles removeObjectForKey:file.identifier];
+}
+
+static void DynShowProgress(void) {
+    if (!DynProgressPanel) {
+        DynProgressPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 440, 132)
+            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskNonactivatingPanel
+            backing:NSBackingStoreBuffered defer:NO];
+        DynProgressPanel.title = @"Downloading clipboard files";
+        DynProgressPanel.floatingPanel = YES;
+        DynProgressPanel.hidesOnDeactivate = NO;
+        DynProgressPanel.releasedWhenClosed = NO;
+        DynProgressPanel.level = NSFloatingWindowLevel;
+        [DynProgressPanel center];
+        DynProgressName = [NSTextField labelWithString:@""];
+        DynProgressName.frame = NSMakeRect(20, 90, 400, 22);
+        DynProgressName.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        DynProgressName.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+        DynProgressBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20, 58, 400, 18)];
+        DynProgressBar.indeterminate = NO;
+        DynProgressBar.minValue = 0;
+        DynProgressBar.maxValue = 100;
+        DynProgressDetail = [NSTextField labelWithString:@""];
+        DynProgressDetail.frame = NSMakeRect(20, 20, 400, 30);
+        DynProgressDetail.font = [NSFont systemFontOfSize:12];
+        DynProgressDetail.textColor = NSColor.secondaryLabelColor;
+        [DynProgressPanel.contentView addSubview:DynProgressName];
+        [DynProgressPanel.contentView addSubview:DynProgressBar];
+        [DynProgressPanel.contentView addSubview:DynProgressDetail];
+    }
+    DynLastFailure = nil;
+    [DynProgressPanel orderFrontRegardless];
+    if (!DynProgressTimer) {
+        DynProgressTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
+            DynUpdateProgress();
+        }];
+    }
+    DynUpdateProgress();
+}
+
+@implementation DynAppClipboardFile
+- (void)prepareContents:(void (^)(NSError *))completion {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.finished) { completion(self.failure); return; }
+        if (self.retired && !self.requested) {
+            completion([NSError errorWithDomain:@"io.dynapp.clipboard" code:2
+                userInfo:@{NSLocalizedDescriptionKey:@"The clipboard file was replaced. Copy it again to retry."}]);
             return;
         }
-        start = YES;
+        [self.waiters addObject:[completion copy]];
+        if (self.requested) return;
+        self.requested = YES;
+        self.startedAt = NSDate.timeIntervalSinceReferenceDate;
+        DynShowProgress();
+        dynappGoFilePromiseRequested((char *)self.identifier.UTF8String, (char *)self.presentedItemURL.path.UTF8String);
     });
-    if (start) {
-        dynappGoFilePromiseRequested((char *)self.identifier.UTF8String, (char *)self.path.UTF8String);
-    }
-    if (self.completion && dispatch_semaphore_wait(self.completion, dispatch_time(DISPATCH_TIME_NOW, DynTransferTimeoutSeconds * NSEC_PER_SEC)) != 0) {
-        dispatch_sync(DynStateQueue(), ^{
-            if (!self.finished) { self.errorMessage = @"remote file clipboard transfer timed out"; self.finished = YES; }
+}
+
+- (void)savePresentedItemChangesWithCompletionHandler:(void (^)(NSError *))completionHandler {
+    [self prepareContents:completionHandler];
+}
+
+- (void)relinquishPresentedItemToReader:(void (^)(void (^reacquirer)(void)))reader {
+    [self prepareContents:^(NSError *error) {
+        // On failure the placeholder is removed before the reader is released,
+        // so Finder reports an error instead of copying an empty/partial file.
+        self.readers++;
+        reader(^{
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.readers--;
+                DynDiscardRetiredFile(self);
+            });
         });
-    }
-    __block NSString *path = nil;
-    dispatch_sync(DynStateQueue(), ^{ if (!self.errorMessage.length) path = self.path; });
-    if (path) [item setString:[NSURL fileURLWithPath:path].absoluteString forType:type];
+    }];
 }
 @end
 
-// Called on the state queue.
-static void DynAppDiscardFile(DynAppLazyFile *file) {
-    if (file.directory.length) [[NSFileManager defaultManager] removeItemAtPath:file.directory error:nil];
+static void DynCompleteFile(DynAppClipboardFile *file, NSString *errorMessage) {
+    if (!file || file.finished) return;
+    file.finished = YES;
+    if (errorMessage.length) {
+        file.failure = [NSError errorWithDomain:@"io.dynapp.clipboard" code:1
+            userInfo:@{NSLocalizedDescriptionKey:errorMessage}];
+        DynLastFailure = errorMessage;
+        [[NSFileManager defaultManager] removeItemAtURL:file.presentedItemURL error:nil];
+    }
+    NSArray *waiters = [file.waiters copy];
+    [file.waiters removeAllObjects];
+    for (void (^waiter)(NSError *) in waiters) waiter(file.failure);
+    DynDiscardRetiredFile(file);
+}
+
+static void DynUpdateProgress(void) {
+    NSUInteger active = 0;
+    int64_t downloaded = 0, total = 0;
+    NSString *name = nil;
+    for (DynAppClipboardFile *file in DynFiles.allValues) {
+        if (!file.requested || file.finished) continue;
+        if (NSDate.timeIntervalSinceReferenceDate - file.startedAt >= DynTransferTimeoutSeconds) {
+            DynCompleteFile(file, @"The clipboard download timed out. Copy the file again to retry.");
+            continue;
+        }
+        active++;
+        name = file.fileName;
+        total += file.size;
+        NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:file.presentedItemURL.path error:nil];
+        downloaded += MIN(file.size, [attributes[NSFileSize] longLongValue]);
+    }
+    if (!active) {
+        [DynProgressTimer invalidate];
+        DynProgressTimer = nil;
+        if (DynLastFailure.length) {
+            DynProgressName.stringValue = @"File download failed";
+            DynProgressDetail.stringValue = DynLastFailure;
+        } else {
+            [DynProgressPanel orderOut:nil];
+        }
+        return;
+    }
+    double percent = total > 0 ? 100.0 * downloaded / total : 0;
+    DynProgressName.stringValue = active == 1 ? name : [NSString stringWithFormat:@"Downloading %lu files", (unsigned long)active];
+    DynProgressBar.doubleValue = percent;
+    DynProgressDetail.stringValue = [NSString stringWithFormat:@"%@ of %@ · %.0f%%",
+        [NSByteCountFormatter stringFromByteCount:downloaded countStyle:NSByteCountFormatterCountStyleFile],
+        [NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile], percent];
 }
 
 void dynapp_file_promise_run(void) {
     @autoreleasepool {
-        // Copies left by an earlier helper belong to offers that died with it.
         [[NSFileManager defaultManager] removeItemAtPath:DynAppPromiseRoot() error:nil];
         [NSApplication sharedApplication];
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         [NSApp run];
     }
 }
 
+static void DynPublishFileEntries(NSArray *entries, NSPasteboard *pasteboard) {
+    if (!DynFiles) DynFiles = [NSMutableDictionary dictionary];
+    for (DynAppClipboardFile *file in DynFiles.allValues) {
+        file.retired = YES;
+        DynDiscardRetiredFile(file);
+    }
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    for (NSDictionary *entry in entries) {
+        NSString *identifier = entry[@"id"], *name = entry[@"name"];
+        if (![identifier isKindOfClass:NSString.class] || ![name isKindOfClass:NSString.class] || !name.length) continue;
+        DynAppClipboardFile *file = [DynAppClipboardFile new];
+        file.identifier = identifier;
+        file.fileName = name.lastPathComponent;
+        file.size = MAX(0, [entry[@"size"] longLongValue]);
+        file.directory = [DynAppPromiseRoot() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+        NSError *error = nil;
+        if (![[NSFileManager defaultManager] createDirectoryAtPath:file.directory withIntermediateDirectories:YES
+            attributes:@{NSFilePosixPermissions:@0700} error:&error]) continue;
+        file.presentedItemURL = [NSURL fileURLWithPath:[file.directory stringByAppendingPathComponent:file.fileName]];
+        if (![[NSFileManager defaultManager] createFileAtPath:file.presentedItemURL.path contents:NSData.data
+            attributes:@{NSFilePosixPermissions:@0600}]) {
+            [[NSFileManager defaultManager] removeItemAtPath:file.directory error:nil];
+            continue;
+        }
+        file.presentedItemOperationQueue = [NSOperationQueue new];
+        file.presentedItemOperationQueue.maxConcurrentOperationCount = 1;
+        file.waiters = [NSMutableArray array];
+        DynFiles[identifier] = file;
+        [NSFileCoordinator addFilePresenter:file];
+        [urls addObject:file.presentedItemURL];
+    }
+    [pasteboard clearContents];
+    if (urls.count) [pasteboard writeObjects:urls];
+}
+
 void dynapp_file_promise_publish(const char *json) {
     NSString *text = [NSString stringWithUTF8String:json ?: "[]"];
-    dispatch_async(DynStateQueue(), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
         NSArray *entries = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
-        if (!DynFiles) DynFiles = [NSMutableDictionary dictionary];
-        // Forget the previous offer and its temporary copies. A file that is
-        // still transferring keeps its entry so its completion can land.
-        for (NSString *identifier in DynFiles.allKeys) {
-            DynAppLazyFile *file = DynFiles[identifier];
-            if (file.requested && !file.finished) continue;
-            DynAppDiscardFile(file);
-            [DynFiles removeObjectForKey:identifier];
-        }
-        NSMutableArray<NSPasteboardItem *> *items = [NSMutableArray array];
-        for (NSDictionary *entry in entries) {
-            NSString *identifier = entry[@"id"], *name = entry[@"name"];
-            if (![identifier isKindOfClass:NSString.class] || ![name isKindOfClass:NSString.class] || !name.length) continue;
-            DynAppLazyFile *file = [DynAppLazyFile new];
-            file.identifier = identifier;
-            file.fileName = name;
-            NSPasteboardItem *item = [NSPasteboardItem new];
-            [item setDataProvider:file forTypes:@[NSPasteboardTypeFileURL]];
-            DynFiles[identifier] = file;
-            [items addObject:item];
-        }
-        NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-        [pasteboard clearContents];
-        if (items.count) [pasteboard writeObjects:items];
+        DynPublishFileEntries(entries, [NSPasteboard generalPasteboard]);
     });
 }
 
 void dynapp_file_promise_complete(const char *identifier, const char *errorMessage) {
     NSString *key = [NSString stringWithUTF8String:identifier ?: ""];
     NSString *message = [NSString stringWithUTF8String:errorMessage ?: ""];
-    dispatch_async(DynStateQueue(), ^{
-        DynAppLazyFile *file = DynFiles[key];
-        if (!file || file.finished) return;
-        file.finished = YES;
-        if (message.length) {
-            file.errorMessage = message;
-            DynAppDiscardFile(file);
-        }
-        // The waiting reader still needs the copy; the next offer removes it.
-        if (file.completion) dispatch_semaphore_signal(file.completion);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        DynCompleteFile(DynFiles[key], message);
+        DynUpdateProgress();
     });
 }
