@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.4"
+  version "0.1.5"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.4/dynapp-shell-agent-0.1.4-darwin-arm64"
-      sha256 "fbd533607480f6ab018326525a92955aa8364ccd92a2e8199bb4c36017d52028"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.5/dynapp-shell-agent-0.1.5-darwin-arm64"
+      sha256 "4a80617493c9bd2f2c0d5c7f255a23523cd5e6385bfaa60bc2fd4dea9ed2719a"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.4/dynapp-shell-agent-0.1.4-darwin-amd64"
-      sha256 "feb54f9e7cbbed87ea2f7633646fccd65fd863c547dd98eef1dfb854990b3dfa"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.5/dynapp-shell-agent-0.1.5-darwin-amd64"
+      sha256 "8dfaddf9662ccdbf1956c4071d5eb595928c2fa6b0ca1a729e0dd0dfa59679d2"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.4/dynapp-shell-agent-0.1.4-linux-arm64"
-      sha256 "9ddb54ea13ab3b26764fa21c663d8066c329612caad1bb2d4b2a0f4c4df7852b"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.5/dynapp-shell-agent-0.1.5-linux-arm64"
+      sha256 "5ddd065421fe3fb0c9e2fa77136d5971fb98228961b83add0b31c8c0125b9c4c"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.4/dynapp-shell-agent-0.1.4-linux-amd64"
-      sha256 "353d08c2b5838b50f1b8c68076a04c6ab8a647a53ebe27adedecfaf543cb5d55"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.5/dynapp-shell-agent-0.1.5-linux-amd64"
+      sha256 "26c45efdf9aad18e3099f06f5eb15ca6ef5accc76b6b7f7452669b7054e4ff1b"
     end
   end
 
