@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: AmitBet.DynAppShellAgent
+PackageVersion: 0.1.7
+PackageLocale: en-US
+Publisher: Amit Bet
+PublisherUrl: https://github.com/amitbet
+PublisherSupportUrl: https://github.com/amitbet/dynapp-agent/issues
+PackageName: DynApp Agent
+PackageUrl: https://github.com/amitbet/dynapp-agent
+License: All Rights Reserved
+LicenseUrl: https://github.com/amitbet/dynapp-agent
+ShortDescription: Local agent so DynApps can use files, network, and processes
+Moniker: dynapp-shell-agent
+Tags:
+  - dynapp
+  - agent
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
