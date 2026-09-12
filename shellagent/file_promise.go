@@ -20,6 +20,7 @@ type filePromiseCommand struct {
 	Files []filePromiseDescriptor `json:"files,omitempty"`
 	ID    string                  `json:"id,omitempty"`
 	Error string                  `json:"error,omitempty"`
+	Size  *int64                  `json:"size,omitempty"`
 }
 
 type filePromiseEvent struct {

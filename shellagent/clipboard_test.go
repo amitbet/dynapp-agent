@@ -134,3 +134,55 @@ func TestClipboardPromiseAcceptsBinaryChunks(t *testing.T) {
 		t.Fatalf("wrote %q", got)
 	}
 }
+
+func TestClipboardDeferredSizeAndFailure(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "complete", true: "failed"}[failed], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "file.txt")
+			file, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			server := &Server{promises: map[string]*clipboardPromise{"p": {id: "p", appID: "source", path: path, file: file, size: -1}}}
+			rpc := func(app, method string, args ...any) (any, error) {
+				return server.handleClipboardRPC(message{AppID: app, Method: method, Args: args})
+			}
+			if _, err = rpc("other", "setPromiseSize", "p", float64(5)); err == nil {
+				t.Fatal("another app changed the size")
+			}
+			for _, size := range []float64{-1, 1.5, 1 << 54} {
+				if _, err = rpc("source", "setPromiseSize", "p", size); err == nil {
+					t.Fatal("accepted invalid size", size)
+				}
+			}
+			if _, err = rpc("source", "setPromiseSize", "p", float64(5)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = rpc("source", "setPromiseSize", "p", float64(6)); err == nil {
+				t.Fatal("changed a known size")
+			}
+			if _, err = file.Write([]byte("hello")); err != nil {
+				t.Fatal(err)
+			}
+			args := []any{"p"}
+			if failed {
+				args = append(args, map[string]any{"error": "remote disconnected"})
+			}
+			_, err = rpc("source", "finishPromise", args...)
+			if failed {
+				if err == nil || !strings.Contains(err.Error(), "remote disconnected") {
+					t.Fatal(err)
+				}
+				if _, err = os.Stat(path); !os.IsNotExist(err) {
+					t.Fatal("failed partial file remains")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if len(server.promises) != 0 {
+				t.Fatal("completed promise remains active")
+			}
+		})
+	}
+}

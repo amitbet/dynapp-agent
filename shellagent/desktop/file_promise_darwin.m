@@ -137,6 +137,7 @@ static void DynCompleteFile(DynAppClipboardFile *file, NSString *errorMessage) {
 
 static void DynUpdateProgress(void) {
     NSUInteger active = 0;
+    BOOL unknownSize = NO;
     int64_t downloaded = 0, total = 0;
     NSString *name = nil;
     for (DynAppClipboardFile *file in DynFiles.allValues) {
@@ -147,9 +148,11 @@ static void DynUpdateProgress(void) {
         }
         active++;
         name = file.fileName;
-        total += file.size;
+        unknownSize |= file.size < 0;
+        total += MAX(0, file.size);
         NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:file.presentedItemURL.path error:nil];
-        downloaded += MIN(file.size, [attributes[NSFileSize] longLongValue]);
+        int64_t bytes = [attributes[NSFileSize] longLongValue];
+        downloaded += file.size < 0 ? bytes : MIN(file.size, bytes);
     }
     if (!active) {
         [DynProgressTimer invalidate];
@@ -165,7 +168,12 @@ static void DynUpdateProgress(void) {
     double percent = total > 0 ? 100.0 * downloaded / total : 0;
     DynProgressName.stringValue = active == 1 ? name : [NSString stringWithFormat:@"Downloading %lu files", (unsigned long)active];
     DynProgressBar.doubleValue = percent;
-    DynProgressDetail.stringValue = [NSString stringWithFormat:@"%@ of %@ · %.0f%%",
+    DynProgressBar.indeterminate = unknownSize;
+    if (unknownSize) [DynProgressBar startAnimation:nil];
+    else [DynProgressBar stopAnimation:nil];
+    DynProgressDetail.stringValue = unknownSize
+        ? [NSString stringWithFormat:@"%@ downloaded", [NSByteCountFormatter stringFromByteCount:downloaded countStyle:NSByteCountFormatterCountStyleFile]]
+        : [NSString stringWithFormat:@"%@ of %@ · %.0f%%",
         [NSByteCountFormatter stringFromByteCount:downloaded countStyle:NSByteCountFormatterCountStyleFile],
         [NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile], percent];
 }
@@ -192,7 +200,7 @@ static void DynPublishFileEntries(NSArray *entries, NSPasteboard *pasteboard) {
         DynAppClipboardFile *file = [DynAppClipboardFile new];
         file.identifier = identifier;
         file.fileName = name.lastPathComponent;
-        file.size = MAX(0, [entry[@"size"] longLongValue]);
+        file.size = MAX(-1, [entry[@"size"] longLongValue]);
         file.directory = [DynAppPromiseRoot() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         NSError *error = nil;
         if (![[NSFileManager defaultManager] createDirectoryAtPath:file.directory withIntermediateDirectories:YES
@@ -227,6 +235,15 @@ void dynapp_file_promise_complete(const char *identifier, const char *errorMessa
     NSString *message = [NSString stringWithUTF8String:errorMessage ?: ""];
     dispatch_async(dispatch_get_main_queue(), ^{
         DynCompleteFile(DynFiles[key], message);
+        DynUpdateProgress();
+    });
+}
+
+void dynapp_file_promise_size(const char *identifier, long long size) {
+    NSString *key = [NSString stringWithUTF8String:identifier ?: ""];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        DynAppClipboardFile *file = DynFiles[key];
+        if (file && !file.finished && size >= 0) file.size = size;
         DynUpdateProgress();
     });
 }

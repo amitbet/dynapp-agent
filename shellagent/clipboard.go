@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,8 @@ func (s *Server) handleClipboardRPCWithSocket(socket protocolSocket, request mes
 		return s.writeClipboardPromiseBinary(request, body)
 	case "promiseStatus":
 		return s.clipboardPromiseStatus(request)
+	case "setPromiseSize":
+		return s.setClipboardPromiseSize(request)
 	case "finishPromise":
 		return s.finishClipboardPromise(request)
 	case "cancelPromises":
@@ -117,6 +120,13 @@ func (s *Server) publishClipboardPromises(socket protocolSocket, request message
 		name := filepath.Base(strings.ReplaceAll(stringValue(value["name"]), "\x00", ""))
 		sourceID := stringValue(value["sourceId"])
 		size := int64(numberArg([]any{value["size"]}, 0, 0, 1<<53-1))
+		if value["sizeUnknown"] == true {
+			if runtime.GOOS != "darwin" {
+				s.promiseMu.Unlock()
+				return nil, errors.New("clipboard files with deferred sizes require macOS")
+			}
+			size = -1
+		}
 		if name == "" || name == "." || sourceID == "" {
 			s.promiseMu.Unlock()
 			return nil, errors.New("clipboard promise metadata is invalid")
@@ -293,7 +303,39 @@ func (s *Server) clipboardPromiseStatus(request message) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"bytesWritten": info.Size(), "size": promise.size, "path": promise.path}, nil
+	s.promiseMu.Lock()
+	size := promise.size
+	s.promiseMu.Unlock()
+	return map[string]any{"bytesWritten": info.Size(), "size": size, "path": promise.path}, nil
+}
+
+func (s *Server) setClipboardPromiseSize(request message) (any, error) {
+	promise, err := s.ownedPromise(request)
+	if err != nil {
+		return nil, err
+	}
+	if len(request.Args) < 2 {
+		return nil, errors.New("clipboard file size is required")
+	}
+	size, ok := request.Args[1].(float64)
+	if !ok || math.IsNaN(size) || math.IsInf(size, 0) || size < 0 || size > 1<<53-1 || math.Trunc(size) != size {
+		return nil, errors.New("clipboard file size is invalid")
+	}
+	s.promiseMu.Lock()
+	defer s.promiseMu.Unlock()
+	if s.promises[promise.id] != promise {
+		return nil, errors.New("clipboard promise is not active")
+	}
+	if promise.size >= 0 && promise.size != int64(size) {
+		return nil, errors.New("clipboard file size is already set")
+	}
+	promise.size = int64(size)
+	if s.promiseBridge != nil && runtime.GOOS == "darwin" {
+		if err = s.promiseBridge.send(filePromiseCommand{Type: "size", ID: promise.id, Size: &promise.size}); err != nil {
+			return nil, err
+		}
+	}
+	return map[string]any{"size": promise.size}, nil
 }
 
 func (s *Server) finishClipboardPromise(request message) (any, error) {
@@ -301,17 +343,28 @@ func (s *Server) finishClipboardPromise(request message) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = promise.file.Sync(); err == nil {
-		err = promise.file.Close()
+	s.promiseMu.Lock()
+	if s.promises[promise.id] != promise {
+		s.promiseMu.Unlock()
+		return nil, errors.New("clipboard promise is not active")
+	}
+	size := promise.size
+	err = errors.Join(promise.file.Sync(), promise.file.Close())
+	if len(request.Args) > 1 {
+		if options, ok := request.Args[1].(map[string]any); ok && stringValue(options["error"]) != "" {
+			err = errors.New(stringValue(options["error"]))
+		}
 	}
 	if err == nil {
 		var info os.FileInfo
 		info, err = os.Stat(promise.path)
-		if err == nil && info.Size() != promise.size {
+		if err == nil && info.Size() != size {
 			err = errors.New("clipboard promise size does not match")
 		}
 	}
-	s.promiseMu.Lock()
+	if err != nil {
+		_ = os.Remove(promise.path)
+	}
 	destinationSocket := promise.destinationSocket
 	destinationAppID := promise.destinationAppID
 	bridge := s.promiseBridge
@@ -323,14 +376,14 @@ func (s *Server) finishClipboardPromise(request message) (any, error) {
 	}
 	if destinationSocket != nil {
 		send(destinationSocket, context.Background(), map[string]any{"type": "rpc-event", "service": "clipboard", "event": map[string]any{
-			"type": "file-promise-complete", "promiseId": promise.id, "path": path, "name": promise.name, "size": promise.size, "appId": destinationAppID,
+			"type": "file-promise-complete", "promiseId": promise.id, "path": path, "name": promise.name, "size": size, "appId": destinationAppID,
 			"error": errorString(err),
 		}})
 	}
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"path": path, "size": promise.size}, nil
+	return map[string]any{"path": path, "size": size}, nil
 }
 
 func errorString(err error) string {

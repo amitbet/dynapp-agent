@@ -127,6 +127,13 @@ the transfer. Completed files remain available for repeated pastes until the
 clipboard offer is replaced. Failed transfers remove the placeholder so Finder
 cannot copy an empty or partially downloaded file.
 
+Apps may publish macOS promises with `sizeUnknown: true`, then call
+`clipboard.setPromiseSize` with the active promise ID and exact byte count
+before finishing. The progress window stays indeterminate until that metadata
+arrives. `clipboard.finishPromise` accepts an optional `{error: "message"}`
+argument to fail a transfer and remove its partial file. Known-size promises
+keep their existing behavior on all platforms.
+
 Apps that read these URLs must use macOS file coordination to receive the
 downloaded contents. A raw filesystem read does not trigger a download.
 

@@ -9,6 +9,7 @@ package desktop
 void dynapp_file_promise_run(void);
 void dynapp_file_promise_publish(const char *json);
 void dynapp_file_promise_complete(const char *identifier, const char *errorMessage);
+void dynapp_file_promise_size(const char *identifier, long long size);
 */
 import "C"
 
@@ -58,6 +59,12 @@ func RunFilePromiseHelper() error {
 				C.dynapp_file_promise_complete(identifier, message)
 				C.free(unsafe.Pointer(identifier))
 				C.free(unsafe.Pointer(message))
+			case "size":
+				if command.Size != nil {
+					identifier := C.CString(command.ID)
+					C.dynapp_file_promise_size(identifier, C.longlong(*command.Size))
+					C.free(unsafe.Pointer(identifier))
+				}
 			}
 		}
 		os.Exit(0)
