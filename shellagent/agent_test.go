@@ -404,18 +404,23 @@ func TestStreamingProcessCanIgnoreStdin(t *testing.T) {
 	if started["type"] != "exec-start" || started["processId"] == nil {
 		t.Fatalf("start = %#v", started)
 	}
-	seenEOF := false
+	var stdout string
 	for {
 		event := receive(t, ctx, connection)
-		if event["type"] == "exec-output" && event["data"] == "eof" {
-			seenEOF = true
+		if event["type"] == "exec-output" && event["stream"] != "stderr" {
+			if data, ok := event["data"].(string); ok {
+				stdout += data
+			}
 		}
 		if event["type"] == "exec-exit" {
 			break
 		}
+		if event["type"] == "exec-error" {
+			t.Fatalf("exec-error = %#v", event)
+		}
 	}
-	if !seenEOF {
-		t.Fatal("ignored stdin was not connected to EOF")
+	if stdout != "eof" {
+		t.Fatalf("ignored stdin was not connected to EOF: %q", stdout)
 	}
 }
 

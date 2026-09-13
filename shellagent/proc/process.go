@@ -258,8 +258,10 @@ func (p *Set) Start(request Request, args []string) {
 	go func() {
 		defer cancel()
 		defer closeTerminal()
-		err := wait()
+		// Drain pipes before Wait. os/exec closes StdoutPipe/StderrPipe in
+		// Wait, which can drop the last bytes if the child already exited.
 		outputWG.Wait()
+		err := wait()
 		code := 0
 		if err != nil {
 			if exit, ok := err.(*exec.ExitError); ok {
