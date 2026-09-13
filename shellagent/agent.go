@@ -567,7 +567,7 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 				rpcError(connection, ctx, request, errors.New(permissionDeniedError(required)))
 				continue
 			}
-			if request.Service == "tray" || request.Service == "globalShortcut" || request.Service == "screen" {
+			if request.Service == "tray" || request.Service == "globalShortcut" || request.Service == "screen" || request.Service == "dropTarget" {
 				if presentation == nil {
 					presentation, err = s.startPresentation(connection, ctx)
 				}
@@ -723,6 +723,8 @@ func rpcCapability(request message) string {
 		return "clipboard.write"
 	case "drag":
 		return "drag.files"
+	case "dropTarget":
+		return "drop.files"
 	case "externalOpen":
 		return "externalOpen.files"
 	case "apps":
@@ -749,6 +751,9 @@ func capabilities() []string {
 	}
 	if presentationSupported() {
 		result = append(result, "tray.manage", "globalShortcut")
+		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+			result = append(result, "drop.files")
+		}
 	}
 	if screenCaptureSupported() {
 		result = append(result, "screen.capture")

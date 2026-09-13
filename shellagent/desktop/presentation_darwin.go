@@ -11,6 +11,8 @@ void dynapp_presentation_destroy(void);
 void dynapp_presentation_stop(void);
 int dynapp_presentation_register(unsigned int id, unsigned int key, unsigned int modifiers);
 void dynapp_presentation_unregister(unsigned int id);
+int dynapp_presentation_drop_arm(const char *json);
+void dynapp_presentation_drop_hide(void);
 */
 import "C"
 import (
@@ -84,6 +86,16 @@ func (macPresentation) register(id uint32, key presentationKey) bool {
 	return C.dynapp_presentation_register(C.uint(id), C.uint(code), C.uint(key.Modifiers)) != 0
 }
 func (macPresentation) unregister(id uint32) { C.dynapp_presentation_unregister(C.uint(id)) }
+func (macPresentation) armDrop(bounds dropTargetBounds) error {
+	data, _ := json.Marshal(bounds)
+	value := C.CString(string(data))
+	defer C.free(unsafe.Pointer(value))
+	if C.dynapp_presentation_drop_arm(value) == 0 {
+		return errors.New("could not arm macOS drop target")
+	}
+	return nil
+}
+func (macPresentation) hideDrop() { C.dynapp_presentation_drop_hide() }
 func runNativePresentation(commands <-chan presentationCommand, emit func(presentationReply)) error {
 	controller := &presentationController{native: macPresentation{}, platform: "darwin"}
 	go func() {
@@ -111,6 +123,11 @@ func runNativePresentation(commands <-chan presentationCommand, emit func(presen
 					reply.Event = controller.menuClick(event.value)
 				case "click":
 					reply.Event = map[string]any{"kind": event.value}
+				case "drop-enter", "drop-leave", "drop":
+					reply.Service = "dropTarget"
+					if json.Unmarshal([]byte(event.value), &reply.Event) != nil {
+						reply.Event = nil
+					}
 				}
 				if reply.Event != nil {
 					emit(reply)

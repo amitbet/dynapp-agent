@@ -94,6 +94,11 @@ type windowsPresentation struct {
 	controller     *presentationController
 	emit           func(presentationReply)
 	restartMessage uint32
+	dropWindow     uintptr
+	dropTarget     *windowsDropTarget
+	dropID         string
+	dropAllowed    bool
+	dropDeadline   time.Time
 }
 
 func (w *windowsPresentation) notify(operation uintptr) bool {
@@ -201,6 +206,10 @@ func runNativePresentation(commands <-chan presentationCommand, emit func(presen
 		dpi.Call(^uintptr(3))
 	}
 	w := &windowsPresentation{emit: emit}
+	if err := w.initializeDropTarget(); err != nil {
+		return err
+	}
+	defer w.destroyDropTarget()
 	controller := &presentationController{native: w, platform: "windows"}
 	w.controller = controller
 	w.restartMessage = uint32(uiCall("RegisterWindowMessageW", uintptr(unsafe.Pointer(uiString("TaskbarCreated")))))
@@ -275,6 +284,9 @@ func runNativePresentation(commands <-chan presentationCommand, emit func(presen
 			}
 			emit(reply)
 		case <-ticker.C:
+			if !w.dropDeadline.IsZero() && time.Now().After(w.dropDeadline) {
+				w.hideDrop()
+			}
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 type fakePresentation struct {
 	registered map[uint32]presentationKey
 	tray       *trayOptions
+	drop       *dropTargetBounds
 	reject     bool
 }
 
@@ -25,7 +26,9 @@ func (f *fakePresentation) register(id uint32, key presentationKey) bool {
 	f.registered[id] = key
 	return true
 }
-func (f *fakePresentation) unregister(id uint32) { delete(f.registered, id) }
+func (f *fakePresentation) unregister(id uint32)                  { delete(f.registered, id) }
+func (f *fakePresentation) armDrop(bounds dropTargetBounds) error { f.drop = &bounds; return nil }
+func (f *fakePresentation) hideDrop()                             { f.drop = nil }
 
 func TestPresentationShortcutParsing(t *testing.T) {
 	for _, entry := range []struct {
@@ -125,5 +128,28 @@ func TestPresentationTrayValidationAndUpdates(t *testing.T) {
 	p.close()
 	if native.tray != nil {
 		t.Fatal("close leaked tray")
+	}
+}
+
+func TestPresentationDropTargetLifecycleAndValidation(t *testing.T) {
+	native := &fakePresentation{}
+	p := &presentationController{native: native, platform: "windows"}
+	valid := map[string]any{"id": "videos", "x": -200, "y": 40, "width": 640, "height": 360, "scale": 1.5}
+	if result, err := p.handle(presentationCommand{Service: "dropTarget", Method: "arm", Args: []any{valid}}); err != nil || result != true {
+		t.Fatalf("arm = %v, %v", result, err)
+	}
+	if native.drop == nil || native.drop.ID != "videos" || native.drop.Scale != 1.5 {
+		t.Fatalf("native bounds = %#v", native.drop)
+	}
+	if _, err := p.handle(presentationCommand{Service: "dropTarget", Method: "arm", Args: []any{map[string]any{"id": "bad", "width": 0, "height": 10, "scale": 1}}}); err == nil {
+		t.Fatal("invalid bounds were accepted")
+	}
+	if _, err := p.handle(presentationCommand{Service: "dropTarget", Method: "disarm"}); err != nil || native.drop != nil {
+		t.Fatalf("disarm left target: %#v, %v", native.drop, err)
+	}
+	p.handle(presentationCommand{Service: "dropTarget", Method: "arm", Args: []any{valid}})
+	p.close()
+	if native.drop != nil {
+		t.Fatal("close leaked drop target")
 	}
 }

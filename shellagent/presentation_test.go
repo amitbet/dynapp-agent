@@ -48,7 +48,7 @@ func TestPresentationPermissionsAreRequiredBeforeHelperLaunch(t *testing.T) {
 	defer cancel()
 	connection, _ := dialTestAgent(t, ctx, server, testDialOptions{Declared: []string{"fs.readText"}})
 	defer connection.Close(websocket.StatusNormalClosure, "")
-	for _, entry := range []struct{ service, permission string }{{"tray", "tray.manage"}, {"globalShortcut", "globalShortcut"}, {"screen", "screen.capture"}} {
+	for _, entry := range []struct{ service, permission string }{{"tray", "tray.manage"}, {"globalShortcut", "globalShortcut"}, {"screen", "screen.capture"}, {"dropTarget", "drop.files"}} {
 		sendRequest(t, ctx, connection, map[string]any{"type": "rpc", "id": entry.service, "service": entry.service, "method": "destroy"})
 		reply := receive(t, ctx, connection)
 		if reply["type"] != "rpc-error" || !strings.Contains(reply["error"].(string), entry.permission) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -24,6 +25,31 @@ type trayOptions struct {
 type presentationKey struct {
 	Code      uint32
 	Modifiers uint32
+}
+
+type dropTargetBounds struct {
+	ID     string  `json:"id"`
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+	Scale  float64 `json:"scale"`
+}
+
+func validateDropTargetBounds(bounds dropTargetBounds) error {
+	if bounds.ID == "" || len(bounds.ID) > 128 {
+		return errors.New("drop target id is invalid")
+	}
+	values := []float64{bounds.X, bounds.Y, bounds.Width, bounds.Height, bounds.Scale}
+	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return errors.New("drop target bounds are invalid")
+		}
+	}
+	if bounds.Width < 1 || bounds.Height < 1 || bounds.Width > 100000 || bounds.Height > 100000 || bounds.Scale < 0.25 || bounds.Scale > 8 {
+		return errors.New("drop target bounds are invalid")
+	}
+	return nil
 }
 
 // Modifiers use Win32 values, translated to Carbon flags by the macOS adapter.
@@ -128,6 +154,8 @@ type presentationNative interface {
 	balloon(string, string) bool
 	register(uint32, presentationKey) bool
 	unregister(uint32)
+	armDrop(dropTargetBounds) error
+	hideDrop()
 }
 type presentationController struct {
 	native    presentationNative
@@ -139,12 +167,34 @@ type presentationController struct {
 }
 
 func (p *presentationController) close() {
+	p.native.hideDrop()
 	p.native.destroyTray()
 	for _, id := range p.shortcuts {
 		p.native.unregister(id)
 	}
 }
 func (p *presentationController) handle(command presentationCommand) (any, error) {
+	if command.Service == "dropTarget" {
+		switch command.Method {
+		case "arm":
+			var bounds dropTargetBounds
+			if err := decodePresentationArg(command.Args, &bounds); err != nil {
+				return nil, err
+			}
+			if err := validateDropTargetBounds(bounds); err != nil {
+				return nil, err
+			}
+			if err := p.native.armDrop(bounds); err != nil {
+				return nil, err
+			}
+			return true, nil
+		case "disarm":
+			p.native.hideDrop()
+			return true, nil
+		default:
+			return nil, errors.New("unsupported drop-target method")
+		}
+	}
 	if command.Service == "screen" {
 		native, ok := p.native.(screenCaptureNative)
 		if !ok {

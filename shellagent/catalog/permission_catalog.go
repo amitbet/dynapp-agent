@@ -111,7 +111,7 @@ var highPermissionPrefixes = []string{
 
 var mediumPermissionPrefixes = []string{
 	"fs.", "file.", "externalOpen.", "sessions.", "workspaces.", "remoteEnv.", "search.", "clipboard.",
-	"calendar.", "system.ports.", "net.", "web.", "drag.", "dialog.open", "dialog.pick",
+	"calendar.", "system.ports.", "net.", "web.", "drag.", "drop.", "dialog.open", "dialog.pick",
 }
 
 var dangerRank = map[string]int{"low": 0, "medium": 1, "high": 2, "very-high": 3}

@@ -6,6 +6,61 @@
 extern void dynappGoPresentationEvent(char *, char *, unsigned int);
 static NSStatusItem *statusItem;
 static NSMutableDictionary<NSNumber *, NSValue *> *hotkeys;
+static NSPanel *dropPanel;
+static NSString *dropTargetID;
+static NSTimer *dropLeaseTimer;
+static NSTimeInterval dropLeaseDeadline;
+
+static void emitDropEvent(NSString *kind, NSDictionary *event) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:event options:0 error:nil];
+    NSString *json = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"{}";
+    dynappGoPresentationEvent((char *)kind.UTF8String, (char *)json.UTF8String, 0);
+}
+
+static void hideDropPanel(void) {
+    [dropPanel orderOut:nil];
+    dropTargetID = nil;
+    [dropLeaseTimer invalidate];
+    dropLeaseTimer = nil;
+}
+
+@interface DynappDropView : NSView <NSDraggingDestination>
+@end
+
+@implementation DynappDropView
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    if (!dropTargetID.length) return NSDragOperationNone;
+    NSArray *urls = [[sender draggingPasteboard] readObjectsForClasses:@[NSURL.class]
+        options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}] ?: @[];
+    if (!urls.count) return NSDragOperationNone;
+    dropLeaseDeadline = NSDate.timeIntervalSinceReferenceDate + 1.0;
+    emitDropEvent(@"drop-enter", @{ @"type": @"entered", @"targetId": dropTargetID, @"count": @(MIN(urls.count, 128)) });
+    return NSDragOperationCopy;
+}
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+    if (!dropTargetID.length) return NSDragOperationNone;
+    dropLeaseDeadline = NSDate.timeIntervalSinceReferenceDate + 1.0;
+    return NSDragOperationCopy;
+}
+- (void)draggingExited:(id<NSDraggingInfo>)sender {
+    if (dropTargetID.length) emitDropEvent(@"drop-leave", @{ @"type": @"left", @"targetId": dropTargetID });
+    hideDropPanel();
+}
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender { return dropTargetID.length > 0; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    NSString *target = dropTargetID ?: @"";
+    NSArray *urls = [[sender draggingPasteboard] readObjectsForClasses:@[NSURL.class]
+        options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}] ?: @[];
+    NSMutableArray *paths = [NSMutableArray array];
+    for (NSURL *url in urls) {
+        if (paths.count >= 128) break;
+        if (url.isFileURL && url.path.length) [paths addObject:url.path];
+    }
+    if (target.length && paths.count) emitDropEvent(@"drop", @{ @"type": @"dropped", @"targetId": target, @"paths": paths });
+    hideDropPanel();
+    return paths.count > 0;
+}
+@end
 
 @interface DynappPresentation : NSObject <NSMenuDelegate>
 @end
@@ -66,6 +121,49 @@ void dynapp_presentation_run(void) {
         InstallApplicationEventHandler(&hotkeyPressed, 1, &type, NULL, NULL);
         [NSApp run];
     }
+}
+
+int dynapp_presentation_drop_arm(const char *json) {
+    NSData *data = [[NSString stringWithUTF8String:json ?: "{}"] dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *bounds = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![bounds isKindOfClass:NSDictionary.class]) return 0;
+    __block int ok = 0;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        CGFloat width = [bounds[@"width"] doubleValue], height = [bounds[@"height"] doubleValue];
+        NSString *identifier = bounds[@"id"];
+        if (![identifier isKindOfClass:NSString.class] || !identifier.length || width < 1 || height < 1) return;
+        if (!dropPanel) {
+            dropPanel = [[NSPanel alloc] initWithContentRect:NSZeroRect
+                styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+                backing:NSBackingStoreBuffered defer:NO];
+            dropPanel.opaque = NO;
+            dropPanel.backgroundColor = [NSColor colorWithSRGBRed:0.10 green:0.48 blue:0.85 alpha:0.18];
+            dropPanel.hasShadow = NO;
+            dropPanel.level = NSFloatingWindowLevel;
+            dropPanel.hidesOnDeactivate = NO;
+            dropPanel.collectionBehavior = NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorMoveToActiveSpace;
+            DynappDropView *view = [[DynappDropView alloc] initWithFrame:NSZeroRect];
+            [view registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+            dropPanel.contentView = view;
+        }
+        CGFloat desktopTop = NSMaxY(NSScreen.screens.firstObject.frame);
+        NSRect frame = NSMakeRect([bounds[@"x"] doubleValue],
+            desktopTop - [bounds[@"y"] doubleValue] - height, width, height);
+        dropTargetID = [identifier copy];
+        dropLeaseDeadline = NSDate.timeIntervalSinceReferenceDate + 1.0;
+        [dropPanel setFrame:frame display:YES];
+        [dropPanel orderFrontRegardless];
+        [dropLeaseTimer invalidate];
+        dropLeaseTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
+            if (dropTargetID.length && NSDate.timeIntervalSinceReferenceDate >= dropLeaseDeadline) hideDropPanel();
+        }];
+        ok = 1;
+    });
+    return ok;
+}
+
+void dynapp_presentation_drop_hide(void) {
+    dispatch_sync(dispatch_get_main_queue(), ^{ hideDropPanel(); });
 }
 
 int dynapp_presentation_tray(const char *json) {

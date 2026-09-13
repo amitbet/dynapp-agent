@@ -81,7 +81,7 @@ and network details:
 | `shellagent/catalog` | Permission catalog |
 | `shellagent/netfiles` | FTP/SFTP |
 | `shellagent/assoc` | File associations and hosted-app open |
-| `shellagent/desktop` | Tray, hotkeys, screen capture, file-promise, Chromium PWA |
+| `shellagent/desktop` | Tray, hotkeys, screen capture, native drop targets, file-promise, Chromium PWA |
 | `shellagent/apphost` | Node runtime, source snapshots, runnable zips |
 | `internal/agentutil` | Shared argument and path helpers |
 
@@ -229,6 +229,14 @@ disconnect, permission revocation, shutdown, and parent failure close the
 channel and remove native resources. Apps re-register after reconnecting.
 Multiple app windows have separate helpers, matching the Electron contract;
 the OS rejects conflicting exclusive hotkeys.
+
+Apps declaring `drop.files` can register a DOM-aligned native drop target
+through the PWA Shell. The helper accepts `dropTarget.arm` bounds for a
+short-lived, non-activating overlay and emits exact paths from AppKit file URLs
+on macOS or `CF_HDROP` on Windows. It hides on drop, drag exit, disarm, lease
+expiry, or app disconnect. The target is local-only because browser screen
+coordinates do not map to a remote desktop. Linux builds do not advertise the
+capability.
 
 Menus support normal items, separators, checkboxes, radio groups, and nested
 submenus. Menus are limited to 128 items and five submenu levels. Icons use
