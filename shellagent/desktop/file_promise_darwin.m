@@ -236,11 +236,6 @@ static void DynPublishFileEntries(NSArray *entries, NSPasteboard *pasteboard) {
 @property(nonatomic, copy) NSArray<NSString *> *identifiers;
 @end
 
-@interface DynAppDragView : NSView
-@property(nonatomic, copy) NSArray<NSDraggingItem *> *draggingItems;
-@property(nonatomic, strong) DynAppDragSource *draggingSource;
-@end
-
 @implementation DynAppDragSource
 - (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
     return NSDragOperationCopy;
@@ -258,29 +253,23 @@ static void DynPublishFileEntries(NSArray *entries, NSPasteboard *pasteboard) {
 }
 @end
 
-
-@implementation DynAppDragView
-- (void)mouseDragged:(NSEvent *)event {
-    if (!self.draggingItems.count || !self.draggingSource) return;
-    NSArray *items = self.draggingItems;
-    DynAppDragSource *source = self.draggingSource;
-    self.draggingItems = nil;
-    [self beginDraggingSessionWithItems:items event:event source:source];
-}
-@end
-
 static void DynStartFileDrag(NSArray *entries) {
     NSArray<NSURL *> *urls = DynCreateFileEntries(entries, NO);
     if (!urls.count) return;
     NSPoint pointer = NSEvent.mouseLocation;
-    DynDragWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(pointer.x - 2, pointer.y - 2, 4, 4)
-        styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
-    DynDragWindow.opaque = NO;
-    DynDragWindow.backgroundColor = NSColor.clearColor;
-    DynDragWindow.level = NSStatusWindowLevel;
-    DynAppDragView *view = [[DynAppDragView alloc] initWithFrame:NSMakeRect(0, 0, 4, 4)];
-    DynDragWindow.contentView = view;
-    [DynDragWindow orderFrontRegardless];
+    NSPanel *panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(pointer.x - 24, pointer.y - 24, 48, 48)
+        styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        backing:NSBackingStoreBuffered defer:NO];
+    panel.opaque = NO;
+    panel.backgroundColor = NSColor.clearColor;
+    panel.level = NSStatusWindowLevel;
+    panel.hidesOnDeactivate = NO;
+    panel.floatingPanel = YES;
+    panel.becomesKeyOnlyIfNeeded = YES;
+    DynDragWindow = panel;
+    NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 48, 48)];
+    panel.contentView = view;
+    [panel orderFrontRegardless];
 
     NSMutableArray<NSDraggingItem *> *items = [NSMutableArray array];
     for (NSURL *url in urls) {
@@ -292,13 +281,11 @@ static void DynStartFileDrag(NSArray *entries) {
     DynAppDragSource *source = [DynAppDragSource new];
     source.identifiers = [entries valueForKey:@"id"];
     DynDragSource = source;
-    view.draggingItems = items;
-    view.draggingSource = source;
-    [NSApp activateIgnoringOtherApps:YES];
-    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged location:NSMakePoint(2, 2)
-        modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:DynDragWindow.windowNumber
+    NSPoint location = [panel convertPointFromScreen:pointer];
+    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged location:location
+        modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:panel.windowNumber
         context:nil eventNumber:0 clickCount:1 pressure:1.0];
-    [NSApp postEvent:event atStart:YES];
+    [view beginDraggingSessionWithItems:items event:event source:source];
 }
 
 void dynapp_file_promise_publish(const char *json) {
