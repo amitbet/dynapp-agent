@@ -110,6 +110,134 @@ func TestFileSearchLiveExactLookupDoesNotRequireAnIndex(t *testing.T) {
 	}
 }
 
+func TestFileSearchLiveExactLookupReturnsMatchingDirectory(t *testing.T) {
+	root := t.TempDir()
+	server := &Server{StateDir: t.TempDir()}
+	name := "dynapp-live-search-season-folder"
+	path := filepath.Join(root, name)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.saveSearchConfig(searchConfig{Roots: []string{root}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := server.handleFileSearchRPC(context.Background(), message{
+		Method: "search",
+		Args: []any{"file:dynapp-live-search-season-folder", map[string]any{
+			"exactName": name,
+			"live":      true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := result.(map[string]any)
+	results := payload["results"].([]searchEntry)
+	if payload["liveSearched"] != true || len(results) != 1 || results[0].Path != path || !results[0].IsDir {
+		t.Fatalf("live directory search = %#v", payload)
+	}
+}
+
+func TestFileSearchLiveExactLookupSkipsJunkDirectories(t *testing.T) {
+	root := t.TempDir()
+	server := &Server{StateDir: t.TempDir()}
+	hidden := filepath.Join(root, "node_modules", "hidden-dropped-video.mkv")
+	found := filepath.Join(root, "videos", "visible-dropped-video.mkv")
+	if err := os.MkdirAll(filepath.Dir(hidden), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(found), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hidden, []byte("hidden"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(found, []byte("video"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.saveSearchConfig(searchConfig{Roots: []string{root}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := server.handleFileSearchRPC(context.Background(), message{
+		Method: "search",
+		Args: []any{"file:visible-dropped-video.mkv", map[string]any{
+			"exactName": "visible-dropped-video.mkv",
+			"live":      true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := result.(map[string]any)
+	results := payload["results"].([]searchEntry)
+	if len(results) != 1 || results[0].Path != found {
+		t.Fatalf("live search skipped past the video: %#v", payload)
+	}
+	hiddenResult, err := server.handleFileSearchRPC(context.Background(), message{
+		Method: "search",
+		Args: []any{"file:hidden-dropped-video.mkv", map[string]any{
+			"exactName": "hidden-dropped-video.mkv",
+			"live":      true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hiddenPayload := hiddenResult.(map[string]any)
+	if len(hiddenPayload["results"].([]searchEntry)) != 0 {
+		t.Fatalf("live search entered node_modules: %#v", hiddenPayload)
+	}
+}
+
+func TestFileSearchExactDirectoryUsesIndexWithoutLiveWalk(t *testing.T) {
+	root := t.TempDir()
+	server := &Server{StateDir: t.TempDir()}
+	name := "Season 2"
+	path := filepath.Join(root, name)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.handleFileSearchRPC(context.Background(), message{Method: "rebuild", Args: []any{map[string]any{"roots": []any{root}}}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := server.handleFileSearchRPC(context.Background(), message{
+		Method: "search",
+		Args: []any{"file:Season 2", map[string]any{
+			"exactName": name,
+			"live":      true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := result.(map[string]any)
+	results := payload["results"].([]searchEntry)
+	if payload["liveSearched"] == true {
+		t.Fatalf("indexed directory still triggered a live walk: %#v", payload)
+	}
+	found := false
+	for _, entry := range results {
+		if entry.Path == path && entry.IsDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("indexed directory missing from search: %#v", payload)
+	}
+}
+
+func TestLiveSearchSkipDirRecognizesSystemTrees(t *testing.T) {
+	if !liveSearchSkipDirName("node_modules") || liveSearchSkipDirName("Season 2") {
+		t.Fatal("junk directory names were classified incorrectly")
+	}
+	if runtime.GOOS != "windows" {
+		if !liveSearchSkipDir("/System", "System") || liveSearchSkipDir("/Volumes", "Volumes") {
+			t.Fatal("unix system directory skip list was classified incorrectly")
+		}
+	}
+}
+
 func TestWindowsFileSearchDefaultsUseEveryMountedDrive(t *testing.T) {
 	roots := defaultFileSearchRootsFrom("windows", `C:\Users\Amit`, []map[string]string{
 		{"path": `C:\Users\Amit`, "label": "~"},

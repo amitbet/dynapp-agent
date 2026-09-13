@@ -272,12 +272,65 @@ func appendUniqueSearchRoot(roots []string, seen map[string]bool, value string) 
 	return append(roots, path)
 }
 
+func liveVolumeRoots() []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if runtime.GOOS == "darwin" {
+		return []string{"/Volumes"}
+	}
+	return []string{"/mnt", "/media", "/run/media"}
+}
+
+func liveSearchSkipDirName(name string) bool {
+	switch name {
+	case "node_modules", ".git", ".hg", ".svn", ".cache", ".npm", ".yarn", ".pnpm-store",
+		".Trash", "$Recycle.Bin", "$RECYCLE.BIN", "System Volume Information",
+		"Caches", "DerivedData", "__pycache__":
+		return true
+	default:
+		return false
+	}
+}
+
+func liveSearchSkipDir(path, name string) bool {
+	if liveSearchSkipDirName(name) {
+		return true
+	}
+	clean := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		switch strings.ToLower(name) {
+		case "windows", "program files", "program files (x86)", "programdata":
+			parent := filepath.Dir(clean)
+			if len(parent) <= 3 {
+				return true
+			}
+		}
+		return false
+	}
+	if strings.EqualFold(clean, filepath.Join(userHome(), "Library")) {
+		return true
+	}
+	switch clean {
+	case "/System", "/Library", "/private", "/dev", "/usr", "/bin", "/sbin",
+		"/opt", "/cores", "/Network", "/proc", "/var", "/Applications", "/lost+found":
+		return true
+	default:
+		return false
+	}
+}
+
 func liveFileSearchRoots(config searchConfig) []string {
 	seen := map[string]bool{}
 	roots := []string{}
 	home := userHome()
 	for _, name := range []string{"Downloads", "Videos", "Desktop", "Documents", "Movies"} {
 		roots = appendUniqueSearchRoot(roots, seen, filepath.Join(home, name))
+	}
+	// External disks and network volumes are where media often lives, and they
+	// must be queued before a whole-disk root such as `/` or `C:\`.
+	for _, root := range liveVolumeRoots() {
+		roots = appendUniqueSearchRoot(roots, seen, root)
 	}
 	for _, root := range config.Roots {
 		roots = appendUniqueSearchRoot(roots, seen, root)
@@ -327,7 +380,7 @@ func liveExactFileSearch(ctx context.Context, config searchConfig, name string, 
 			if runtime.GOOS == "windows" {
 				key = strings.ToLower(key)
 			}
-			if visited[key] {
+			if visited[key] || liveSearchSkipDir(directory, filepath.Base(directory)) {
 				continue
 			}
 			visited[key] = true
@@ -356,19 +409,25 @@ func liveExactFileSearch(ctx context.Context, config searchConfig, name string, 
 						continue
 					}
 					if entry.IsDir() {
-						queue = append(queue, path)
-						continue
-					}
-					if !strings.EqualFold(entry.Name(), name) {
+						if !liveSearchSkipDir(path, entry.Name()) {
+							queue = append(queue, path)
+						}
+						if !strings.EqualFold(entry.Name(), name) {
+							continue
+						}
+					} else if !strings.EqualFold(entry.Name(), name) {
 						continue
 					}
 					info, err := entry.Info()
-					if err != nil || !info.Mode().IsRegular() {
+					if err != nil {
+						continue
+					}
+					if !entry.IsDir() && !info.Mode().IsRegular() {
 						continue
 					}
 					results = append(results, searchEntry{
 						Path: path, Name: entry.Name(), Ext: strings.TrimPrefix(strings.ToLower(filepath.Ext(entry.Name())), "."),
-						Size: info.Size(), MtimeMs: info.ModTime().UnixMilli(),
+						IsDir: entry.IsDir(), Size: info.Size(), MtimeMs: info.ModTime().UnixMilli(),
 					})
 					if len(results) >= limit {
 						break
@@ -442,7 +501,7 @@ func (s *Server) querySearch(ctx context.Context, config searchConfig, query str
 	if live && validExactFileName(exactName) {
 		hasExact := false
 		for _, result := range results {
-			if !result.IsDir && strings.EqualFold(result.Name, exactName) {
+			if strings.EqualFold(result.Name, exactName) {
 				hasExact = true
 				break
 			}
