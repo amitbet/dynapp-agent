@@ -351,8 +351,7 @@ func (s *Server) ensureHostedRegistration(ctx context.Context, enabled bool, nam
 		return err
 	}
 	s.startIdentitySync()
-	if enabled {
-		s.startRelay()
-	}
+	// Enabling relay only permits it. The socket opens when a browser asks,
+	// which the identity sync reports within one poll.
 	return nil
 }

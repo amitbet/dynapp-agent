@@ -341,3 +341,80 @@ func TestICECandidateTricklerPostsGrowingNullTerminatedLists(t *testing.T) {
 }
 
 func boolPointer(value bool) *bool { return &value }
+
+// The relay must cost nothing until a browser cannot reach this machine
+// directly, and an expiring request must not cut a session that is in use.
+func TestRelayOpensOnRequestAndClosesWhenNobodyIsAsking(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/api/v1/remote-environments/env_test/ticket" {
+			// Keep the dial cheap: the ticket is enough to prove the relay was
+			// activated, and an unreachable endpoint just reconnects.
+			_ = json.NewEncoder(response).Encode(map[string]any{"connection": map[string]any{
+				"endpoint": "ws://127.0.0.1:1/v1/connect", "ticket": "relay-ticket",
+			}})
+			return
+		}
+		requests++
+		_ = json.NewEncoder(response).Encode(map[string]any{"relayRequested": requests == 1})
+	}))
+	defer server.Close()
+
+	config := Config{
+		SchemaVersion:    ConfigSchemaVersion,
+		DynerBaseURL:     server.URL,
+		EnvironmentID:    "env_test",
+		DeviceCredential: "env_test.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
+		RelayEnabled:     true,
+	}
+	agent := &Server{Config: config, StateDir: t.TempDir()}
+
+	state, err := SyncRemoteEnvironmentState(context.Background(), server.Client(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.RelayRequested {
+		t.Fatal("expected the sync to report the browser's relay request")
+	}
+	agent.applyRelayRequest(state.RelayRequested)
+	agent.mu.Lock()
+	running := agent.relayCancel != nil
+	agent.mu.Unlock()
+	if !running {
+		t.Fatal("expected a requested relay to be running")
+	}
+
+	// Still inside the grace window, so a quiet sync leaves it alone.
+	agent.applyRelayRequest(false)
+	agent.mu.Lock()
+	running = agent.relayCancel != nil
+	agent.mu.Unlock()
+	if !running {
+		t.Fatal("expected the relay to survive the grace window")
+	}
+
+	// A live session keeps the socket even after the request ages out.
+	agent.mu.Lock()
+	agent.relayWantedAt = time.Now().Add(-2 * relayIdleGrace)
+	agent.mu.Unlock()
+	agent.noteRelayActivity()
+	agent.applyRelayRequest(false)
+	agent.mu.Lock()
+	running = agent.relayCancel != nil
+	agent.mu.Unlock()
+	if !running {
+		t.Fatal("expected an active relay session to hold the socket open")
+	}
+
+	// Nobody asking and nothing in flight: the socket goes away.
+	agent.mu.Lock()
+	agent.relayActivityAt = time.Now().Add(-2 * relayIdleGrace)
+	agent.mu.Unlock()
+	agent.applyRelayRequest(false)
+	agent.mu.Lock()
+	running = agent.relayCancel != nil
+	agent.mu.Unlock()
+	if running {
+		t.Fatal("expected an unused relay to close")
+	}
+}

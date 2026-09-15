@@ -71,6 +71,8 @@ type Server struct {
 	mu                 sync.Mutex
 	http               *http.Server
 	relayCancel        context.CancelFunc
+	relayWantedAt      time.Time
+	relayActivityAt    time.Time
 	iceCancel          context.CancelFunc
 	iceContext         context.Context
 	identitySyncCancel context.CancelFunc
@@ -252,7 +254,8 @@ func (s *Server) ListenAndServe() error {
 		log.Printf("DynApp Shell agent: could not register this device with Dyner: %v", err)
 	}
 	s.startIdentitySync()
-	s.startRelay()
+	// No idle relay socket: a browser that cannot reach this machine directly
+	// asks Dyner for one, and the sync loop below opens it on demand.
 	s.startSelfUpdater()
 	s.startChromiumDesktopRepair()
 	hydrateExecutablePath()
@@ -372,7 +375,46 @@ func (s *Server) syncBrowserIdentitiesOnce(ctx context.Context) {
 	_ = SaveConfig(s.StateDir, snapshot)
 	if err == nil && config.RelayEnabled {
 		s.startPendingICESessions(ctx, config, state.PendingICESessions)
+		s.applyRelayRequest(state.RelayRequested)
 	}
+}
+
+// relayIdleGrace keeps an activated relay socket alive a little past the
+// request that opened it, so a browser still negotiating does not lose the
+// carrier the moment Dyner stops reporting the request.
+const relayIdleGrace = 90 * time.Second
+
+// applyRelayRequest opens the relay when a browser has asked for it and closes
+// it again once nobody is asking and no session has used it recently.
+func (s *Server) applyRelayRequest(requested bool) {
+	now := time.Now()
+	s.mu.Lock()
+	if requested {
+		s.relayWantedAt = now
+	}
+	running := s.relayCancel != nil
+	wantedAt := s.relayWantedAt
+	activityAt := s.relayActivityAt
+	s.mu.Unlock()
+	if requested {
+		s.startRelay()
+		return
+	}
+	if !running {
+		return
+	}
+	if now.Sub(wantedAt) < relayIdleGrace || now.Sub(activityAt) < relayIdleGrace {
+		return
+	}
+	s.stopRelay()
+}
+
+// noteRelayActivity marks the relay socket as carrying a live session so an
+// expiring request cannot close a connection that is in use.
+func (s *Server) noteRelayActivity() {
+	s.mu.Lock()
+	s.relayActivityAt = time.Now()
+	s.mu.Unlock()
 }
 
 // Shutdown stops a running service host cleanly.

@@ -151,8 +151,14 @@ The agent starts a loopback HTTP/WebSocket endpoint on port 9011 for local PWA
 services, plus a certificate-pinned WebTransport listener for direct LAN
 access. Once enrolled, it also polls Dyner for short-lived browser ICE offers.
 Successful off-LAN WebRTC sessions carry control, unordered UDP datagrams,
-dedicated TCP/RDP streams, and large file streams directly; the existing WSS
-relay remains the automatic fallback.
+dedicated TCP/RDP streams, and large file streams directly.
+
+The WSS relay is the fallback, and it is opened on demand rather than held
+open: enabling relay only permits it. A browser that cannot reach this machine
+directly posts to `/api/v1/remote-environments/:environment/relay-requests`,
+the next five-second sync reports `relayRequested`, and the agent dials the
+relay then. The socket closes again once no request has arrived and no session
+has used it for 90 seconds, so an idle machine holds no relay connection.
 The loopback endpoint also serves health, native launcher control, and settings.
 Sign in to Dyner once; the agent then creates a device credential
 (`POST /api/v1/remote-environments` with the account token from

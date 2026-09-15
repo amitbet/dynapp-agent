@@ -111,6 +111,9 @@ func SyncBrowserIdentities(ctx context.Context, client *http.Client, config Conf
 type remoteEnvironmentState struct {
 	BrowserIdentities  []BrowserIdentity `json:"browserIdentities"`
 	PendingICESessions []iceSession      `json:"pendingIceSessions"`
+	// RelayRequested is set while a browser that could not reach this machine
+	// directly is waiting for the relay socket to come up.
+	RelayRequested bool `json:"relayRequested"`
 }
 
 func SyncRemoteEnvironmentState(ctx context.Context, client *http.Client, config Config) (remoteEnvironmentState, error) {

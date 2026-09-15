@@ -96,6 +96,7 @@ func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, 
 		if !ok {
 			continue
 		}
+		s.noteRelayActivity()
 		reset(nextSession)
 		if e2eeRequired {
 			if e2eeToken == "" {
