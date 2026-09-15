@@ -312,6 +312,8 @@ The Go integration test executes the protocol that the PWA client uses:
 - collected and managed streaming process lifecycle, stdin, signals, and exit;
 - capability-gated TCP and specialized RDP bridges, including a modern-first
   TLS 1.0/RSA-CBC and TLS-security fallback for legacy Windows RDP hosts;
+- LAN UDP bridges over QUIC datagrams, raw TCP/RDP bridge streams, and
+  independent streams for large filesystem chunks;
 - rejection of a non-local handshake.
 
 Run it with:
@@ -341,6 +343,7 @@ The reusable privileged providers used by current hosted apps are implemented:
 | Local `net.tcp.connect` bridge protocol | Implemented and integration-tested |
 | Native binary remote frames / binary write frames | Implemented and integration-tested |
 | Pairing-bound browser keys, TLS/WebTransport reliable streams, origin binding, and revocation | Implemented and integration-tested |
+| LAN QUIC datagrams, raw bridge streams, and separate large-file streams | Implemented and integration-tested |
 | Dyner credential storage and non-interactive enrollment | Implemented and tested |
 | Dyner device-authenticated relay-ticket retrieval | Implemented and tested |
 | Account relay WebSocket lifecycle, paired-browser session isolation, and E2EE | Implemented and integration-tested |

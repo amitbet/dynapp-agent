@@ -2,9 +2,11 @@ package shellagent
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strconv"
@@ -23,9 +25,14 @@ type bridgeSet struct {
 	items  map[string]*bridgeRecord
 	active *atomic.Int64
 }
+
+var bridgeDatagramCounter atomic.Uint32
+
 type bridgeRecord struct {
 	connection net.Conn
 	carrier    protocolSocket
+	protocol   string
+	mode       string
 }
 
 func newBridgeSet(counters ...*atomic.Int64) *bridgeSet {
@@ -37,7 +44,8 @@ func newBridgeSet(counters ...*atomic.Int64) *bridgeSet {
 }
 func (set *bridgeSet) put(id string, connection net.Conn, carrier protocolSocket) {
 	set.mu.Lock()
-	set.items[id] = &bridgeRecord{connection: connection, carrier: carrier}
+	protocol, _, _ := strings.Cut(id, "_")
+	set.items[id] = &bridgeRecord{connection: connection, carrier: carrier, protocol: protocol}
 	set.mu.Unlock()
 	if set.active != nil {
 		set.active.Add(1)
@@ -51,22 +59,32 @@ func (set *bridgeSet) get(id string) net.Conn {
 	}
 	return nil
 }
-func (set *bridgeSet) carrier(id string) protocolSocket {
-	set.mu.Lock()
-	defer set.mu.Unlock()
-	if record := set.items[id]; record != nil {
-		return record.carrier
-	}
-	return nil
-}
-func (set *bridgeSet) bind(id string, carrier protocolSocket) bool {
+func (set *bridgeSet) bind(id string, carrier protocolSocket, mode string) bool {
 	set.mu.Lock()
 	defer set.mu.Unlock()
 	if record := set.items[id]; record != nil {
 		record.carrier = carrier
+		record.mode = mode
 		return true
 	}
 	return false
+}
+func (set *bridgeSet) bindDatagrams(id string) bool {
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if record := set.items[id]; record != nil && record.protocol == "udp" {
+		record.mode = "datagram"
+		return true
+	}
+	return false
+}
+func (set *bridgeSet) delivery(id string) (protocolSocket, string) {
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if record := set.items[id]; record != nil {
+		return record.carrier, record.mode
+	}
+	return nil, ""
 }
 func (set *bridgeSet) take(id string) net.Conn {
 	set.mu.Lock()
@@ -180,16 +198,38 @@ func transientUDPReadError(err error) bool {
 
 func (s *Server) forwardTCPBridge(socket protocolSocket, bridges *bridgeSet, bridgeID string, connection net.Conn) {
 	buffer := make([]byte, 32*1024)
+	if strings.HasPrefix(bridgeID, "udp_") {
+		buffer = make([]byte, 65535)
+	}
 	total := 0
 	for {
 		count, err := connection.Read(buffer)
 		if count > 0 {
 			total += count
-			carrier := bridges.carrier(bridgeID)
+			carrier, mode := bridges.delivery(bridgeID)
 			if carrier == nil {
 				return
 			}
-			sendBinary(carrier, context.Background(), map[string]any{"type": "net-data", "bridgeId": bridgeID}, buffer[:count])
+			if mode == "raw" {
+				if raw, ok := carrier.(interface {
+					WriteRaw(context.Context, []byte) error
+				}); !ok || raw.WriteRaw(context.Background(), buffer[:count]) != nil {
+					_ = bridges.take(bridgeID).Close()
+					return
+				}
+			} else if mode == "datagram" {
+				if datagrams, ok := carrier.(interface{ SendDatagram([]byte) error }); ok {
+					for _, datagram := range encodeBridgeDatagrams(bridgeID, buffer[:count]) {
+						if datagrams.SendDatagram(datagram) != nil {
+							// QUIC datagrams may be dropped. A local send error drops
+							// this UDP packet without tearing down its socket.
+							break
+						}
+					}
+				}
+			} else {
+				sendBinary(carrier, context.Background(), map[string]any{"type": "net-data", "bridgeId": bridgeID}, buffer[:count])
+			}
 		}
 		if err != nil {
 			if strings.HasPrefix(bridgeID, "udp_") && transientUDPReadError(err) {
@@ -211,15 +251,56 @@ func (s *Server) forwardTCPBridge(socket protocolSocket, bridges *bridgeSet, bri
 	}
 }
 
-func (s *Server) handleReliableChannel(ctx context.Context, channel protocolSocket, bridges *bridgeSet) {
+func (s *Server) handleReliableChannel(ctx context.Context, channel protocolSocket, bridges *bridgeSet, authentication socketAuthentication) {
 	defer channel.Close(websocket.StatusNormalClosure, "")
 	kind, data, err := channel.Read(ctx)
 	if err != nil || kind != websocket.MessageText {
 		return
 	}
 	var bind message
-	if json.Unmarshal(data, &bind) != nil || bind.Type != "channel" || bind.Action != "bind" || protocolNumber(bind.Protocol) != ProtocolVersion || !bridges.bind(bind.BridgeID, channel) {
+	if json.Unmarshal(data, &bind) != nil || bind.Type != "channel" || bind.Action != "bind" || protocolNumber(bind.Protocol) != ProtocolVersion {
 		return
+	}
+	if bind.Kind == "fs" {
+		s.handleFilesystemChannel(ctx, channel, bind, authentication)
+		return
+	}
+	mode := ""
+	if bind.Mode == "raw" {
+		if _, ok := channel.(interface {
+			ReadRaw(context.Context, []byte) (int, error)
+		}); !ok {
+			return
+		}
+		mode = "raw"
+	}
+	if !bridges.bind(bind.BridgeID, channel, mode) {
+		return
+	}
+	defer func() {
+		if connection := bridges.take(bind.BridgeID); connection != nil {
+			_ = connection.Close()
+		}
+	}()
+	if mode == "raw" {
+		raw := channel.(interface {
+			ReadRaw(context.Context, []byte) (int, error)
+		})
+		buffer := make([]byte, 32*1024)
+		for {
+			count, readErr := raw.ReadRaw(ctx, buffer)
+			if count > 0 {
+				if connection := bridges.get(bind.BridgeID); connection != nil {
+					if writeErr := writeStreamBytes(connection, buffer[:count]); writeErr != nil {
+						_ = connection.Close()
+						return
+					}
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
 	}
 	for {
 		kind, data, err = channel.Read(ctx)
@@ -245,6 +326,146 @@ func (s *Server) handleReliableChannel(ctx context.Context, channel protocolSock
 				_ = connection.Close()
 			}
 			return
+		}
+	}
+}
+
+func writeStreamBytes(connection net.Conn, body []byte) error {
+	for len(body) > 0 {
+		count, err := connection.Write(body)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return io.ErrUnexpectedEOF
+		}
+		body = body[count:]
+	}
+	return nil
+}
+
+const bridgeDatagramBytes = 1000
+const bridgeDatagramHeaderBytes = 14
+
+func encodeBridgeDatagrams(bridgeID string, body []byte) [][]byte {
+	id := []byte(bridgeID)
+	fragmentBytes := bridgeDatagramBytes - bridgeDatagramHeaderBytes - len(id)
+	if len(id) == 0 || len(id) > 0xffff || len(body) > 65535 || fragmentBytes < 1 {
+		return nil
+	}
+	fragmentCount := max(1, (len(body)+fragmentBytes-1)/fragmentBytes)
+	if fragmentCount > 0xffff {
+		return nil
+	}
+	messageID := bridgeDatagramCounter.Add(1)
+	frames := make([][]byte, fragmentCount)
+	for fragmentIndex := range fragmentCount {
+		start := fragmentIndex * fragmentBytes
+		end := min(len(body), start+fragmentBytes)
+		frame := make([]byte, bridgeDatagramHeaderBytes+len(id)+end-start)
+		copy(frame[:4], "DGD1")
+		binary.BigEndian.PutUint32(frame[4:8], messageID)
+		binary.BigEndian.PutUint16(frame[8:10], uint16(fragmentIndex))
+		binary.BigEndian.PutUint16(frame[10:12], uint16(fragmentCount))
+		binary.BigEndian.PutUint16(frame[12:14], uint16(len(id)))
+		copy(frame[bridgeDatagramHeaderBytes:], id)
+		copy(frame[bridgeDatagramHeaderBytes+len(id):], body[start:end])
+		frames[fragmentIndex] = frame
+	}
+	return frames
+}
+
+type bridgeDatagramFragment struct {
+	bridgeID                     string
+	messageID                    uint32
+	fragmentIndex, fragmentCount int
+	body                         []byte
+}
+
+func decodeBridgeDatagram(frame []byte) (bridgeDatagramFragment, bool) {
+	if len(frame) < bridgeDatagramHeaderBytes || string(frame[:4]) != "DGD1" {
+		return bridgeDatagramFragment{}, false
+	}
+	fragmentIndex := int(binary.BigEndian.Uint16(frame[8:10]))
+	fragmentCount := int(binary.BigEndian.Uint16(frame[10:12]))
+	idLength := int(binary.BigEndian.Uint16(frame[12:14]))
+	if fragmentCount == 0 || fragmentCount > 128 || fragmentIndex >= fragmentCount || idLength == 0 || bridgeDatagramHeaderBytes+idLength > len(frame) {
+		return bridgeDatagramFragment{}, false
+	}
+	return bridgeDatagramFragment{
+		bridgeID:      string(frame[bridgeDatagramHeaderBytes : bridgeDatagramHeaderBytes+idLength]),
+		messageID:     binary.BigEndian.Uint32(frame[4:8]),
+		fragmentIndex: fragmentIndex,
+		fragmentCount: fragmentCount,
+		body:          append([]byte(nil), frame[bridgeDatagramHeaderBytes+idLength:]...),
+	}, true
+}
+
+type bridgeDatagramAssembly struct {
+	fragments [][]byte
+	updatedAt time.Time
+}
+
+func decodeCompleteBridgeDatagram(pending map[string]*bridgeDatagramAssembly, frame []byte) (string, []byte, bool) {
+	fragment, ok := decodeBridgeDatagram(frame)
+	if !ok {
+		return "", nil, false
+	}
+	if fragment.fragmentCount == 1 {
+		return fragment.bridgeID, fragment.body, true
+	}
+	now := time.Now()
+	for key, assembly := range pending {
+		if now.Sub(assembly.updatedAt) > 2*time.Second {
+			delete(pending, key)
+		}
+	}
+	key := fmt.Sprintf("%s:%d", fragment.bridgeID, fragment.messageID)
+	assembly := pending[key]
+	if assembly == nil || len(assembly.fragments) != fragment.fragmentCount {
+		assembly = &bridgeDatagramAssembly{fragments: make([][]byte, fragment.fragmentCount)}
+		pending[key] = assembly
+	}
+	assembly.fragments[fragment.fragmentIndex] = fragment.body
+	assembly.updatedAt = now
+	total := 0
+	for _, part := range assembly.fragments {
+		if part == nil {
+			return "", nil, false
+		}
+		total += len(part)
+		if total > 65535 {
+			delete(pending, key)
+			return "", nil, false
+		}
+	}
+	delete(pending, key)
+	body := make([]byte, 0, total)
+	for _, part := range assembly.fragments {
+		body = append(body, part...)
+	}
+	return fragment.bridgeID, body, true
+}
+
+func (s *Server) handleBridgeDatagrams(ctx context.Context, receiver interface {
+	ReceiveDatagram(context.Context) ([]byte, error)
+}, bridges *bridgeSet) {
+	pending := map[string]*bridgeDatagramAssembly{}
+	for {
+		frame, err := receiver.ReceiveDatagram(ctx)
+		if err != nil {
+			return
+		}
+		bridgeID, body, ok := decodeCompleteBridgeDatagram(pending, frame)
+		if !ok {
+			continue
+		}
+		_, mode := bridges.delivery(bridgeID)
+		if mode != "datagram" {
+			continue
+		}
+		if connection := bridges.get(bridgeID); connection != nil {
+			_, _ = connection.Write(body)
 		}
 	}
 }

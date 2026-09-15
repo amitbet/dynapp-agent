@@ -1,12 +1,33 @@
 package shellagent
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"sync/atomic"
 	"syscall"
 	"testing"
 )
+
+func TestBridgeDatagramsReassembleOneUDPPacket(t *testing.T) {
+	payload := bytes.Repeat([]byte("dynapp"), 1000)
+	frames := encodeBridgeDatagrams("udp_42", payload)
+	if len(frames) < 2 {
+		t.Fatal("large UDP packet was not fragmented")
+	}
+	pending := map[string]*bridgeDatagramAssembly{}
+	var bridgeID string
+	var body []byte
+	var complete bool
+	for index := len(frames) - 1; index >= 0; index-- {
+		if id, decoded, ok := decodeCompleteBridgeDatagram(pending, frames[index]); ok {
+			bridgeID, body, complete = id, decoded, true
+		}
+	}
+	if !complete || bridgeID != "udp_42" || !bytes.Equal(body, payload) {
+		t.Fatalf("reassembled datagram = %q, %d bytes, complete=%v", bridgeID, len(body), complete)
+	}
+}
 
 func TestTransientUDPReadErrors(t *testing.T) {
 	for _, err := range []error{

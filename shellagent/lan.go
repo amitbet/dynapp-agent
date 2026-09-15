@@ -241,6 +241,27 @@ func (s *webTransportRecordSocket) Write(ctx context.Context, _ websocket.Messag
 	_, err := s.stream.Write(payload)
 	return err
 }
+func (s *webTransportRecordSocket) ReadRaw(ctx context.Context, payload []byte) (int, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = s.stream.SetReadDeadline(deadline)
+	}
+	return s.stream.Read(payload)
+}
+func (s *webTransportRecordSocket) WriteRaw(ctx context.Context, payload []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = s.stream.SetWriteDeadline(deadline)
+	}
+	_, err := s.stream.Write(payload)
+	return err
+}
+func (s *webTransportRecordSocket) SendDatagram(payload []byte) error {
+	return s.session.SendDatagram(payload)
+}
+func (s *webTransportRecordSocket) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	return s.session.ReceiveDatagram(ctx)
+}
 func (s *webTransportRecordSocket) Close(code websocket.StatusCode, reason string) error {
 	if s.closeSession {
 		// Closing this stream first can make Chromium report RESET_STREAM before

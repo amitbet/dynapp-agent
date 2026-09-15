@@ -11,8 +11,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -49,7 +52,7 @@ func TestLANWebTransportProtocolV2AndReliableChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := BrowserJWK{KTY: "EC", CRV: "P-256", X: base64.RawURLEncoding.EncodeToString(private.PublicKey.X.FillBytes(make([]byte, 32))), Y: base64.RawURLEncoding.EncodeToString(private.PublicKey.Y.FillBytes(make([]byte, 32)))}
-	identity := BrowserIdentity{KeyID: BrowserKeyID(key), PublicKeyJWK: key, Origin: "https://dyner.example", Capabilities: []string{"fs.home"}}
+	identity := BrowserIdentity{KeyID: BrowserKeyID(key), PublicKeyJWK: key, Origin: "https://dyner.example", Capabilities: []string{"fs.home", "fs.readChunk", "net.tcp.connect", "net.udp.connect"}}
 	config := Config{EnvironmentID: "env_lan", LANEnabled: true, LANAddress: fmt.Sprintf("127.0.0.1:%d", port), BrowserIdentities: []BrowserIdentity{identity}}
 	server := &Server{StateDir: t.TempDir(), Config: config}
 	closeLAN, err := server.startLAN(config)
@@ -108,10 +111,10 @@ func TestLANWebTransportProtocolV2AndReliableChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	features := hello["features"].(map[string]any)
-	if hello["protocol"] != float64(ProtocolVersion) || features["reliableStreams"] != true {
+	if hello["protocol"] != float64(ProtocolVersion) || features["reliableStreams"] != true || features["datagrams"] != true || features["rawBridgeStreams"] != true || features["filesystemStreams"] != true {
 		t.Fatalf("LAN hello = %#v", hello)
 	}
-	if !reflect.DeepEqual(hello["capabilities"], []any{"fs.home"}) {
+	if !reflect.DeepEqual(hello["capabilities"], []any{"fs.home", "fs.readChunk", "net.tcp.connect", "net.udp.connect"}) {
 		t.Fatalf("LAN capabilities = %#v", hello["capabilities"])
 	}
 	requestWire, _ := json.Marshal(map[string]any{"type": "exec", "id": "denied", "file": "echo", "args": []any{"unsafe"}})
@@ -125,6 +128,129 @@ func TestLANWebTransportProtocolV2AndReliableChannel(t *testing.T) {
 	var denied map[string]any
 	if json.Unmarshal(response, &denied) != nil || denied["type"] != "exec-error" {
 		t.Fatalf("scoped pairing result = %s", response)
+	}
+
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	go func() {
+		payload := make([]byte, 2048)
+		count, address, readErr := udp.ReadFromUDP(payload)
+		if readErr == nil {
+			_, _ = udp.WriteToUDP(payload[:count], address)
+		}
+	}()
+	openUDP, _ := json.Marshal(map[string]any{"type": "net", "id": "open-udp", "action": "open", "protocol": "udp", "target": map[string]any{"host": "127.0.0.1", "port": udp.LocalAddr().(*net.UDPAddr).Port}})
+	if err := socket.Write(ctx, websocket.MessageText, openUDP); err != nil {
+		t.Fatal(err)
+	}
+	_, response, err = socket.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var udpOpened struct {
+		Result struct {
+			BridgeID string `json:"bridgeId"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(response, &udpOpened) != nil || udpOpened.Result.BridgeID == "" {
+		t.Fatalf("UDP open = %s", response)
+	}
+	bindDatagram, _ := json.Marshal(map[string]any{"type": "channel", "id": "bind-udp", "action": "bind", "kind": "datagram", "protocol": ProtocolVersion, "bridgeId": udpOpened.Result.BridgeID})
+	if err := socket.Write(ctx, websocket.MessageText, bindDatagram); err != nil {
+		t.Fatal(err)
+	}
+	if _, response, err = socket.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var bound map[string]any
+	if json.Unmarshal(response, &bound) != nil || bound["type"] != "channel-result" {
+		t.Fatalf("UDP bind = %s", response)
+	}
+	for _, datagram := range encodeBridgeDatagrams(udpOpened.Result.BridgeID, []byte("udp echo")) {
+		if err := session.SendDatagram(datagram); err != nil {
+			t.Fatal(err)
+		}
+	}
+	returnedDatagram, err := session.ReceiveDatagram(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	returnedID, returnedBody, ok := decodeCompleteBridgeDatagram(map[string]*bridgeDatagramAssembly{}, returnedDatagram)
+	if !ok || returnedID != udpOpened.Result.BridgeID || string(returnedBody) != "udp echo" {
+		t.Fatalf("UDP datagram = %q %q %v", returnedID, returnedBody, ok)
+	}
+
+	tcp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+	go func() {
+		connection, acceptErr := tcp.Accept()
+		if acceptErr == nil {
+			defer connection.Close()
+			_, _ = io.Copy(connection, connection)
+		}
+	}()
+	openTCP, _ := json.Marshal(map[string]any{"type": "net", "id": "open-tcp", "action": "open", "protocol": "tcp", "target": map[string]any{"host": "127.0.0.1", "port": tcp.Addr().(*net.TCPAddr).Port}})
+	if err := socket.Write(ctx, websocket.MessageText, openTCP); err != nil {
+		t.Fatal(err)
+	}
+	if _, response, err = socket.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var tcpOpened struct {
+		Result struct {
+			BridgeID string `json:"bridgeId"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(response, &tcpOpened) != nil || tcpOpened.Result.BridgeID == "" {
+		t.Fatalf("TCP open = %s", response)
+	}
+	rawStream, err := session.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawSocket := &webTransportRecordSocket{session: session, stream: rawStream}
+	bindRaw, _ := json.Marshal(map[string]any{"type": "channel", "action": "bind", "mode": "raw", "protocol": ProtocolVersion, "bridgeId": tcpOpened.Result.BridgeID})
+	if err := rawSocket.Write(ctx, websocket.MessageText, bindRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawStream.Write([]byte("tcp echo")); err != nil {
+		t.Fatal(err)
+	}
+	rawReply := make([]byte, len("tcp echo"))
+	if _, err := io.ReadFull(rawStream, rawReply); err != nil || string(rawReply) != "tcp echo" {
+		t.Fatalf("raw TCP reply = %q, %v", rawReply, err)
+	}
+
+	chunkPath := filepath.Join(t.TempDir(), "chunk.txt")
+	if err := os.WriteFile(chunkPath, []byte("filesystem stream"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fsStream, err := session.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsSocket := &webTransportRecordSocket{session: session, stream: fsStream}
+	bindFS, _ := json.Marshal(map[string]any{"type": "channel", "action": "bind", "kind": "fs", "protocol": ProtocolVersion, "id": "fs-stream"})
+	if err := fsSocket.Write(ctx, websocket.MessageText, bindFS); err != nil {
+		t.Fatal(err)
+	}
+	readFS, _ := json.Marshal(map[string]any{"type": "fs", "id": "fs-stream", "method": "readChunk", "args": []any{chunkPath, 0, 1024}})
+	if err := fsSocket.Write(ctx, websocket.MessageText, readFS); err != nil {
+		t.Fatal(err)
+	}
+	kind, fsResponse, err := fsSocket.Read(ctx)
+	if err != nil || kind != websocket.MessageBinary {
+		t.Fatalf("filesystem stream response kind = %v, err = %v", kind, err)
+	}
+	fsHeader, fsBody, err := decodeBinaryFrame(fsResponse)
+	if err != nil || fsHeader.Type != "fs-result" || string(fsBody) != "filesystem stream" {
+		t.Fatalf("filesystem stream response = %#v %q, %v", fsHeader, fsBody, err)
 	}
 	server.mu.Lock()
 	server.Config.BrowserIdentities = nil

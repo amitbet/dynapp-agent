@@ -432,6 +432,7 @@ type message struct {
 	Data         string          `json:"data,omitempty"`
 	Signal       string          `json:"signal,omitempty"`
 	BridgeID     string          `json:"bridgeId,omitempty"`
+	Kind         string          `json:"kind,omitempty"`
 	ProtocolName string          `json:"-"`
 	Target       struct {
 		Host      string `json:"host"`
@@ -457,21 +458,6 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 	defer connectionWriters.Delete(connection)
 	bridges := newBridgeSet(&s.activeBridges)
 	defer bridges.closeAll()
-	if channels != nil {
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case channel, ok := <-channels:
-					if !ok {
-						return
-					}
-					go s.handleReliableChannel(ctx, channel, bridges)
-				}
-			}
-		}()
-	}
 	processes := proc.NewSet(processSender(connection, ctx), ctx)
 	defer processes.CloseAll()
 	var presentation *presentationBridge
@@ -499,6 +485,26 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 	}
 	if authentication.keyID != "" {
 		defer s.trackLiveSocket(connection, &authentication)()
+	}
+	if channels != nil {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case channel, ok := <-channels:
+					if !ok {
+						return
+					}
+					go s.handleReliableChannel(ctx, channel, bridges, authentication)
+				}
+			}
+		}()
+	}
+	if datagrams, ok := connection.(interface {
+		ReceiveDatagram(context.Context) ([]byte, error)
+	}); ok && reliableStreams {
+		go s.handleBridgeDatagrams(ctx, datagrams, bridges)
 	}
 	if !send(connection, ctx, map[string]any{
 		"type": "hello", "ok": true, "protocol": negotiatedProtocol,
@@ -594,6 +600,12 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 			s.handleNetwork(connection, ctx, bridges, message{Action: "data", BridgeID: request.BridgeID}, body)
 		case "net-close":
 			s.handleNetwork(connection, ctx, bridges, message{Action: "close", BridgeID: request.BridgeID}, nil)
+		case "channel":
+			if request.Action != "bind" || request.Kind != "datagram" || protocolNumber(request.Protocol) != ProtocolVersion || !bridges.bindDatagrams(request.BridgeID) {
+				sendError(connection, ctx, request.ID, "Remote datagram channel is invalid")
+			} else if request.ID != "" {
+				send(connection, ctx, map[string]any{"type": "channel-result", "id": request.ID, "bridgeId": request.BridgeID})
+			}
 		default:
 			sendError(connection, ctx, request.ID, "Unknown remote request")
 		}
@@ -899,7 +911,14 @@ func protocolFeatures(version int, reliableStreams ...bool) map[string]bool {
 	// A loopback WebSocket has multiplexed logical bridge channels but no QUIC
 	// reliable stream. The PWA therefore keeps bridge traffic in the shared
 	// record socket, exactly as it does for relay WebSockets.
-	return map[string]bool{"multiplexedChannels": true, "reliableStreams": len(reliableStreams) > 0 && reliableStreams[0]}
+	direct := len(reliableStreams) > 0 && reliableStreams[0]
+	return map[string]bool{
+		"multiplexedChannels": true,
+		"reliableStreams":     direct,
+		"datagrams":           direct,
+		"rawBridgeStreams":    direct,
+		"filesystemStreams":   direct,
+	}
 }
 func protocolString(value json.RawMessage) string {
 	var text string
@@ -944,6 +963,38 @@ func (s *Server) handleFilesystem(c protocolSocket, ctx context.Context, request
 		return
 	}
 	fsResult(c, ctx, request.ID, result)
+}
+
+func (s *Server) handleFilesystemChannel(ctx context.Context, channel protocolSocket, bind message, authentication socketAuthentication) {
+	kind, data, err := channel.Read(ctx)
+	if err != nil {
+		return
+	}
+	var request message
+	var body []byte
+	if kind == websocket.MessageBinary {
+		request, body, err = decodeBinaryFrame(data)
+	} else {
+		err = json.Unmarshal(data, &request)
+	}
+	if err != nil || request.Type != "fs" || request.ID == "" || request.ID != bind.ID ||
+		(request.Method != "readChunk" && request.Method != "readChunkBinary" && request.Method != "writeChunk" && request.Method != "writeChunkBinary") {
+		sendError(channel, ctx, bind.ID, "Remote filesystem stream is invalid")
+		return
+	}
+	if !socketAllows(authentication.capabilities, filesystemCapability(request.Method)) {
+		sendError(channel, ctx, request.ID, permissionDeniedError(filesystemCapability(request.Method)))
+		return
+	}
+	if authentication.storeID != "" {
+		if !appIDMatches(authentication.storeID, request.AppID) {
+			sendError(channel, ctx, request.ID, "Frame app id does not match the paired app")
+			return
+		}
+		request.AppID = authentication.storeID
+	}
+	request.auth = &authentication
+	s.handleFilesystem(channel, ctx, request, body)
 }
 
 func filesystem(method string, args []any, body []byte) (any, error) {

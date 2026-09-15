@@ -36,7 +36,7 @@ func TestProtocolFilesystemAndExecParity(t *testing.T) {
 		t.Fatalf("unexpected environment: %#v", hello)
 	}
 	features := hello["features"].(map[string]any)
-	if features["multiplexedChannels"] != true || features["reliableStreams"] != false {
+	if features["multiplexedChannels"] != true || features["reliableStreams"] != false || features["datagrams"] != false || features["rawBridgeStreams"] != false || features["filesystemStreams"] != false {
 		t.Fatalf("unexpected v2 features: %#v", features)
 	}
 
