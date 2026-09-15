@@ -60,6 +60,9 @@ type Server struct {
 	// device credentials the same way Electron does. It is never persisted in
 	// the agent config and never exposed over the privileged protocol.
 	AccountToken string
+	// AccountAuthPath overrides where a browser sign-in from the settings page
+	// stores the Dyner account record. Empty means DefaultDynerAuthPath.
+	AccountAuthPath string
 	// DynerHTTPClient is used for unauthenticated app lookups during pairing.
 	DynerHTTPClient *http.Client
 
@@ -88,6 +91,11 @@ type Server struct {
 	permissionState      *permissionsState
 	csrfMu               sync.Mutex
 	csrfToken            string
+	loginMu              sync.Mutex
+	loginStates          map[string]time.Time
+	settingsAssetMu      sync.Mutex
+	settingsAssetCache   map[string]settingsAsset
+	settingsAssetOrigin  string
 	presentationMu       sync.Mutex
 	presentations        map[*presentationBridge]struct{}
 	presentationClosed   bool

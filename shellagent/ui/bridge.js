@@ -75,5 +75,47 @@ window.dynappRemoteEnvironmentManagement = {
   remove: (id) => api("/api/settings/remote-environments/remove", { method: "POST", body: { id } }),
 };
 
+function mountAccount(root) {
+  if (!root) return;
+  const render = (status, error = "") => {
+    root.replaceChildren();
+    const row = document.createElement("div");
+    row.className = "settings-row";
+    const text = document.createElement("p");
+    text.className = "settings-help";
+    if (status?.signedIn) {
+      text.textContent = `Signed in to ${status.dynerBaseUrl || "Dyner"}. Remote environments and the relay can be enabled below.`;
+      row.append(text);
+    } else {
+      text.textContent = error || `Not signed in. Sign in to ${status?.dynerBaseUrl || "Dyner"} to register this machine as a remote environment.`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "primary";
+      button.textContent = "Sign in to Dyner";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          const started = await api("/api/settings/login/start", { method: "POST" });
+          const popup = window.open(started.url, "_blank", "noopener");
+          if (!popup) location.assign(started.url);
+          const poll = setInterval(async () => {
+            try {
+              const latest = await api("/api/settings/status");
+              if (latest?.signedIn) { clearInterval(poll); location.reload(); }
+            } catch { /* keep polling */ }
+          }, 2000);
+          setTimeout(() => clearInterval(poll), 10 * 60 * 1000);
+        } catch (failure) {
+          render(status, failure?.message || String(failure));
+        }
+      });
+      row.append(text, button);
+    }
+    root.append(row);
+  };
+  api("/api/settings/status").then((status) => render(status)).catch((failure) => render(null, failure?.message || String(failure)));
+}
+
+mountAccount(document.querySelector("#settings-account-panel"));
 mountWorkspaceManagement(document.querySelector("#settings-workspace-panel"));
 mountRemoteEnvironments(document.querySelector("#settings-remote-panel"), { pwaClient: false });

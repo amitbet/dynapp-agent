@@ -8,6 +8,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"mime"
@@ -34,6 +35,8 @@ func (s *Server) registerSettingsHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/settings", s.handleSettingsIndex)
 	mux.HandleFunc("/ui/", s.handleSettingsAsset)
 	mux.HandleFunc("/api/settings/status", s.handleSettingsStatus)
+	mux.HandleFunc("/api/settings/login/start", s.handleSettingsLoginStart)
+	mux.HandleFunc("/api/settings/login/callback", s.handleSettingsLoginCallback)
 	mux.HandleFunc("/api/settings/remote-environments", s.handleSettingsRemoteList)
 	mux.HandleFunc("/api/settings/remote-environments/server", s.handleSettingsSetServer)
 	mux.HandleFunc("/api/settings/remote-environments/relay", s.handleSettingsSetRelay)
@@ -154,21 +157,17 @@ func (s *Server) handleSettingsAsset(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(data)
 		return
 	}
-	if name == "clientSettingsPanels.js" || name == "styles.css" {
-		data, err := loadDynerContentFile(name)
-		if err != nil {
-			http.Error(w, "Dyner settings assets were not found: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if strings.HasSuffix(name, ".css") {
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		} else {
-			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		}
-		_, _ = w.Write(data)
+	asset, err := s.settingsAssetContent(r.Context(), name)
+	if errors.Is(err, os.ErrNotExist) {
+		http.NotFound(w, r)
 		return
 	}
-	http.NotFound(w, r)
+	if err != nil {
+		http.Error(w, "Dyner settings assets were not found: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", asset.contentType)
+	_, _ = w.Write(asset.data)
 }
 
 func loadDynerContentFile(name string) ([]byte, error) {
