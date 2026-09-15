@@ -90,6 +90,134 @@ func TestEnsureListenerRegistrationRefreshesEndpoint(t *testing.T) {
 	}
 }
 
+func TestEnsureListenerRegistrationMergesLegacyHostedEnvironment(t *testing.T) {
+	var updated map[string]any
+	var merged map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/remote-environments/env_lan":
+			if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/remote-environments/env_lan/merge":
+			if err := json.NewDecoder(r.Body).Decode(&merged); err != nil {
+				t.Fatal(err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"mergedEnvironmentId":"env_hosted"}`))
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	agent := &Server{
+		StateDir:     t.TempDir(),
+		AccountToken: "user-token",
+		Config: Config{
+			SchemaVersion:          ConfigSchemaVersion,
+			DynerBaseURL:           server.URL,
+			EnvironmentID:          "env_lan",
+			DeviceCredential:       "env_lan.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
+			HostedEnvironmentID:    "env_hosted",
+			HostedDeviceCredential: "env_hosted.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
+			RelayEnabled:           true,
+			ListenerMode:           ListenerLocal,
+			LANEnabled:             true,
+			LANAddress:             "127.0.0.1:9011",
+			ListenerName:           "This host",
+		},
+	}
+	if err := agent.ensureListenerRegistration(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	transport := updated["transport"].(map[string]any)
+	relay := transport["relay"].(map[string]any)
+	if relay["provider"] != "cloudflare" || relay["shellEnabled"] != true {
+		t.Fatalf("relay option = %#v", relay)
+	}
+	if merged["sourceEnvironmentId"] != "env_hosted" || agent.Config.HostedEnvironmentID != "" || agent.Config.HostedDeviceCredential != "" {
+		t.Fatalf("legacy hosted environment was not merged: request=%#v config=%#v", merged, agent.Config)
+	}
+}
+
+func TestEnsureListenerRegistrationKeepsLegacyHostedEnvironmentWhenMergeIsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/remote-environments/env_lan":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/remote-environments/env_lan/merge":
+			http.NotFound(w, r)
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	agent := &Server{
+		StateDir:     t.TempDir(),
+		AccountToken: "user-token",
+		Config: Config{
+			SchemaVersion:          ConfigSchemaVersion,
+			DynerBaseURL:           server.URL,
+			EnvironmentID:          "env_lan",
+			DeviceCredential:       "env_lan.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
+			HostedEnvironmentID:    "env_hosted",
+			HostedDeviceCredential: "env_hosted.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
+			RelayEnabled:           true,
+			ListenerMode:           ListenerLocal,
+			LANEnabled:             true,
+			LANAddress:             "127.0.0.1:9011",
+			ListenerName:           "This host",
+		},
+	}
+	if err := agent.ensureListenerRegistration(context.Background()); err == nil {
+		t.Fatal("expected unsupported merge to be retried later")
+	}
+	if agent.Config.HostedEnvironmentID != "env_hosted" || agent.Config.HostedDeviceCredential == "" {
+		t.Fatalf("legacy hosted environment was discarded: %#v", agent.Config)
+	}
+}
+
+func TestDisablingLANKeepsInternetEnvironmentIdentity(t *testing.T) {
+	var updated map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/remote-environments/env_shared" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	agent := &Server{
+		StateDir:           t.TempDir(),
+		AccountToken:       "user-token",
+		identitySyncCancel: func() {},
+		Config: Config{
+			SchemaVersion:    ConfigSchemaVersion,
+			DynerBaseURL:     server.URL,
+			EnvironmentID:    "env_shared",
+			DeviceCredential: "env_shared.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
+			RelayEnabled:     true,
+			ListenerMode:     ListenerLocal,
+			LANEnabled:       true,
+			LANAddress:       "127.0.0.1:9011",
+			ListenerName:     "This host",
+		},
+	}
+	if _, err := agent.setListener(ListenerOff, "This host"); err != nil {
+		t.Fatal(err)
+	}
+	transport := updated["transport"].(map[string]any)
+	if transport["kind"] != "relay" || transport["shellEnabled"] != true {
+		t.Fatalf("transport = %#v", transport)
+	}
+	if agent.Config.EnvironmentID != "env_shared" || agent.Config.DeviceCredential == "" {
+		t.Fatalf("Internet identity was cleared: %#v", agent.Config)
+	}
+}
+
 func TestLoadDynerAccountToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	if err := os.WriteFile(path, []byte(`{"schemaVersion":1,"token":"secret-token","account":{"user":{"email":"amit@example.test"}}}`), 0o600); err != nil {

@@ -98,38 +98,57 @@ func IssueRelayTicket(ctx context.Context, client *http.Client, config Config) (
 // LAN WebTransport. It is provisioning/synchronization, never part of a
 // browser's connection handshake.
 func SyncBrowserIdentities(ctx context.Context, client *http.Client, config Config) ([]BrowserIdentity, error) {
-	if err := config.Validate(); err != nil {
+	state, err := SyncRemoteEnvironmentState(ctx, client, config)
+	if err != nil {
 		return nil, err
 	}
+	return state.BrowserIdentities, nil
+}
+
+// remoteEnvironmentState is the device's periodic Dyner synchronization
+// result. Pending ICE offers share this request with browser-key provisioning
+// so enrolled agents do not poll a second endpoint just for hole punching.
+type remoteEnvironmentState struct {
+	BrowserIdentities  []BrowserIdentity `json:"browserIdentities"`
+	PendingICESessions []iceSession      `json:"pendingIceSessions"`
+}
+
+func SyncRemoteEnvironmentState(ctx context.Context, client *http.Client, config Config) (remoteEnvironmentState, error) {
+	if err := config.Validate(); err != nil {
+		return remoteEnvironmentState{}, err
+	}
 	if config.DeviceCredential == "" || config.EnvironmentID == "" {
-		return nil, errors.New("agent is not enrolled with Dyner")
+		return remoteEnvironmentState{}, errors.New("agent is not enrolled with Dyner")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	base, err := url.Parse(config.DynerBaseURL)
 	if err != nil {
-		return nil, err
+		return remoteEnvironmentState{}, err
 	}
 	base.Path = strings.TrimRight(base.Path, "/") + "/api/v1/remote-environments/" + url.PathEscape(config.EnvironmentID) + "/browser-identities"
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
 	if err != nil {
-		return nil, err
+		return remoteEnvironmentState{}, err
 	}
 	request.Header.Set("Authorization", "DynApp-Device "+config.DeviceCredential)
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return remoteEnvironmentState{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, dynerHTTPError{StatusCode: response.StatusCode}
+		return remoteEnvironmentState{}, dynerHTTPError{StatusCode: response.StatusCode}
 	}
-	var payload struct {
-		BrowserIdentities []BrowserIdentity `json:"browserIdentities"`
-	}
+	var payload remoteEnvironmentState
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return nil, err
+		return remoteEnvironmentState{}, err
 	}
-	return normalizeBrowserIdentities(payload.BrowserIdentities)
+	identities, err := normalizeBrowserIdentities(payload.BrowserIdentities)
+	if err != nil {
+		return remoteEnvironmentState{}, err
+	}
+	payload.BrowserIdentities = identities
+	return payload, nil
 }

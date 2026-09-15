@@ -278,7 +278,12 @@ func (s *Server) settingsRemotePayload(ctx context.Context) (map[string]any, err
 		}
 	}
 	var hostedRegistration any
-	if config.HostedDeviceCredential != "" {
+	if config.RelayEnabled && config.DeviceCredential != "" {
+		hostedRegistration = map[string]any{
+			"environmentId": config.EnvironmentID, "name": config.ListenerName,
+			"enabled": config.RelayEnabled, "transport": map[string]any{"kind": "relay", "provider": "cloudflare"},
+		}
+	} else if config.HostedDeviceCredential != "" {
 		hostedRegistration = map[string]any{
 			"environmentId": config.HostedEnvironmentID, "name": config.HostedName,
 			"enabled": config.RelayEnabled, "transport": map[string]any{"kind": "relay", "provider": "cloudflare"},
@@ -373,6 +378,7 @@ func (s *Server) handleSettingsRename(w http.ResponseWriter, r *http.Request) {
 	if body.ID == config.EnvironmentID {
 		s.mu.Lock()
 		s.Config.ListenerName = body.Name
+		s.Config.HostedName = body.Name
 		snapshot := s.Config
 		s.mu.Unlock()
 		_ = SaveConfig(s.StateDir, snapshot)

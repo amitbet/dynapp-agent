@@ -113,6 +113,27 @@ func UpdateRemoteEnvironment(ctx context.Context, client *http.Client, baseURL, 
 	return nil
 }
 
+// MergeRemoteEnvironment atomically transfers grants, browser identities, and
+// outstanding pairings from a superseded record to the surviving environment.
+// Keeping this as a distinct endpoint makes rollout safe: an older Dyner
+// returns 404 and the agent retains the legacy record for a later retry.
+func MergeRemoteEnvironment(ctx context.Context, client *http.Client, baseURL, bearer, targetEnvironmentID, sourceEnvironmentID string) error {
+	endpoint, err := dynerAPIURL(baseURL, "/api/v1/remote-environments/"+url.PathEscape(targetEnvironmentID)+"/merge")
+	if err != nil {
+		return err
+	}
+	_, status, err := dynerJSON(ctx, client, http.MethodPost, endpoint, bearer, map[string]any{
+		"sourceEnvironmentId": sourceEnvironmentID,
+	})
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("Dyner environment merge failed: HTTP %d", status)
+	}
+	return nil
+}
+
 // errEnvironmentNotFound means Dyner no longer knows the environment id the
 // agent saved (revoked or deleted server-side). The agent must register again
 // instead of retrying the update forever.
@@ -188,6 +209,9 @@ func (s *Server) ensureListenerRegistration(ctx context.Context) error {
 		"endpoint":                endpoint,
 		"serverCertificateHashes": hashes,
 	}
+	if config.RelayEnabled {
+		transport["relay"] = map[string]any{"provider": "cloudflare", "shellEnabled": true}
+	}
 	if config.EnvironmentID != "" && config.DeviceCredential != "" {
 		err := UpdateRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, config.EnvironmentID, map[string]any{
 			"name":                    name,
@@ -196,6 +220,21 @@ func (s *Server) ensureListenerRegistration(ctx context.Context) error {
 			"serverCertificateHashes": hashes,
 			"capabilities":            capabilities,
 		})
+		if err == nil {
+			if config.RelayEnabled && config.HostedEnvironmentID != "" && config.HostedEnvironmentID != config.EnvironmentID {
+				if err := MergeRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, config.EnvironmentID, config.HostedEnvironmentID); err != nil {
+					return err
+				}
+				s.mu.Lock()
+				s.Config.HostedEnvironmentID = ""
+				s.Config.HostedDeviceCredential = ""
+				s.Config.HostedName = ""
+				snapshot := s.Config
+				s.mu.Unlock()
+				return SaveConfig(s.StateDir, snapshot)
+			}
+			return nil
+		}
 		if !errors.Is(err, errEnvironmentNotFound) {
 			return err
 		}
@@ -224,6 +263,23 @@ func (s *Server) ensureListenerRegistration(ctx context.Context) error {
 	if created.Environment.Name == "" {
 		s.Config.ListenerName = name
 	}
+	legacyHostedID := s.Config.HostedEnvironmentID
+	registeredSnapshot := s.Config
+	s.mu.Unlock()
+	// Persist the newly issued target credential before attempting the merge.
+	// A transient merge failure can then retry without creating another record.
+	if err := SaveConfig(s.StateDir, registeredSnapshot); err != nil {
+		return err
+	}
+	if config.RelayEnabled && legacyHostedID != "" && legacyHostedID != created.Environment.ID {
+		if err := MergeRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, created.Environment.ID, legacyHostedID); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.Config.HostedEnvironmentID = ""
+	s.Config.HostedDeviceCredential = ""
+	s.Config.HostedName = ""
 	snapshot := s.Config
 	s.mu.Unlock()
 	return SaveConfig(s.StateDir, snapshot)
@@ -241,67 +297,62 @@ func (s *Server) ensureHostedRegistration(ctx context.Context, enabled bool, nam
 	if token == "" || config.DynerBaseURL == "" {
 		return fmt.Errorf("sign in to Dyner first (same account credential Electron stores in dyner/auth.json)")
 	}
-	if !enabled {
-		if config.HostedEnvironmentID != "" {
-			_ = RevokeRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, config.HostedEnvironmentID)
-		}
-		s.mu.Lock()
-		s.Config.RelayEnabled = false
-		s.Config.HostedEnvironmentID = ""
-		s.Config.HostedDeviceCredential = ""
-		snapshot := s.Config
-		s.mu.Unlock()
-		s.stopRelay()
-		s.stopICE()
-		return SaveConfig(s.StateDir, snapshot)
-	}
 	if strings.TrimSpace(name) == "" {
-		name = DefaultListenerName()
+		name = config.ListenerName
+		if name == "" {
+			name = config.HostedName
+		}
+		if name == "" {
+			name = DefaultListenerName()
+		}
 	}
 	capabilities := DefaultListenerCapabilities()
-	if config.HostedEnvironmentID != "" && config.HostedDeviceCredential != "" {
-		_ = UpdateRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, config.HostedEnvironmentID, map[string]any{
-			"name":              name,
-			"capabilities":      capabilities,
-			"relayShellEnabled": true,
+	targetID := config.EnvironmentID
+	targetCredential := config.DeviceCredential
+	legacyHostedID := config.HostedEnvironmentID
+	if targetID == "" || targetCredential == "" {
+		targetID = config.HostedEnvironmentID
+		targetCredential = config.HostedDeviceCredential
+	}
+	if targetID == "" || targetCredential == "" {
+		created, err := RegisterRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, map[string]any{
+			"name":         name,
+			"transport":    map[string]any{"kind": "relay", "provider": "cloudflare", "shellEnabled": enabled},
+			"capabilities": capabilities,
 		})
-		s.mu.Lock()
-		s.Config.RelayEnabled = true
-		s.Config.HostedName = name
-		snapshot := s.Config
-		s.mu.Unlock()
-		if err := SaveConfig(s.StateDir, snapshot); err != nil {
+		if err != nil {
 			return err
 		}
-		s.startRelay()
-		s.startICE()
-		return nil
-	}
-	created, err := RegisterRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, map[string]any{
-		"name":         name,
-		"transport":    map[string]any{"kind": "relay", "provider": "cloudflare"},
-		"capabilities": capabilities,
-	})
-	if err != nil {
+		targetID = created.Environment.ID
+		targetCredential = created.DeviceCredential
+	} else if err := UpdateRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, targetID, map[string]any{
+		"name": name, "capabilities": capabilities, "relayShellEnabled": enabled,
+	}); err != nil {
 		return err
 	}
-	_ = UpdateRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, created.Environment.ID, map[string]any{
-		"relayShellEnabled": true,
-	})
-	s.mu.Lock()
-	s.Config.RelayEnabled = true
-	s.Config.HostedEnvironmentID = created.Environment.ID
-	s.Config.HostedDeviceCredential = created.DeviceCredential
-	s.Config.HostedName = created.Environment.Name
-	if s.Config.HostedName == "" {
-		s.Config.HostedName = name
+	if legacyHostedID != "" && legacyHostedID != targetID {
+		if err := MergeRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, targetID, legacyHostedID); err != nil {
+			return err
+		}
 	}
+	s.mu.Lock()
+	s.Config.RelayEnabled = enabled
+	s.Config.EnvironmentID = targetID
+	s.Config.DeviceCredential = targetCredential
+	s.Config.ListenerName = name
+	s.Config.HostedEnvironmentID = ""
+	s.Config.HostedDeviceCredential = ""
+	s.Config.HostedName = ""
 	snapshot := s.Config
 	s.mu.Unlock()
+	s.stopRelay()
+	s.stopICE()
 	if err := SaveConfig(s.StateDir, snapshot); err != nil {
 		return err
 	}
-	s.startRelay()
-	s.startICE()
+	s.startIdentitySync()
+	if enabled {
+		s.startRelay()
+	}
 	return nil
 }

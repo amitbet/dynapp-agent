@@ -32,6 +32,8 @@ import (
 	"nhooyr.io/websocket"
 )
 
+const remoteStateSyncInterval = 5 * time.Second
+
 const (
 	// ProtocolVersion is the current remote-environment wire protocol. The
 	// agent still accepts v1 clients during the rollout.
@@ -70,7 +72,11 @@ type Server struct {
 	http               *http.Server
 	relayCancel        context.CancelFunc
 	iceCancel          context.CancelFunc
+	iceContext         context.Context
 	identitySyncCancel context.CancelFunc
+	iceMu              sync.Mutex
+	iceGeneration      uint64
+	activeICESessions  map[string]uint64
 	selfUpdateCancel   context.CancelFunc
 	lanClose           func() error
 	bridgeCounter      atomic.Uint64
@@ -246,7 +252,6 @@ func (s *Server) ListenAndServe() error {
 		log.Printf("DynApp Shell agent: could not register this device with Dyner: %v", err)
 	}
 	s.startIdentitySync()
-	s.startICE()
 	s.startRelay()
 	s.startSelfUpdater()
 	s.startChromiumDesktopRepair()
@@ -284,32 +289,27 @@ func (s *Server) stopRelay() {
 	}
 }
 
+// stopICE cancels direct attempts independently of identity synchronization.
+// Disabling a relay environment must also close its in-flight peer sessions.
 func (s *Server) stopICE() {
 	s.mu.Lock()
 	cancel := s.iceCancel
 	s.iceCancel = nil
+	s.iceContext = nil
 	s.mu.Unlock()
+	s.iceMu.Lock()
+	s.iceGeneration++
+	s.activeICESessions = nil
+	s.iceMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 }
 
-func (s *Server) startICE() {
-	s.mu.Lock()
-	config := s.Config.relayTicketConfig()
-	if s.iceCancel != nil || !config.RelayEnabled || config.DeviceCredential == "" || config.EnvironmentID == "" {
-		s.mu.Unlock()
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s.iceCancel = cancel
-	s.mu.Unlock()
-	go s.runICE(ctx, config)
-}
-
 func (s *Server) startIdentitySync() {
 	s.mu.Lock()
-	if s.identitySyncCancel != nil || s.Config.DeviceCredential == "" {
+	config := s.Config.relayTicketConfig()
+	if s.identitySyncCancel != nil || config.DeviceCredential == "" {
 		s.mu.Unlock()
 		return
 	}
@@ -347,7 +347,7 @@ func (s *Server) syncBrowserIdentities(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(10 * time.Second):
+		case <-time.After(remoteStateSyncInterval):
 			s.syncBrowserIdentitiesOnce(ctx)
 		}
 	}
@@ -355,21 +355,24 @@ func (s *Server) syncBrowserIdentities(ctx context.Context) {
 
 func (s *Server) syncBrowserIdentitiesOnce(ctx context.Context) {
 	s.mu.Lock()
-	config := s.Config
+	config := s.Config.relayTicketConfig()
 	s.mu.Unlock()
-	identities, err := SyncBrowserIdentities(ctx, nil, config)
+	state, err := SyncRemoteEnvironmentState(ctx, nil, config)
 	if err != nil {
 		var httpError dynerHTTPError
 		if !errors.As(err, &httpError) || (httpError.StatusCode != http.StatusUnauthorized && httpError.StatusCode != http.StatusNotFound && httpError.StatusCode != http.StatusGone) {
 			return
 		}
-		identities = nil
+		state.BrowserIdentities = nil
 	}
 	s.mu.Lock()
-	s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, identities)
+	s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, state.BrowserIdentities)
 	snapshot := s.Config
 	s.mu.Unlock()
 	_ = SaveConfig(s.StateDir, snapshot)
+	if err == nil && config.RelayEnabled {
+		s.startPendingICESessions(ctx, config, state.PendingICESessions)
+	}
 }
 
 // Shutdown stops a running service host cleanly.

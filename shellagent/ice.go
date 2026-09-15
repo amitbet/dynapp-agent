@@ -17,8 +17,6 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const icePollInterval = time.Second
-
 type iceDescription struct {
 	Type string `json:"type"`
 	SDP  string `json:"sdp"`
@@ -255,47 +253,49 @@ func (s *webRTCChannelSocket) ReceiveDatagram(ctx context.Context) ([]byte, erro
 	}
 }
 
-func (s *Server) runICE(ctx context.Context, config Config) {
-	active := map[string]struct{}{}
-	var mu sync.Mutex
-	var lastIdentitySync time.Time
-	for ctx.Err() == nil {
-		if time.Since(lastIdentitySync) >= 10*time.Second {
-			if identities, err := SyncBrowserIdentities(ctx, nil, config); err == nil {
-				s.mu.Lock()
-				s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, identities)
-				s.mu.Unlock()
+func (s *Server) startPendingICESessions(ctx context.Context, config Config, sessions []iceSession) {
+	s.mu.Lock()
+	current := s.Config.relayTicketConfig()
+	if !current.RelayEnabled || current.EnvironmentID != config.EnvironmentID || current.DeviceCredential != config.DeviceCredential {
+		s.mu.Unlock()
+		return
+	}
+	if s.iceContext == nil {
+		iceContext, cancel := context.WithCancel(ctx)
+		s.iceContext = iceContext
+		s.iceCancel = cancel
+	}
+	iceContext := s.iceContext
+	s.mu.Unlock()
+	for _, session := range sessions {
+		if session.Offer == nil || session.Answer != nil {
+			continue
+		}
+		s.iceMu.Lock()
+		if s.activeICESessions == nil {
+			s.activeICESessions = map[string]uint64{}
+		}
+		generation := s.iceGeneration
+		_, exists := s.activeICESessions[session.ID]
+		if !exists {
+			s.activeICESessions[session.ID] = generation
+		}
+		s.iceMu.Unlock()
+		if exists {
+			continue
+		}
+		go func(item iceSession) {
+			defer func() {
+				s.iceMu.Lock()
+				if s.activeICESessions[item.ID] == generation {
+					delete(s.activeICESessions, item.ID)
+				}
+				s.iceMu.Unlock()
+			}()
+			if err := s.answerICESession(iceContext, config, item); err != nil && iceContext.Err() == nil {
+				logICEError(item.ID, err)
 			}
-			lastIdentitySync = time.Now()
-		}
-		sessions, err := fetchICESessions(ctx, nil, config)
-		if err == nil {
-			for _, session := range sessions {
-				if session.Offer == nil || session.Answer != nil {
-					continue
-				}
-				mu.Lock()
-				_, exists := active[session.ID]
-				if !exists {
-					active[session.ID] = struct{}{}
-				}
-				mu.Unlock()
-				if exists {
-					continue
-				}
-				go func(item iceSession) {
-					defer func() { mu.Lock(); delete(active, item.ID); mu.Unlock() }()
-					if err := s.answerICESession(ctx, config, item); err != nil && ctx.Err() == nil {
-						logICEError(item.ID, err)
-					}
-				}(session)
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(icePollInterval):
-		}
+		}(session)
 	}
 }
 
@@ -469,34 +469,6 @@ func iceURL(config Config, suffix string) (string, error) {
 	}
 	base.Path = strings.TrimRight(base.Path, "/") + "/api/v1/remote-environments/" + url.PathEscape(config.EnvironmentID) + "/ice/sessions" + suffix
 	return base.String(), nil
-}
-
-func fetchICESessions(ctx context.Context, client *http.Client, config Config) ([]iceSession, error) {
-	endpoint, err := iceURL(config, "")
-	if err != nil {
-		return nil, err
-	}
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Authorization", "DynApp-Device "+config.DeviceCredential)
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("Dyner ICE poll failed: HTTP %d", response.StatusCode)
-	}
-	var payload struct {
-		Sessions []iceSession `json:"sessions"`
-	}
-	err = json.NewDecoder(response.Body).Decode(&payload)
-	return payload.Sessions, err
 }
 
 func fetchICESession(ctx context.Context, client *http.Client, config Config, id string) (iceSession, error) {

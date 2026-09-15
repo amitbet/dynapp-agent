@@ -225,15 +225,29 @@ func (s *Server) setListener(mode, name string) (map[string]any, error) {
 		token := s.AccountToken
 		config := s.Config
 		s.mu.Unlock()
-		if token != "" && config.EnvironmentID != "" {
-			_ = RevokeRemoteEnvironment(context.Background(), nil, config.DynerBaseURL, token, config.EnvironmentID)
+		if config.RelayEnabled && config.EnvironmentID != "" {
+			if token != "" {
+				if err := UpdateRemoteEnvironment(context.Background(), nil, config.DynerBaseURL, token, config.EnvironmentID, map[string]any{
+					"name": config.ListenerName,
+					"transport": map[string]any{
+						"kind": "relay", "provider": "cloudflare", "shellEnabled": true,
+					},
+					"capabilities": DefaultListenerCapabilities(),
+				}); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			if token != "" && config.EnvironmentID != "" {
+				_ = RevokeRemoteEnvironment(context.Background(), nil, config.DynerBaseURL, token, config.EnvironmentID)
+			}
+			s.mu.Lock()
+			s.Config.EnvironmentID = ""
+			s.Config.DeviceCredential = ""
+			snapshot = s.Config
+			s.mu.Unlock()
+			_ = SaveConfig(s.StateDir, snapshot)
 		}
-		s.mu.Lock()
-		s.Config.EnvironmentID = ""
-		s.Config.DeviceCredential = ""
-		snapshot = s.Config
-		s.mu.Unlock()
-		_ = SaveConfig(s.StateDir, snapshot)
 	} else if err := s.ensureListenerRegistration(context.Background()); err != nil {
 		return nil, err
 	}

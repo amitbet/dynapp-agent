@@ -17,28 +17,28 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-func TestFetchICESessionsUsesDeviceAuthentication(t *testing.T) {
+func TestSyncRemoteEnvironmentStateReturnsPendingICESessions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet || request.URL.Path != "/api/v1/remote-environments/env_test/ice/sessions" {
-			t.Fatalf("unexpected ICE request: %s %s", request.Method, request.URL.Path)
+		if request.Method != http.MethodGet || request.URL.Path != "/api/v1/remote-environments/env_test/browser-identities" {
+			t.Fatalf("unexpected sync request: %s %s", request.Method, request.URL.Path)
 		}
-		if got := request.Header.Get("Authorization"); got != "DynApp-Device device-secret" {
+		if got := request.Header.Get("Authorization"); got != "DynApp-Device env_test.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789" {
 			t.Fatalf("unexpected authorization: %q", got)
 		}
-		_ = json.NewEncoder(response).Encode(map[string]any{"sessions": []any{
+		_ = json.NewEncoder(response).Encode(map[string]any{"pendingIceSessions": []any{
 			map[string]any{"id": "ice_abcdefghijklmnopqrstuv", "offer": map[string]any{"type": "offer", "sdp": "v=0"}},
 		}})
 	}))
 	defer server.Close()
 
-	sessions, err := fetchICESessions(context.Background(), server.Client(), Config{
-		DynerBaseURL: server.URL, EnvironmentID: "env_test", DeviceCredential: "device-secret",
+	state, err := SyncRemoteEnvironmentState(context.Background(), server.Client(), Config{
+		SchemaVersion: ConfigSchemaVersion, DynerBaseURL: server.URL, EnvironmentID: "env_test", DeviceCredential: "env_test.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 1 || sessions[0].Offer == nil || sessions[0].Offer.Type != "offer" {
-		t.Fatalf("unexpected sessions: %#v", sessions)
+	if len(state.PendingICESessions) != 1 || state.PendingICESessions[0].Offer == nil || state.PendingICESessions[0].Offer.Type != "offer" {
+		t.Fatalf("unexpected sessions: %#v", state.PendingICESessions)
 	}
 }
 
