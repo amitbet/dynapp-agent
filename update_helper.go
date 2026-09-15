@@ -131,6 +131,7 @@ func (p *program) scheduleHelperUpdate(downloadedPath, executable, version strin
 	}
 	command := wrapHelperCommand(helperPath, helperArgs)
 	command.Env = append(os.Environ(), "DYNAPP_UPDATE_RESTART_ARGS="+base64.RawStdEncoding.EncodeToString(restartArgs))
+	command.Env = append(command.Env, "DYNAPP_UPDATE_LOG="+filepath.Join(p.server.StateDir, "logs", "update.log"))
 	if p.serviceMode {
 		command.Env = append(command.Env, "DYNAPP_UPDATE_SERVICE=1")
 	}
@@ -171,26 +172,60 @@ func waitForHelperToTakeOver(serviceMode bool) {
 }
 
 func runUpdateHelper(source, target string, parentPID int) error {
+	closeLog := configureUpdateLogging(target)
+	defer closeLog()
+	log.Printf("update helper started: source=%q target=%q parent=%d service=%t", source, target, parentPID, os.Getenv("DYNAPP_UPDATE_SERVICE") == "1")
 	if source == "" || target == "" || parentPID <= 0 {
+		log.Printf("update helper rejected: incomplete arguments")
 		return errors.New("update helper arguments are incomplete")
 	}
 	if os.Getenv("DYNAPP_UPDATE_SERVICE") == "1" {
+		log.Printf("stopping installed service")
 		if err := stopUpdated(target); err != nil {
 			log.Printf("DynApp Shell agent: could not stop service before update: %v", err)
+		} else {
+			log.Printf("installed service stop completed")
 		}
 	}
+	log.Printf("waiting for parent process %d to exit", parentPID)
 	if err := waitForProcessExit(parentPID, updateHelperWait); err != nil {
+		log.Printf("parent process did not exit: %v", err)
 		return err
 	}
+	log.Printf("parent process exited; replacing executable")
 	backup, err := replaceExecutable(source, target)
 	if err != nil {
+		log.Printf("executable replacement failed: %v", err)
 		return err
 	}
+	log.Printf("executable replacement completed; backup=%q", backup)
 	if err := startUpdated(target); err != nil {
 		log.Printf("DynApp Shell agent: installed update; restart deferred: %v", err)
+	} else {
+		log.Printf("updated agent restart command completed")
 	}
 	_ = os.Remove(backup)
+	log.Printf("update helper completed")
 	return nil
+}
+
+func configureUpdateLogging(target string) func() {
+	path := strings.TrimSpace(os.Getenv("DYNAPP_UPDATE_LOG"))
+	if path == "" {
+		path = target + ".update.log"
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		log.Printf("could not create update log directory %q: %v", filepath.Dir(path), err)
+		return func() {}
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		log.Printf("could not open update log %q: %v", path, err)
+		return func() {}
+	}
+	log.SetOutput(io.MultiWriter(os.Stdout, file))
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	return func() { _ = file.Close() }
 }
 
 func startUpdatedAgent(target string) error {
@@ -228,6 +263,7 @@ func controlUpdatedService(target, action string) error {
 	command.Dir = filepath.Dir(target)
 	command.Env = withoutEnv(withoutEnv(os.Environ(), "DYNAPP_UPDATE_RESTART_ARGS"), "DYNAPP_UPDATE_SERVICE")
 	output, err := command.CombinedOutput()
+	log.Printf("service %s command: exitError=%v output=%q", action, err, strings.TrimSpace(string(output)))
 	if err == nil {
 		return nil
 	}

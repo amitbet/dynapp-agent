@@ -131,10 +131,22 @@ func (s *Server) startSelfUpdater() {
 	if config.APIBaseURL == "" {
 		config.APIBaseURL = "https://api.github.com"
 	}
-	if !config.Enabled || !isReleaseVersion(config.Version) || config.OnUpdate == nil {
+	if !config.Enabled {
+		log.Printf("self-update disabled: configuration")
 		s.mu.Unlock()
 		return
 	}
+	if !isReleaseVersion(config.Version) {
+		log.Printf("self-update disabled: version %q is not a release version", config.Version)
+		s.mu.Unlock()
+		return
+	}
+	if config.OnUpdate == nil {
+		log.Printf("self-update disabled: update callback is not configured")
+		s.mu.Unlock()
+		return
+	}
+	log.Printf("self-update enabled: current=%s repository=%s interval=%s; checking now", config.Version, config.Repository, config.Interval)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.selfUpdateCancel = cancel
 	s.mu.Unlock()
@@ -162,14 +174,17 @@ func (s *Server) checkSelfUpdate(ctx context.Context, config SelfUpdateConfig) {
 }
 
 func (s *Server) checkSelfUpdateWithVerifier(ctx context.Context, config SelfUpdateConfig, verifySignature func(string) error) {
+	log.Printf("self-update check started: current=%s repository=%s", config.Version, config.Repository)
 	release, err := fetchLatestRelease(ctx, config)
 	if err != nil {
 		log.Printf("DynApp Shell agent: update check failed: %v", err)
 		return
 	}
 	if !newerRelease(release.TagName, config.Version) {
+		log.Printf("self-update check complete: current=%s latest=%s; no update needed", config.Version, release.TagName)
 		return
 	}
+	log.Printf("self-update available: current=%s latest=%s", config.Version, release.TagName)
 	assets, err := selectAgentAssets(release, release.TagName)
 	if err != nil {
 		log.Printf("DynApp Shell agent: release %s has no %s asset: %v", release.TagName, runtime.GOOS, err)
