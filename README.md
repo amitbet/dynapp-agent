@@ -148,7 +148,11 @@ promises. Cancelling the drag removes promises that never started.
 ### Agent listener
 
 The agent starts a loopback HTTP/WebSocket endpoint on port 9011 for local PWA
-services, plus a certificate-pinned WebTransport listener for direct access.
+services, plus a certificate-pinned WebTransport listener for direct LAN
+access. Once enrolled, it also polls Dyner for short-lived browser ICE offers.
+Successful off-LAN WebRTC sessions carry control, unordered UDP datagrams,
+dedicated TCP/RDP streams, and large file streams directly; the existing WSS
+relay remains the automatic fallback.
 The loopback endpoint also serves health, native launcher control, and settings.
 Sign in to Dyner once; the agent then creates a device credential
 (`POST /api/v1/remote-environments` with the account token from
@@ -347,6 +351,7 @@ The reusable privileged providers used by current hosted apps are implemented:
 | Dyner credential storage and non-interactive enrollment | Implemented and tested |
 | Dyner device-authenticated relay-ticket retrieval | Implemented and tested |
 | Account relay WebSocket lifecycle, paired-browser session isolation, and E2EE | Implemented and integration-tested |
+| Browser-to-agent off-LAN WebRTC/ICE with datagrams, raw streams, and WSS fallback | Implemented and integration-tested |
 | Workspace persistence/sync and app updates | PWA/Dyner-owned and already tested outside the agent |
 | Managed streaming processes (`stdin`, stdout/stderr events, signal/close) | Implemented and integration-tested |
 | Codex and Claude agent sessions with app MCP tools | Implemented and fixture-tested |

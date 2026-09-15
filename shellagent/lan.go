@@ -195,7 +195,9 @@ func (s *Server) serveLANSession(session *webtransport.Session, config Config, r
 			channels <- &webTransportRecordSocket{session: session, stream: stream}
 		}
 	}()
-	s.serveAuthenticatedSocket(ctx, main, func(message) socketAuthentication { return directAuth }, true, channels)
+	s.serveAuthenticatedSocket(ctx, main, func(message) socketAuthentication { return directAuth }, carrierCapabilities{
+		reliableStreams: true, datagrams: true, rawBridgeStreams: true, filesystemStreams: true,
+	}, channels)
 }
 
 type webTransportRecordSocket struct {

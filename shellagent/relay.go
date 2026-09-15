@@ -224,6 +224,8 @@ func relayGrantFor(identities []BrowserIdentity, hello message, resolve func(sto
 	var base []string
 	keyID := strings.TrimSpace(hello.KeyID)
 	matched := false
+	var matchedOrigin string
+	var matchedCapabilities []string
 	connect := map[string][]string{}
 	if keyID != "" {
 		for _, identity := range identities {
@@ -234,6 +236,10 @@ func relayGrantFor(identities []BrowserIdentity, hello message, resolve func(sto
 				continue
 			}
 			base = unionStrings(base, identity.Capabilities)
+			if matchedOrigin == "" {
+				matchedOrigin = identity.Origin
+				matchedCapabilities = append([]string(nil), identity.Capabilities...)
+			}
 			for scheme, patterns := range identity.Connect {
 				connect[scheme] = unionStrings(connect[scheme], patterns)
 			}
@@ -257,7 +263,7 @@ func relayGrantFor(identities []BrowserIdentity, hello message, resolve func(sto
 			base = intersectStrings(base, identity.Capabilities)
 		}
 	}
-	auth := socketAuthentication{capabilities: normalizePermissionSet(base), keyID: keyID, ok: true}
+	auth := socketAuthentication{capabilities: normalizePermissionSet(base), keyID: keyID, origin: matchedOrigin, stored: normalizePermissionSet(matchedCapabilities), ok: true}
 	auth.declared = auth.capabilities
 	if matched {
 		auth.connect = connect

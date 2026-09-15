@@ -346,6 +346,7 @@ func writeStreamBytes(connection net.Conn, body []byte) error {
 
 const bridgeDatagramBytes = 1000
 const bridgeDatagramHeaderBytes = 14
+const maxPendingBridgeDatagrams = 256
 
 func encodeBridgeDatagrams(bridgeID string, body []byte) [][]byte {
 	id := []byte(bridgeID)
@@ -383,7 +384,7 @@ type bridgeDatagramFragment struct {
 }
 
 func decodeBridgeDatagram(frame []byte) (bridgeDatagramFragment, bool) {
-	if len(frame) < bridgeDatagramHeaderBytes || string(frame[:4]) != "DGD1" {
+	if len(frame) < bridgeDatagramHeaderBytes || len(frame) > bridgeDatagramBytes || string(frame[:4]) != "DGD1" {
 		return bridgeDatagramFragment{}, false
 	}
 	fragmentIndex := int(binary.BigEndian.Uint16(frame[8:10]))
@@ -423,6 +424,16 @@ func decodeCompleteBridgeDatagram(pending map[string]*bridgeDatagramAssembly, fr
 	key := fmt.Sprintf("%s:%d", fragment.bridgeID, fragment.messageID)
 	assembly := pending[key]
 	if assembly == nil || len(assembly.fragments) != fragment.fragmentCount {
+		if assembly == nil && len(pending) >= maxPendingBridgeDatagrams {
+			var oldestKey string
+			var oldestTime time.Time
+			for candidateKey, candidate := range pending {
+				if oldestKey == "" || candidate.updatedAt.Before(oldestTime) {
+					oldestKey, oldestTime = candidateKey, candidate.updatedAt
+				}
+			}
+			delete(pending, oldestKey)
+		}
 		assembly = &bridgeDatagramAssembly{fragments: make([][]byte, fragment.fragmentCount)}
 		pending[key] = assembly
 	}

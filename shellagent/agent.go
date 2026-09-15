@@ -66,6 +66,7 @@ type Server struct {
 	mu                 sync.Mutex
 	http               *http.Server
 	relayCancel        context.CancelFunc
+	iceCancel          context.CancelFunc
 	identitySyncCancel context.CancelFunc
 	selfUpdateCancel   context.CancelFunc
 	lanClose           func() error
@@ -97,6 +98,13 @@ type protocolSocket interface {
 	Read(context.Context) (websocket.MessageType, []byte, error)
 	Write(context.Context, websocket.MessageType, []byte) error
 	Close(websocket.StatusCode, string) error
+}
+
+type carrierCapabilities struct {
+	reliableStreams   bool
+	datagrams         bool
+	rawBridgeStreams  bool
+	filesystemStreams bool
 }
 
 var connectionWriters sync.Map // map[protocolSocket]*sync.Mutex
@@ -199,7 +207,7 @@ func (s *Server) serveLocalWebSocket(w http.ResponseWriter, r *http.Request, tes
 		_ = connection.Close(closeIdentityRejected, "Browser identity rejected")
 		return
 	}
-	s.serveAuthenticatedSocket(ctx, connection, func(message) socketAuthentication { return auth }, false, nil)
+	s.serveAuthenticatedSocket(ctx, connection, func(message) socketAuthentication { return auth }, carrierCapabilities{}, nil)
 }
 
 // ListenAndServe starts the agent on its configured loopback address.
@@ -230,6 +238,7 @@ func (s *Server) ListenAndServe() error {
 		log.Printf("DynApp Shell agent: could not register this device with Dyner: %v", err)
 	}
 	s.startIdentitySync()
+	s.startICE()
 	s.startRelay()
 	s.startSelfUpdater()
 	s.startChromiumDesktopRepair()
@@ -265,6 +274,29 @@ func (s *Server) stopRelay() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+func (s *Server) stopICE() {
+	s.mu.Lock()
+	cancel := s.iceCancel
+	s.iceCancel = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (s *Server) startICE() {
+	s.mu.Lock()
+	config := s.Config.relayTicketConfig()
+	if s.iceCancel != nil || !config.RelayEnabled || config.DeviceCredential == "" || config.EnvironmentID == "" {
+		s.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.iceCancel = cancel
+	s.mu.Unlock()
+	go s.runICE(ctx, config)
 }
 
 func (s *Server) startIdentitySync() {
@@ -337,6 +369,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	httpServer := s.http
 	relayCancel := s.relayCancel
+	iceCancel := s.iceCancel
 	identitySyncCancel := s.identitySyncCancel
 	selfUpdateCancel := s.selfUpdateCancel
 	chromiumRepairCancel := s.chromiumRepairCancel
@@ -344,6 +377,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Unlock()
 	if relayCancel != nil {
 		relayCancel()
+	}
+	if iceCancel != nil {
+		iceCancel()
 	}
 	if identitySyncCancel != nil {
 		identitySyncCancel()
@@ -453,7 +489,7 @@ func (m message) allows(required string) bool {
 	return m.auth.allows(required)
 }
 
-func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protocolSocket, authenticate func(message) socketAuthentication, reliableStreams bool, channels <-chan protocolSocket) {
+func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protocolSocket, authenticate func(message) socketAuthentication, carrier carrierCapabilities, channels <-chan protocolSocket) {
 	connectionWriters.Store(connection, &sync.Mutex{})
 	defer connectionWriters.Delete(connection)
 	bridges := newBridgeSet(&s.activeBridges)
@@ -503,7 +539,7 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 	}
 	if datagrams, ok := connection.(interface {
 		ReceiveDatagram(context.Context) ([]byte, error)
-	}); ok && reliableStreams {
+	}); ok && carrier.datagrams {
 		go s.handleBridgeDatagrams(ctx, datagrams, bridges)
 	}
 	if !send(connection, ctx, map[string]any{
@@ -511,7 +547,7 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 		"serverId":     "go-shell-agent",
 		"environment":  authentication.environment,
 		"capabilities": authentication.capabilities,
-		"features":     protocolFeatures(negotiatedProtocol, reliableStreams),
+		"features":     protocolFeatures(negotiatedProtocol, carrier),
 	}) {
 		return
 	}
@@ -904,20 +940,23 @@ func protocolNumber(value json.RawMessage) int {
 	return number
 }
 
-func protocolFeatures(version int, reliableStreams ...bool) map[string]bool {
+func protocolFeatures(version int, carriers ...carrierCapabilities) map[string]bool {
 	if version < ProtocolVersion {
 		return map[string]bool{}
 	}
 	// A loopback WebSocket has multiplexed logical bridge channels but no QUIC
 	// reliable stream. The PWA therefore keeps bridge traffic in the shared
 	// record socket, exactly as it does for relay WebSockets.
-	direct := len(reliableStreams) > 0 && reliableStreams[0]
+	carrier := carrierCapabilities{}
+	if len(carriers) > 0 {
+		carrier = carriers[0]
+	}
 	return map[string]bool{
 		"multiplexedChannels": true,
-		"reliableStreams":     direct,
-		"datagrams":           direct,
-		"rawBridgeStreams":    direct,
-		"filesystemStreams":   direct,
+		"reliableStreams":     carrier.reliableStreams,
+		"datagrams":           carrier.datagrams,
+		"rawBridgeStreams":    carrier.rawBridgeStreams,
+		"filesystemStreams":   carrier.filesystemStreams,
 	}
 }
 func protocolString(value json.RawMessage) string {

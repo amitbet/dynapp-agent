@@ -252,6 +252,7 @@ func (s *Server) ensureHostedRegistration(ctx context.Context, enabled bool, nam
 		snapshot := s.Config
 		s.mu.Unlock()
 		s.stopRelay()
+		s.stopICE()
 		return SaveConfig(s.StateDir, snapshot)
 	}
 	if strings.TrimSpace(name) == "" {
@@ -273,6 +274,7 @@ func (s *Server) ensureHostedRegistration(ctx context.Context, enabled bool, nam
 			return err
 		}
 		s.startRelay()
+		s.startICE()
 		return nil
 	}
 	created, err := RegisterRemoteEnvironment(ctx, nil, config.DynerBaseURL, token, map[string]any{
@@ -300,5 +302,6 @@ func (s *Server) ensureHostedRegistration(ctx context.Context, enabled bool, nam
 		return err
 	}
 	s.startRelay()
+	s.startICE()
 	return nil
 }
