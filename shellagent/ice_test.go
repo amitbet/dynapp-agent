@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -45,8 +46,44 @@ func TestAnswerICESessionEstablishesBrowserDataChannels(t *testing.T) {
 	var answer iceDescription
 	var answerMu sync.Mutex
 	answerPosted := make(chan struct{})
+	var candidateMu sync.Mutex
+	var candidatePosts [][]json.RawMessage
+	var browserCandidates []json.RawMessage
+	browserCandidateServed := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/remote-environments/env_test/ice/sessions/ice_abcdefghijklmnopqrstuv/answer" {
+		const sessionPath = "/api/v1/remote-environments/env_test/ice/sessions/ice_abcdefghijklmnopqrstuv"
+		if strings.HasPrefix(request.URL.Path, "/api/v1/") {
+			if got := request.Header.Get("Authorization"); got != "DynApp-Device device-secret" {
+				t.Errorf("unexpected authorization: %q", got)
+			}
+		}
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == sessionPath+"/shell-candidates":
+			var list []json.RawMessage
+			if err := json.NewDecoder(request.Body).Decode(&list); err != nil {
+				t.Errorf("invalid shell candidates: %v", err)
+			}
+			candidateMu.Lock()
+			candidatePosts = append(candidatePosts, list)
+			candidateMu.Unlock()
+			_ = json.NewEncoder(response).Encode(map[string]any{"session": map[string]any{"id": "ice_abcdefghijklmnopqrstuv"}})
+			return
+		case request.Method == http.MethodGet && request.URL.Path == sessionPath:
+			candidateMu.Lock()
+			list := append([]json.RawMessage(nil), browserCandidates...)
+			candidateMu.Unlock()
+			if len(list) > 0 {
+				select {
+				case browserCandidateServed <- struct{}{}:
+				default:
+				}
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"session": map[string]any{
+				"id": "ice_abcdefghijklmnopqrstuv", "browserCandidates": list,
+			}})
+			return
+		}
+		if request.Method != http.MethodPost || request.URL.Path != sessionPath+"/answer" {
 			t.Logf("unexpected test server request: %s %s (%s)", request.Method, request.URL.Path, request.UserAgent())
 			response.WriteHeader(http.StatusNotFound)
 			return
@@ -127,6 +164,31 @@ func TestAnswerICESessionEstablishesBrowserDataChannels(t *testing.T) {
 	answerMu.Unlock()
 	if remote.Type != "answer" || remote.SDP == "" {
 		t.Fatalf("invalid agent answer: %#v", remote)
+	}
+	// Simulate a browser that trickles one more candidate after the offer: a
+	// harmless duplicate of a host candidate plus the end-of-candidates marker.
+	trickled := browser.LocalDescription()
+	var trickledCandidate json.RawMessage
+	for _, line := range strings.Split(trickled.SDP, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "a=candidate:") {
+			mid := "0"
+			index := uint16(0)
+			encoded, _ := json.Marshal(webrtc.ICECandidateInit{Candidate: strings.TrimPrefix(line, "a="), SDPMid: &mid, SDPMLineIndex: &index})
+			trickledCandidate = encoded
+			break
+		}
+	}
+	if trickledCandidate == nil {
+		t.Fatal("browser offer has no candidates to trickle")
+	}
+	candidateMu.Lock()
+	browserCandidates = []json.RawMessage{trickledCandidate, json.RawMessage("null")}
+	candidateMu.Unlock()
+	select {
+	case <-browserCandidateServed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent did not poll for trickled browser candidates")
 	}
 	if err := browser.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: remote.SDP}); err != nil {
 		t.Fatal(err)
@@ -210,6 +272,71 @@ func TestAnswerICESessionEstablishesBrowserDataChannels(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("WebRTC raw bridge did not echo data")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		candidateMu.Lock()
+		posts := append([][]json.RawMessage(nil), candidatePosts...)
+		candidateMu.Unlock()
+		if len(posts) > 0 && string(posts[len(posts)-1][len(posts[len(posts)-1])-1]) == "null" {
+			for index := 1; index < len(posts); index++ {
+				if len(posts[index]) < len(posts[index-1]) {
+					t.Fatalf("shell candidate lists must only grow: %d then %d", len(posts[index-1]), len(posts[index]))
+				}
+			}
+			var first webrtc.ICECandidateInit
+			if err := json.Unmarshal(posts[len(posts)-1][0], &first); err != nil || !strings.HasPrefix(first.Candidate, "candidate:") {
+				t.Fatalf("unexpected trickled shell candidate: %s", posts[len(posts)-1][0])
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent did not trickle a null-terminated shell candidate list: %v", posts)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestICECandidateTricklerPostsGrowingNullTerminatedLists(t *testing.T) {
+	var mu sync.Mutex
+	var posts [][]json.RawMessage
+	release := make(chan struct{})
+	trickler := newICECandidateTrickler(func(list []json.RawMessage) error {
+		mu.Lock()
+		posts = append(posts, list)
+		count := len(posts)
+		mu.Unlock()
+		if count == 1 {
+			<-release
+		}
+		return nil
+	})
+	mid := "0"
+	one := &webrtc.ICECandidate{Foundation: "1", Priority: 1, Address: "192.168.1.10", Protocol: webrtc.ICEProtocolUDP, Port: 5000, Typ: webrtc.ICECandidateTypeHost, Component: 1, SDPMid: mid}
+	two := &webrtc.ICECandidate{Foundation: "2", Priority: 2, Address: "203.0.113.5", Protocol: webrtc.ICEProtocolUDP, Port: 6000, Typ: webrtc.ICECandidateTypeSrflx, RelatedAddress: "192.168.1.10", RelatedPort: 5000, Component: 1, SDPMid: mid}
+	trickler.add(one)
+	time.Sleep(50 * time.Millisecond)
+	trickler.add(two)
+	trickler.add(nil)
+	trickler.add(two) // ignored after end of gathering
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		done := len(posts) >= 2 && string(posts[len(posts)-1][len(posts[len(posts)-1])-1]) == "null"
+		snapshot := append([][]json.RawMessage(nil), posts...)
+		mu.Unlock()
+		if done {
+			if len(snapshot[0]) != 1 || len(snapshot[len(snapshot)-1]) != 3 {
+				t.Fatalf("unexpected candidate lists: %v", snapshot)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("trickler never posted a terminated list: %v", snapshot)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

@@ -25,10 +25,116 @@ type iceDescription struct {
 }
 
 type iceSession struct {
-	ID      string          `json:"id"`
-	Offer   *iceDescription `json:"offer"`
-	Answer  *iceDescription `json:"answer"`
-	Expires string          `json:"expiresAt"`
+	ID                string            `json:"id"`
+	Offer             *iceDescription   `json:"offer"`
+	Answer            *iceDescription   `json:"answer"`
+	BrowserCandidates []json.RawMessage `json:"browserCandidates"`
+	Expires           string            `json:"expiresAt"`
+}
+
+// iceAnswerGatherWait bounds how long the answer waits for local candidate
+// gathering. Server-reflexive candidates from STUN normally arrive within a
+// few hundred milliseconds; anything later is trickled through Dyner.
+const iceAnswerGatherWait = 1500 * time.Millisecond
+
+// iceConnectWait bounds how long an answered session keeps exchanging trickled
+// candidates before the peer is abandoned.
+const iceConnectWait = 15 * time.Second
+
+const iceCandidatePollInterval = 250 * time.Millisecond
+
+// iceCandidateTrickler posts the agent's local ICE candidates to Dyner as they
+// are gathered. Dyner stores an append-only list, so every post carries the
+// full accumulated list and a trailing null marks the end of gathering.
+type iceCandidateTrickler struct {
+	mu        sync.Mutex
+	gathered  []json.RawMessage
+	posted    int
+	ended     bool
+	posting   bool
+	post      func(list []json.RawMessage) error
+	onFailure func(error)
+}
+
+func newICECandidateTrickler(post func(list []json.RawMessage) error) *iceCandidateTrickler {
+	return &iceCandidateTrickler{post: post}
+}
+
+func (t *iceCandidateTrickler) add(candidate *webrtc.ICECandidate) {
+	t.mu.Lock()
+	if t.ended {
+		t.mu.Unlock()
+		return
+	}
+	if candidate == nil {
+		t.ended = true
+		t.gathered = append(t.gathered, json.RawMessage("null"))
+	} else {
+		encoded, err := json.Marshal(candidate.ToJSON())
+		if err != nil {
+			t.mu.Unlock()
+			return
+		}
+		t.gathered = append(t.gathered, encoded)
+	}
+	start := !t.posting
+	t.posting = true
+	t.mu.Unlock()
+	if start {
+		go t.drain()
+	}
+}
+
+func (t *iceCandidateTrickler) drain() {
+	for {
+		t.mu.Lock()
+		if t.posted >= len(t.gathered) {
+			t.posting = false
+			t.mu.Unlock()
+			return
+		}
+		snapshot := append([]json.RawMessage(nil), t.gathered...)
+		t.mu.Unlock()
+		err := t.post(snapshot)
+		t.mu.Lock()
+		if err == nil {
+			if len(snapshot) > t.posted {
+				t.posted = len(snapshot)
+			}
+		} else {
+			// Candidates only speed up connectivity checks; the answer already
+			// carries everything gathered before it was posted.
+			t.posting = false
+			t.ended = true
+			t.mu.Unlock()
+			if t.onFailure != nil {
+				t.onFailure(err)
+			}
+			return
+		}
+		t.mu.Unlock()
+	}
+}
+
+// applyBrowserCandidates adds not-yet-seen browser candidates to the peer and
+// reports whether the browser has signalled the end of its gathering.
+func applyBrowserCandidates(peer *webrtc.PeerConnection, seen map[string]struct{}, list []json.RawMessage) (ended bool) {
+	for _, raw := range list {
+		key := string(raw)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return true
+		}
+		var candidate webrtc.ICECandidateInit
+		if err := json.Unmarshal(raw, &candidate); err != nil || candidate.Candidate == "" {
+			continue
+		}
+		_ = peer.AddICECandidate(candidate)
+	}
+	return false
 }
 
 type dataChannelMessage struct {
@@ -285,12 +391,21 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 		_ = peer.Close()
 		return err
 	}
+	seenBrowser := map[string]struct{}{}
+	browserEnded := applyBrowserCandidates(peer, seenBrowser, session.BrowserCandidates)
 	answer, err := peer.CreateAnswer(nil)
 	if err != nil {
 		cancel()
 		_ = peer.Close()
 		return err
 	}
+	// Trickle candidates gathered after the answer is posted. Candidates
+	// gathered before that are already part of the answer SDP, but Dyner's
+	// list is append-only, so the trickler still carries them.
+	trickler := newICECandidateTrickler(func(list []json.RawMessage) error {
+		return postICE(connectionCtx, nil, config, session.ID+"/shell-candidates", list)
+	})
+	peer.OnICECandidate(trickler.add)
 	gather := webrtc.GatheringCompletePromise(peer)
 	if err := peer.SetLocalDescription(answer); err != nil {
 		cancel()
@@ -299,7 +414,7 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 	}
 	select {
 	case <-gather:
-	case <-time.After(3 * time.Second):
+	case <-time.After(iceAnswerGatherWait):
 	case <-ctx.Done():
 		cancel()
 		_ = peer.Close()
@@ -316,11 +431,29 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 		_ = peer.Close()
 		return err
 	}
+	// The browser trickles its own candidates after posting the offer. Keep
+	// pulling them until the peer connects, gathering ends, or we give up.
+	go func() {
+		for !browserEnded {
+			select {
+			case <-connected:
+				return
+			case <-connectionCtx.Done():
+				return
+			case <-time.After(iceCandidatePollInterval):
+			}
+			latest, err := fetchICESession(connectionCtx, nil, config, session.ID)
+			if err != nil {
+				continue
+			}
+			browserEnded = applyBrowserCandidates(peer, seenBrowser, latest.BrowserCandidates)
+		}
+	}()
 	go func() {
 		select {
 		case <-connected:
 			<-connectionCtx.Done()
-		case <-time.After(15 * time.Second):
+		case <-time.After(iceConnectWait):
 			cancel()
 		case <-connectionCtx.Done():
 		}
@@ -364,6 +497,34 @@ func fetchICESessions(ctx context.Context, client *http.Client, config Config) (
 	}
 	err = json.NewDecoder(response.Body).Decode(&payload)
 	return payload.Sessions, err
+}
+
+func fetchICESession(ctx context.Context, client *http.Client, config Config, id string) (iceSession, error) {
+	endpoint, err := iceURL(config, "/"+url.PathEscape(id))
+	if err != nil {
+		return iceSession{}, err
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return iceSession{}, err
+	}
+	request.Header.Set("Authorization", "DynApp-Device "+config.DeviceCredential)
+	response, err := client.Do(request)
+	if err != nil {
+		return iceSession{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode/100 != 2 {
+		return iceSession{}, fmt.Errorf("Dyner ICE session fetch failed: HTTP %d", response.StatusCode)
+	}
+	var payload struct {
+		Session iceSession `json:"session"`
+	}
+	err = json.NewDecoder(response.Body).Decode(&payload)
+	return payload.Session, err
 }
 
 func postICE(ctx context.Context, client *http.Client, config Config, suffix string, body any) error {
