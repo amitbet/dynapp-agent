@@ -7,14 +7,17 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -452,5 +455,236 @@ func TestRelayOpensOnRequestAndClosesWhenNobodyIsAsking(t *testing.T) {
 	agent.mu.Unlock()
 	if running {
 		t.Fatal("expected an unused relay to close")
+	}
+}
+
+func TestWebRTCFragmentsSplitOversizedMessages(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), webRTCFragmentThreshold*2+17)
+	frames := webRTCFragments(payload, true)
+	if len(frames) != 3 {
+		t.Fatalf("expected 3 fragments, got %d", len(frames))
+	}
+	var rebuilt []byte
+	for index, frame := range frames {
+		if string(frame[:4]) != webRTCFragmentMagic {
+			t.Fatalf("fragment %d is not marked", index)
+		}
+		if frame[4] != 1 {
+			t.Fatalf("fragment %d lost the text flag", index)
+		}
+		if got := int(binary.BigEndian.Uint16(frame[5:7])); got != index {
+			t.Fatalf("fragment %d carries index %d", index, got)
+		}
+		if got := int(binary.BigEndian.Uint16(frame[7:9])); got != 3 {
+			t.Fatalf("fragment %d carries count %d", index, got)
+		}
+		if len(frame) > webRTCFragmentHeaderSize+webRTCFragmentThreshold {
+			t.Fatalf("fragment %d is %d bytes, above the peer limit", index, len(frame))
+		}
+		rebuilt = append(rebuilt, frame[webRTCFragmentHeaderSize:]...)
+	}
+	if !bytes.Equal(rebuilt, payload) {
+		t.Fatal("reassembled payload does not match")
+	}
+	if webRTCFragments(bytes.Repeat([]byte("y"), 10), false)[0][4] != 0 {
+		t.Fatal("binary fragments must not set the text flag")
+	}
+}
+
+func TestWebRTCSocketOnlyFragmentsForBrowsersThatAskedFor(t *testing.T) {
+	// A browser that never announced reassembly must keep receiving whole
+	// messages, even ones the carrier will then refuse.
+	off := &webRTCChannelSocket{fragments: &atomic.Bool{}}
+	if off.fragments.Load() {
+		t.Fatal("fragmentation must default to off")
+	}
+	on := &webRTCChannelSocket{fragments: &atomic.Bool{}}
+	on.fragments.Store(true)
+	if !on.fragments.Load() {
+		t.Fatal("hello must be able to enable fragmentation")
+	}
+}
+
+// connectedICEBrowser stands up a real pion peer pair through answerICESession
+// and returns the browser's control channel plus its reassembled messages.
+func connectedICEBrowser(t *testing.T, agent *Server, hello string) (*webrtc.DataChannel, <-chan []byte, *atomic.Int64) {
+	t.Helper()
+	answerPosted := make(chan struct{})
+	var answerMu sync.Mutex
+	var answer iceDescription
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		const sessionPath = "/api/v1/remote-environments/env_test/ice/sessions/ice_abcdefghijklmnopqrstuv"
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == sessionPath+"/answer":
+			var posted iceDescription
+			if err := json.NewDecoder(request.Body).Decode(&posted); err != nil {
+				t.Errorf("invalid answer: %v", err)
+			}
+			answerMu.Lock()
+			answer = posted
+			answerMu.Unlock()
+			close(answerPosted)
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{"session": map[string]any{"id": "ice_abcdefghijklmnopqrstuv"}})
+	}))
+	t.Cleanup(server.Close)
+
+	browser, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = browser.Close() })
+	control, err := browser.CreateDataChannel("dynapp-control-v2", &webrtc.DataChannelInit{Ordered: boolPointer(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := make(chan struct{})
+	control.OnOpen(func() { close(opened) })
+	messages := make(chan []byte, 8)
+	fragmentsSeen := &atomic.Int64{}
+	// The same reassembly the browser runtime performs.
+	var parts []byte
+	var expected int
+	control.OnMessage(func(message webrtc.DataChannelMessage) {
+		data := message.Data
+		if len(data) >= webRTCFragmentHeaderSize && string(data[:4]) == webRTCFragmentMagic {
+			fragmentsSeen.Add(1)
+			index := int(binary.BigEndian.Uint16(data[5:7]))
+			count := int(binary.BigEndian.Uint16(data[7:9]))
+			if index == 0 {
+				parts, expected = nil, count
+			}
+			parts = append(parts, data[webRTCFragmentHeaderSize:]...)
+			if index == expected-1 {
+				messages <- append([]byte(nil), parts...)
+				parts = nil
+			}
+			return
+		}
+		messages <- append([]byte(nil), data...)
+	})
+	offer, err := browser.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gathered := webrtc.GatheringCompletePromise(browser)
+	if err := browser.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gathered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("browser ICE gathering timed out")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := agent.answerICESession(ctx, Config{
+		DynerBaseURL: server.URL, EnvironmentID: "env_test", DeviceCredential: "device-secret",
+	}, iceSession{ID: "ice_abcdefghijklmnopqrstuv", Offer: &iceDescription{Type: "offer", SDP: browser.LocalDescription().SDP}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-answerPosted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("agent did not post an ICE answer")
+	}
+	answerMu.Lock()
+	remote := answer
+	answerMu.Unlock()
+	if err := browser.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: remote.SDP}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-opened:
+	case <-time.After(10 * time.Second):
+		t.Fatal("WebRTC control channel did not open")
+	}
+	if err := control.SendText(hello); err != nil {
+		t.Fatal(err)
+	}
+	return control, messages, fragmentsSeen
+}
+
+func receiveICEMessage(t *testing.T, messages <-chan []byte, what string) map[string]any {
+	t.Helper()
+	select {
+	case data := <-messages:
+		var decoded map[string]any
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("%s is not valid JSON (%d bytes): %v", what, len(data), err)
+		}
+		return decoded
+	case <-time.After(15 * time.Second):
+		t.Fatalf("no %s arrived", what)
+		return nil
+	}
+}
+
+// A directory listing larger than the peer's message limit used to be dropped
+// by the carrier with no reply at all, so the browser sat on a request that
+// never completed. It must arrive, fragmented and reassembled.
+func TestOversizedFilesystemResponseSurvivesTheDataChannel(t *testing.T) {
+	directory := t.TempDir()
+	for index := 0; index < 900; index++ {
+		name := fmt.Sprintf("%s/entry-with-a-deliberately-long-name-%04d.txt", directory, index)
+		if err := os.WriteFile(name, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent := &Server{Config: Config{BrowserIdentities: []BrowserIdentity{{
+		KeyID: "browser-test", Origin: "https://app.example", Capabilities: []string{"fs.list"},
+	}}}}
+	control, messages, fragmentsSeen := connectedICEBrowser(t, agent, `{"type":"hello","protocol":2,"keyId":"browser-test","fragments":true}`)
+	if reply := receiveICEMessage(t, messages, "hello reply"); reply["ok"] != true {
+		t.Fatalf("unexpected hello response: %#v", reply)
+	}
+	request, _ := json.Marshal(map[string]any{"type": "fs", "id": "fs_1", "method": "list", "args": []any{directory}})
+	if err := control.SendText(string(request)); err != nil {
+		t.Fatal(err)
+	}
+	reply := receiveICEMessage(t, messages, "listing")
+	if reply["type"] != "fs-result" || reply["id"] != "fs_1" {
+		t.Fatalf("unexpected listing reply: %#v", reply)
+	}
+	result, _ := reply["result"].(map[string]any)
+	entries, _ := result["entries"].([]any)
+	if len(entries) != 900 {
+		t.Fatalf("listing carried %d entries, want 900", len(entries))
+	}
+	encoded, _ := json.Marshal(reply)
+	if len(encoded) <= webRTCFragmentThreshold {
+		t.Fatalf("listing is only %d bytes, so it would not have been fragmented", len(encoded))
+	}
+	if count := fragmentsSeen.Load(); count < 2 {
+		t.Fatalf("listing arrived in %d fragments; it was not split at all", count)
+	}
+}
+
+// A browser that never announced reassembly must keep receiving one whole
+// message, even when it is large, or this change would break older shells.
+func TestOversizedResponseStaysWholeForBrowsersWithoutReassembly(t *testing.T) {
+	directory := t.TempDir()
+	for index := 0; index < 900; index++ {
+		name := fmt.Sprintf("%s/entry-with-a-deliberately-long-name-%04d.txt", directory, index)
+		if err := os.WriteFile(name, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent := &Server{Config: Config{BrowserIdentities: []BrowserIdentity{{
+		KeyID: "browser-test", Origin: "https://app.example", Capabilities: []string{"fs.list"},
+	}}}}
+	control, messages, fragmentsSeen := connectedICEBrowser(t, agent, `{"type":"hello","protocol":2,"keyId":"browser-test"}`)
+	if reply := receiveICEMessage(t, messages, "hello reply"); reply["ok"] != true {
+		t.Fatalf("unexpected hello response: %#v", reply)
+	}
+	request, _ := json.Marshal(map[string]any{"type": "fs", "id": "fs_1", "method": "list", "args": []any{directory}})
+	if err := control.SendText(string(request)); err != nil {
+		t.Fatal(err)
+	}
+	if reply := receiveICEMessage(t, messages, "listing"); reply["type"] != "fs-result" {
+		t.Fatalf("unexpected listing reply: %#v", reply)
+	}
+	if count := fragmentsSeen.Load(); count != 0 {
+		t.Fatalf("sent %d fragments to a browser that cannot reassemble them", count)
 	}
 }

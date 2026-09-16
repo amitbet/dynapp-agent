@@ -3,6 +3,7 @@ package shellagent
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -135,6 +137,49 @@ func applyBrowserCandidates(peer *webrtc.PeerConnection, seen map[string]struct{
 	return false
 }
 
+// A data channel cannot carry a message larger than the size the peer
+// advertised in its SDP. Chrome advertises 256 KiB, so a large directory
+// listing or file read simply failed to send and the browser waited out its
+// request timeout with no reply at all. Messages above this threshold are
+// split into framed fragments the browser reassembles; the threshold sits
+// below every implementation's limit, including pion's own 64 KiB default.
+const webRTCFragmentThreshold = 60000
+
+// webRTCMaxReceiveMessageSize is what this agent advertises it can receive, so
+// the browser is not held to pion's much smaller default in its direction.
+const webRTCMaxReceiveMessageSize = 1 << 20
+
+// webRTCFragmentMagic marks a fragment of a larger message. A whole message is
+// either JSON text or a DFB1 binary frame, so neither can collide with it.
+const webRTCFragmentMagic = "DFRG"
+
+const webRTCFragmentHeaderSize = 9
+
+// webRTCFragments splits a payload into `DFRG` frames: the magic, a flag byte
+// whose low bit marks text, then the fragment index and count as big-endian
+// uint16s. The channel is ordered, so the browser reassembles in arrival order.
+func webRTCFragments(payload []byte, text bool) [][]byte {
+	count := (len(payload) + webRTCFragmentThreshold - 1) / webRTCFragmentThreshold
+	if count == 0 || count > 0xffff {
+		return nil
+	}
+	frames := make([][]byte, 0, count)
+	for index := 0; index < count; index++ {
+		end := min(len(payload), (index+1)*webRTCFragmentThreshold)
+		chunk := payload[index*webRTCFragmentThreshold : end]
+		frame := make([]byte, webRTCFragmentHeaderSize+len(chunk))
+		copy(frame, webRTCFragmentMagic)
+		if text {
+			frame[4] = 1
+		}
+		binary.BigEndian.PutUint16(frame[5:7], uint16(index))
+		binary.BigEndian.PutUint16(frame[7:9], uint16(count))
+		copy(frame[webRTCFragmentHeaderSize:], chunk)
+		frames = append(frames, frame)
+	}
+	return frames
+}
+
 type dataChannelMessage struct {
 	kind websocket.MessageType
 	data []byte
@@ -151,10 +196,16 @@ type webRTCChannelSocket struct {
 	datagram   *webrtc.DataChannel
 	datagrams  chan []byte
 	rawBytes   []byte
+	// fragments is shared by every channel of one peer connection: the
+	// browser announces reassembly support once, in its hello.
+	fragments *atomic.Bool
 }
 
-func newWebRTCChannelSocket(channel *webrtc.DataChannel, peer *webrtc.PeerConnection, closePeer bool) *webRTCChannelSocket {
-	s := &webRTCChannelSocket{channel: channel, peer: peer, closePeer: closePeer, incoming: make(chan dataChannelMessage, 256), closed: make(chan struct{}), datagrams: make(chan []byte, 256)}
+func newWebRTCChannelSocket(channel *webrtc.DataChannel, peer *webrtc.PeerConnection, closePeer bool, fragments *atomic.Bool) *webRTCChannelSocket {
+	if fragments == nil {
+		fragments = &atomic.Bool{}
+	}
+	s := &webRTCChannelSocket{channel: channel, peer: peer, closePeer: closePeer, incoming: make(chan dataChannelMessage, 256), closed: make(chan struct{}), datagrams: make(chan []byte, 256), fragments: fragments}
 	channel.OnMessage(func(message webrtc.DataChannelMessage) {
 		kind := websocket.MessageBinary
 		if message.IsString {
@@ -200,7 +251,26 @@ func (s *webRTCChannelSocket) Read(ctx context.Context) (websocket.MessageType, 
 }
 
 func (s *webRTCChannelSocket) Write(_ context.Context, kind websocket.MessageType, payload []byte) error {
-	if kind == websocket.MessageText {
+	return s.writeMessage(payload, kind == websocket.MessageText)
+}
+
+// writeMessage sends one protocol message, fragmenting it when it would exceed
+// what the peer accepts. Callers hold the per-connection write lock, so one
+// message's fragments are never interleaved with another message.
+func (s *webRTCChannelSocket) writeMessage(payload []byte, text bool) error {
+	if len(payload) > webRTCFragmentThreshold && s.fragments.Load() {
+		frames := webRTCFragments(payload, text)
+		if frames == nil {
+			return errors.New("WebRTC message is too large to fragment")
+		}
+		for _, frame := range frames {
+			if err := s.channel.Send(frame); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if text {
 		return s.channel.SendText(string(payload))
 	}
 	return s.channel.Send(payload)
@@ -220,7 +290,7 @@ func (s *webRTCChannelSocket) ReadRaw(ctx context.Context, payload []byte) (int,
 }
 
 func (s *webRTCChannelSocket) WriteRaw(_ context.Context, payload []byte) error {
-	return s.channel.Send(payload)
+	return s.writeMessage(payload, false)
 }
 
 func (s *webRTCChannelSocket) Close(websocket.StatusCode, string) error {
@@ -333,10 +403,17 @@ func (s *Server) authenticateICEHello(ctx context.Context, config Config, hello 
 }
 
 func (s *Server) answerICESession(ctx context.Context, config Config, session iceSession) error {
-	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.cloudflare.com:3478"}}}})
+	// pion advertises a 64 KiB SCTP message limit by default, which caps what
+	// the browser may send this agent. Announce a larger one; this agent's own
+	// sends are capped by what the browser advertises, and are fragmented.
+	settings := webrtc.SettingEngine{}
+	settings.SetSCTPMaxMessageSize(webRTCMaxReceiveMessageSize)
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
+	peer, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.cloudflare.com:3478"}}}})
 	if err != nil {
 		return err
 	}
+	fragments := &atomic.Bool{}
 	connectionCtx, cancel := context.WithCancel(ctx)
 	connected := make(chan struct{})
 	var connectedOnce sync.Once
@@ -367,6 +444,11 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 					return
 				}
 				s.serveAuthenticatedSocket(connectionCtx, socket, func(hello message) socketAuthentication {
+					// Only a browser that says it reassembles fragments is
+					// sent them; an older one still gets whole messages.
+					if hello.Fragments {
+						fragments.Store(true)
+					}
 					return s.authenticateICEHello(connectionCtx, config, hello)
 				}, carrierCapabilities{
 					reliableStreams: true, datagrams: datagrams, rawBridgeStreams: true, filesystemStreams: true,
@@ -377,7 +459,7 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 	peer.OnDataChannel(func(channel *webrtc.DataChannel) {
 		switch {
 		case channel.Label() == "dynapp-control-v2":
-			socket := newWebRTCChannelSocket(channel, peer, true)
+			socket := newWebRTCChannelSocket(channel, peer, true, fragments)
 			controlMu.Lock()
 			control = socket
 			if pendingDatagram != nil {
@@ -399,7 +481,7 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 				datagramReadyOnce.Do(func() { close(datagramReady) })
 			})
 		case strings.HasPrefix(channel.Label(), "dynapp-stream-v2-"):
-			socket := newWebRTCChannelSocket(channel, peer, false)
+			socket := newWebRTCChannelSocket(channel, peer, false, fragments)
 			channel.OnOpen(func() {
 				select {
 				case channels <- socket:

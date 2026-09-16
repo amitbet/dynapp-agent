@@ -499,30 +499,32 @@ type message struct {
 	Token     string          `json:"token,omitempty"`
 	// KeyID and App let a relay hello name the browser identity and app so
 	// the agent can intersect the synced grant with the manifest.
-	KeyID        string          `json:"keyId,omitempty"`
-	App          *directLocalApp `json:"app,omitempty"`
-	Method       string          `json:"method,omitempty"`
-	Service      string          `json:"service,omitempty"`
-	AppID        string          `json:"appId,omitempty"`
-	SessionID    string          `json:"sessionId,omitempty"`
-	Args         []any           `json:"args,omitempty"`
-	File         string          `json:"file,omitempty"`
-	Command      string          `json:"command,omitempty"`
-	Cwd          string          `json:"cwd,omitempty"`
-	Action       string          `json:"action,omitempty"`
-	Stream       bool            `json:"stream,omitempty"`
-	Stdin        string          `json:"stdin,omitempty"`
-	Mode         string          `json:"mode,omitempty"`
-	Cols         int             `json:"cols,omitempty"`
-	Rows         int             `json:"rows,omitempty"`
-	Term         string          `json:"term,omitempty"`
-	Env          map[string]any  `json:"env,omitempty"`
-	ProcessID    string          `json:"processId,omitempty"`
-	Data         string          `json:"data,omitempty"`
-	Signal       string          `json:"signal,omitempty"`
-	BridgeID     string          `json:"bridgeId,omitempty"`
-	Kind         string          `json:"kind,omitempty"`
-	ProtocolName string          `json:"-"`
+	KeyID string          `json:"keyId,omitempty"`
+	App   *directLocalApp `json:"app,omitempty"`
+	// Fragments marks a browser that reassembles oversized WebRTC messages.
+	Fragments    bool           `json:"fragments,omitempty"`
+	Method       string         `json:"method,omitempty"`
+	Service      string         `json:"service,omitempty"`
+	AppID        string         `json:"appId,omitempty"`
+	SessionID    string         `json:"sessionId,omitempty"`
+	Args         []any          `json:"args,omitempty"`
+	File         string         `json:"file,omitempty"`
+	Command      string         `json:"command,omitempty"`
+	Cwd          string         `json:"cwd,omitempty"`
+	Action       string         `json:"action,omitempty"`
+	Stream       bool           `json:"stream,omitempty"`
+	Stdin        string         `json:"stdin,omitempty"`
+	Mode         string         `json:"mode,omitempty"`
+	Cols         int            `json:"cols,omitempty"`
+	Rows         int            `json:"rows,omitempty"`
+	Term         string         `json:"term,omitempty"`
+	Env          map[string]any `json:"env,omitempty"`
+	ProcessID    string         `json:"processId,omitempty"`
+	Data         string         `json:"data,omitempty"`
+	Signal       string         `json:"signal,omitempty"`
+	BridgeID     string         `json:"bridgeId,omitempty"`
+	Kind         string         `json:"kind,omitempty"`
+	ProtocolName string         `json:"-"`
 	Target       struct {
 		Host      string `json:"host"`
 		Port      int    `json:"port"`
@@ -1022,7 +1024,12 @@ func sendError(c protocolSocket, ctx context.Context, id, text string) {
 	send(c, ctx, map[string]any{"type": "fs-error", "id": id, "error": text})
 }
 func fsResult(c protocolSocket, ctx context.Context, id string, result any) {
-	send(c, ctx, map[string]any{"type": "fs-result", "id": id, "result": result})
+	// A result the carrier refuses, such as a WebRTC message above the peer's
+	// limit, used to be dropped silently and the browser waited out its
+	// request timeout. Report it instead; the short error always fits.
+	if !send(c, ctx, map[string]any{"type": "fs-result", "id": id, "result": result}) {
+		sendError(c, ctx, id, "Remote filesystem response could not be delivered over this connection")
+	}
 }
 
 func (s *Server) handleFilesystem(c protocolSocket, ctx context.Context, request message, body []byte) {
