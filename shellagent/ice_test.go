@@ -3,6 +3,10 @@ package shellagent
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +20,38 @@ import (
 
 	"github.com/pion/webrtc/v4"
 )
+
+func TestAuthenticateICEHelloRefreshesNewBrowserIdentity(t *testing.T) {
+	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := BrowserJWK{
+		KTY: "EC", CRV: "P-256",
+		X: base64.RawURLEncoding.EncodeToString(private.PublicKey.X.FillBytes(make([]byte, 32))),
+		Y: base64.RawURLEncoding.EncodeToString(private.PublicKey.Y.FillBytes(make([]byte, 32))),
+	}
+	identity := BrowserIdentity{
+		KeyID: BrowserKeyID(key), PublicKeyJWK: key, Origin: "https://app.example", Capabilities: []string{"fs.home"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/remote-environments/env_test/browser-identities" {
+			t.Fatalf("unexpected refresh path: %s", request.URL.Path)
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{"browserIdentities": []BrowserIdentity{identity}})
+	}))
+	defer server.Close()
+
+	agent := &Server{}
+	config := Config{
+		SchemaVersion: ConfigSchemaVersion, DynerBaseURL: server.URL, EnvironmentID: "env_test",
+		DeviceCredential: "env_test.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
+	}
+	grant := agent.authenticateICEHello(context.Background(), config, message{Type: "hello", Protocol: json.RawMessage("2"), KeyID: identity.KeyID})
+	if !grant.ok || grant.keyID != identity.KeyID || !grant.allows("fs.home") {
+		t.Fatalf("refreshed grant = %#v", grant)
+	}
+}
 
 func TestSyncRemoteEnvironmentStateReturnsPendingICESessions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

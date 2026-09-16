@@ -305,6 +305,33 @@ func logICEError(id string, err error) {
 	}
 }
 
+// authenticateICEHello retries the browser-key lookup once against Dyner when
+// an ICE session reaches the agent before the periodic identity snapshot that
+// contains its newly provisioned key. The signaling session proves account
+// access, but the data channel still opens only for an exact browser grant.
+func (s *Server) authenticateICEHello(ctx context.Context, config Config, hello message) socketAuthentication {
+	grant := s.relayGrant(ctx, config, hello)
+	if grant.keyID != "" || strings.TrimSpace(hello.KeyID) == "" {
+		grant.ok = grant.keyID != ""
+		return grant
+	}
+
+	refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	state, err := SyncRemoteEnvironmentState(refreshCtx, nil, config)
+	if err == nil {
+		s.mu.Lock()
+		s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, state.BrowserIdentities)
+		s.mu.Unlock()
+		grant = s.relayGrant(ctx, config, hello)
+	}
+	grant.ok = grant.keyID != ""
+	if !grant.ok {
+		log.Printf("DynApp Shell agent: rejected ICE browser identity after refresh")
+	}
+	return grant
+}
+
 func (s *Server) answerICESession(ctx context.Context, config Config, session iceSession) error {
 	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.cloudflare.com:3478"}}}})
 	if err != nil {
@@ -340,11 +367,7 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 					return
 				}
 				s.serveAuthenticatedSocket(connectionCtx, socket, func(hello message) socketAuthentication {
-					grant := s.relayGrant(connectionCtx, config, hello)
-					// ICE signaling proves account access to the environment. The
-					// data channel must still name an exact, synced browser grant.
-					grant.ok = grant.keyID != ""
-					return grant
+					return s.authenticateICEHello(connectionCtx, config, hello)
 				}, carrierCapabilities{
 					reliableStreams: true, datagrams: datagrams, rawBridgeStreams: true, filesystemStreams: true,
 				}, channels)
