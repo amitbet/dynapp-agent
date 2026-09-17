@@ -75,13 +75,16 @@ var AgentVersion = "dev"
 var AgentRepository = "amitbet/dynapp-agent"
 
 const (
-	DefaultSelfUpdateInterval = time.Hour
-	maxAgentBinaryBytes       = 256 * 1024 * 1024
+	DefaultSelfUpdateInterval   = time.Hour
+	DefaultMaxBridgeUpdateDelay = 2 * time.Hour
+	bridgeUpdatePollInterval    = 50 * time.Millisecond
+	maxAgentBinaryBytes         = 256 * 1024 * 1024
 )
 
 // SelfUpdateConfig describes the release poller. OnUpdate runs only after the
 // downloaded binary passes its checksum and the agent has reserved the bridge
-// set for shutdown.
+// set for shutdown. Active bridges may defer that reservation for up to
+// MaxBridgeDelay.
 type SelfUpdateConfig struct {
 	Enabled    bool
 	Repository string
@@ -90,6 +93,9 @@ type SelfUpdateConfig struct {
 	APIBaseURL string
 	HTTPClient *http.Client
 	OnUpdate   func(context.Context, string, string) error
+	// MaxBridgeDelay is how long active TCP, UDP, or RDP bridges may defer a
+	// staged update. Zero means DefaultMaxBridgeUpdateDelay.
+	MaxBridgeDelay time.Duration
 }
 
 func DefaultSelfUpdateConfig() SelfUpdateConfig {
@@ -195,11 +201,14 @@ func (s *Server) checkSelfUpdateWithVerifier(ctx context.Context, config SelfUpd
 		log.Printf("DynApp Shell agent: update download failed: %v", err)
 		return
 	}
-	if s.ActiveBridges() != 0 {
-		log.Printf("DynApp Shell agent: update %s downloaded; waiting for %d active bridge(s)", release.TagName, s.ActiveBridges())
+	force, proceed := s.waitForIdleBridges(ctx, config.bridgeUpdateDelay())
+	if !proceed {
 		return
 	}
-	if !s.beginUpdate() {
+	if force {
+		log.Printf("DynApp Shell agent: applying update %s after waiting %s with %d active bridge(s)", release.TagName, config.bridgeUpdateDelay(), s.ActiveBridges())
+	}
+	if !s.tryBeginUpdate(force) {
 		return
 	}
 	// The staged file sat on disk while bridges drained; verify it again right
@@ -213,6 +222,50 @@ func (s *Server) checkSelfUpdateWithVerifier(ctx context.Context, config SelfUpd
 	if err := config.OnUpdate(ctx, path, normalizedReleaseVersion(release.TagName)); err != nil {
 		s.cancelUpdate()
 		log.Printf("DynApp Shell agent: applying update %s failed: %v", release.TagName, err)
+	}
+}
+
+func (config SelfUpdateConfig) bridgeUpdateDelay() time.Duration {
+	if config.MaxBridgeDelay > 0 {
+		return config.MaxBridgeDelay
+	}
+	return DefaultMaxBridgeUpdateDelay
+}
+
+func (s *Server) waitForIdleBridges(ctx context.Context, limit time.Duration) (force, proceed bool) {
+	if s.ActiveBridges() == 0 {
+		return false, true
+	}
+	if ctx.Err() != nil {
+		return false, false
+	}
+	deadline := s.bridgeDeferralDeadline(limit)
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return s.ActiveBridges() != 0, true
+	}
+	log.Printf("DynApp Shell agent: update downloaded; waiting up to %s for %d active bridge(s)", remaining.Round(time.Millisecond), s.ActiveBridges())
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	ticker := time.NewTicker(bridgeUpdatePollInterval)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return false, false
+		}
+		if s.ActiveBridges() == 0 {
+			return false, true
+		}
+		select {
+		case <-ctx.Done():
+			return false, false
+		case <-timer.C:
+			if ctx.Err() != nil {
+				return false, false
+			}
+			return s.ActiveBridges() != 0, true
+		case <-ticker.C:
+		}
 	}
 }
 

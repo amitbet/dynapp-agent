@@ -85,6 +85,7 @@ type Server struct {
 	activeBridges      atomic.Int64
 	updateMu           sync.RWMutex
 	updatePending      bool
+	updateDeferredAt   time.Time
 	externalMu         sync.Mutex
 	externalOpens      map[string][]string
 	previewMu          sync.Mutex
@@ -455,8 +456,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // ActiveBridges reports the number of TCP, UDP, and RDP bridges currently
-// owned by the agent. An update must not replace the process while this is
-// non-zero because the connections live inside the process.
+// owned by the agent. An update waits for this to reach zero because those
+// connections live inside the process, then proceeds anyway after
+// DefaultMaxBridgeUpdateDelay.
 func (s *Server) ActiveBridges() int {
 	count := s.activeBridges.Load()
 	if count < 0 {
@@ -475,9 +477,13 @@ func (s *Server) lockBridgeOpen() (func(), bool) {
 }
 
 func (s *Server) beginUpdate() bool {
+	return s.tryBeginUpdate(false)
+}
+
+func (s *Server) tryBeginUpdate(ignoreActiveBridges bool) bool {
 	s.updateMu.Lock()
 	defer s.updateMu.Unlock()
-	if s.updatePending || s.activeBridges.Load() != 0 {
+	if s.updatePending || (!ignoreActiveBridges && s.activeBridges.Load() != 0) {
 		return false
 	}
 	s.updatePending = true
@@ -488,6 +494,15 @@ func (s *Server) cancelUpdate() {
 	s.updateMu.Lock()
 	s.updatePending = false
 	s.updateMu.Unlock()
+}
+
+func (s *Server) bridgeDeferralDeadline(limit time.Duration) time.Time {
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+	if s.updateDeferredAt.IsZero() {
+		s.updateDeferredAt = time.Now()
+	}
+	return s.updateDeferredAt.Add(limit)
 }
 
 type message struct {

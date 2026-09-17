@@ -289,12 +289,13 @@ stages the update. Keep the signing `.p12` backed up. Replacing it creates a new
 macOS code requirement and can make previously granted permissions appear lost.
 
 The agent counts TCP, UDP, and RDP bridges across local and relay sessions. It
-does not replace itself while any bridge is active. Once the count reaches zero,
-it rejects new bridge opens and stops the listener. A service install then
-starts a detached helper: that helper stops/unloads the job so KeepAlive cannot
-respawn the old binary, replaces the installed file (following Homebrew
-symlinks into the keg), and starts the new service. Interactive Unix builds
-exec the new binary in the same process instead.
+does not replace itself while any bridge is active, for up to two hours after
+the update is staged. After that it proceeds even if bridges remain. Once it
+decides to replace itself, it rejects new bridge opens and stops the listener.
+A service install then starts a detached helper: that helper stops/unloads the
+job so KeepAlive cannot respawn the old binary, replaces the installed file
+(following Homebrew symlinks into the keg), and starts the new service.
+Interactive Unix builds exec the new binary in the same process instead.
 
 Development builds do not poll because they carry the `dev` version. Use
 `--no-self-update` to disable checks for a release build, or

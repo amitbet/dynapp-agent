@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // useTestReleaseKey swaps the embedded release public key for a fresh pair
@@ -118,18 +119,130 @@ func TestCheckSelfUpdateStagesButDoesNotApplyWithActiveBridge(t *testing.T) {
 		return nil
 	})
 	agent.SelfUpdate = config
-	agent.checkSelfUpdateWithVerifier(t.Context(), config, func(string) error { return nil })
-	if got := applied.Load(); got != 0 {
-		t.Fatalf("update callback count = %d, want 0", got)
-	}
-	updates, err := filepath.Glob(filepath.Join(agent.StateDir, "updates", release.binaryName))
-	if err != nil || len(updates) != 1 {
-		t.Fatalf("staged update = %v, %v", updates, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		agent.checkSelfUpdateWithVerifier(ctx, config, func(string) error { return nil })
+	}()
+	updates := waitForStagedUpdate(t, agent.StateDir, release.binaryName)
+	if applied.Load() != 0 {
+		t.Fatal("update applied while a bridge was still inside the 2h grace period")
 	}
 	if _, err := os.Stat(updates[0]); err != nil {
 		t.Fatal(err)
 	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("updater did not return after the wait was cancelled")
+	}
+	if applied.Load() != 0 {
+		t.Fatal("update applied after cancelling the bridge wait")
+	}
 	_ = bridges.take("tcp_1").Close()
+}
+
+func TestCheckSelfUpdateAppliesAfterBridgeWaitLimit(t *testing.T) {
+	sign := useTestReleaseKey(t)
+	release := newFakeRelease(t, "1.2.4", []byte("new shell agent"), sign, true)
+	var applied atomic.Int64
+	agent := &Server{StateDir: t.TempDir()}
+	bridges := newBridgeSet(&agent.activeBridges)
+	client, remote := net.Pipe()
+	defer client.Close()
+	bridges.put("tcp_1", remote, nil)
+	config := release.config("1.2.3", func(_ context.Context, _, _ string) error {
+		applied.Add(1)
+		return nil
+	})
+	config.MaxBridgeDelay = 100 * time.Millisecond
+	agent.SelfUpdate = config
+	agent.checkSelfUpdateWithVerifier(t.Context(), config, func(string) error { return nil })
+	if applied.Load() != 1 {
+		t.Fatalf("update callback count = %d, want 1 after the bridge wait limit", applied.Load())
+	}
+	_ = bridges.take("tcp_1").Close()
+}
+
+func TestCheckSelfUpdateAppliesWhenBridgeDeferralExpires(t *testing.T) {
+	sign := useTestReleaseKey(t)
+	release := newFakeRelease(t, "1.2.4", []byte("new shell agent"), sign, true)
+	var applied atomic.Int64
+	agent := &Server{
+		StateDir:         t.TempDir(),
+		updateDeferredAt: time.Now().Add(-DefaultMaxBridgeUpdateDelay),
+	}
+	bridges := newBridgeSet(&agent.activeBridges)
+	client, remote := net.Pipe()
+	defer client.Close()
+	bridges.put("tcp_1", remote, nil)
+	config := release.config("1.2.3", func(_ context.Context, _, _ string) error {
+		applied.Add(1)
+		return nil
+	})
+	agent.SelfUpdate = config
+	agent.checkSelfUpdateWithVerifier(t.Context(), config, func(string) error { return nil })
+	if applied.Load() != 1 {
+		t.Fatalf("update callback count = %d, want 1 after a 2h bridge deferral", applied.Load())
+	}
+	_ = bridges.take("tcp_1").Close()
+}
+
+func TestCheckSelfUpdateAppliesWhenActiveBridgeCloses(t *testing.T) {
+	sign := useTestReleaseKey(t)
+	release := newFakeRelease(t, "1.2.4", []byte("new shell agent"), sign, true)
+	var applied atomic.Int64
+	agent := &Server{StateDir: t.TempDir()}
+	bridges := newBridgeSet(&agent.activeBridges)
+	client, remote := net.Pipe()
+	defer client.Close()
+	bridges.put("tcp_1", remote, nil)
+	config := release.config("1.2.3", func(_ context.Context, _, _ string) error {
+		applied.Add(1)
+		return nil
+	})
+	config.MaxBridgeDelay = time.Second
+	agent.SelfUpdate = config
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		agent.checkSelfUpdateWithVerifier(t.Context(), config, func(string) error { return nil })
+	}()
+	_ = waitForStagedUpdate(t, agent.StateDir, release.binaryName)
+	closedAt := time.Now()
+	_ = bridges.take("tcp_1").Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("updater did not apply after the active bridge closed")
+	}
+	if applied.Load() != 1 {
+		t.Fatalf("update callback count = %d, want 1 after the bridge closed", applied.Load())
+	}
+	if elapsed := time.Since(closedAt); elapsed > 500*time.Millisecond {
+		t.Fatalf("update waited %s after the bridge closed", elapsed)
+	}
+}
+
+func waitForStagedUpdate(t *testing.T, stateDir, binaryName string) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	pattern := filepath.Join(stateDir, "updates", binaryName)
+	for time.Now().Before(deadline) {
+		updates, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(updates) == 1 {
+			return updates
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("staged update %s did not appear", pattern)
+	return nil
 }
 
 func TestSelfUpdateRequiresDetachedSignatureAsset(t *testing.T) {
@@ -235,5 +348,19 @@ func TestBeginUpdateBlocksNewBridges(t *testing.T) {
 		t.Fatal("bridge open remained blocked after update cancellation")
 	} else {
 		release()
+	}
+}
+
+func TestTryBeginUpdateCanIgnoreActiveBridges(t *testing.T) {
+	server := &Server{}
+	server.activeBridges.Store(1)
+	if server.beginUpdate() {
+		t.Fatal("beginUpdate succeeded while a bridge was active")
+	}
+	if !server.tryBeginUpdate(true) {
+		t.Fatal("forced update reservation failed with an active bridge")
+	}
+	if release, allowed := server.lockBridgeOpen(); allowed || release != nil {
+		t.Fatal("bridge open was allowed during a forced update")
 	}
 }
