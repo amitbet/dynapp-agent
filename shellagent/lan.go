@@ -271,7 +271,24 @@ func (s *webTransportRecordSocket) Close(code websocket.StatusCode, reason strin
 		// meaningful approval or authentication reason for the browser.
 		return s.session.CloseWithError(webtransport.SessionErrorCode(code), reason)
 	}
-	return s.stream.Close()
+	err := s.stream.Close()
+	// Close only finishes the send side. QUIC counts a stream against the
+	// peer's limit until its receive side is finished as well, and a chunk
+	// stream is abandoned right after its one request, with the browser's
+	// FIN still unread. Left that way, a large copy ran the browser out of
+	// streams after about a hundred chunks. Drain the peer's side, and cut
+	// it off if it does not finish promptly.
+	go s.finishReceiveSide()
+	return err
+}
+
+const lanStreamDrainTimeout = 5 * time.Second
+
+func (s *webTransportRecordSocket) finishReceiveSide() {
+	_ = s.stream.SetReadDeadline(time.Now().Add(lanStreamDrainTimeout))
+	if _, err := io.Copy(io.Discard, s.stream); err != nil {
+		s.stream.CancelRead(0)
+	}
 }
 
 func (s *Server) LANCertificateHash() (map[string]string, error) {
