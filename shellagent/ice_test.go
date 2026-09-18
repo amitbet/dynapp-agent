@@ -246,7 +246,7 @@ func TestAnswerICESessionEstablishesBrowserDataChannels(t *testing.T) {
 			t.Fatalf("unexpected WebRTC hello response: %#v", reply)
 		}
 		features, _ := reply["features"].(map[string]any)
-		if features["reliableStreams"] != true || features["datagrams"] != true || features["rawBridgeStreams"] != true {
+		if features["reliableStreams"] != true || features["datagrams"] != true || features["rawBridgeStreams"] != true || features["fragments"] != true {
 			t.Fatalf("unexpected WebRTC features: %#v", features)
 		}
 	case <-time.After(5 * time.Second):

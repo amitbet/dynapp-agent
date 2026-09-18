@@ -451,7 +451,7 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 					}
 					return s.authenticateICEHello(connectionCtx, config, hello)
 				}, carrierCapabilities{
-					reliableStreams: true, datagrams: datagrams, rawBridgeStreams: true, filesystemStreams: true,
+					reliableStreams: true, datagrams: datagrams, rawBridgeStreams: true, filesystemStreams: true, fragments: true,
 				}, channels)
 			}()
 		})

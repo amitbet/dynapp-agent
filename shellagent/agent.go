@@ -122,6 +122,10 @@ type carrierCapabilities struct {
 	datagrams         bool
 	rawBridgeStreams  bool
 	filesystemStreams bool
+	// fragments: replies larger than the peer's message limit are split into
+	// DFRG frames, so a chunked file transfer can stay on the control channel
+	// instead of opening a stream per chunk.
+	fragments bool
 }
 
 var connectionWriters sync.Map // map[protocolSocket]*sync.Mutex
@@ -1027,6 +1031,7 @@ func protocolFeatures(version int, carriers ...carrierCapabilities) map[string]b
 		"datagrams":           carrier.datagrams,
 		"rawBridgeStreams":    carrier.rawBridgeStreams,
 		"filesystemStreams":   carrier.filesystemStreams,
+		"fragments":           carrier.fragments,
 	}
 }
 func protocolString(value json.RawMessage) string {
