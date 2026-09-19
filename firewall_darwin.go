@@ -22,6 +22,10 @@ func provisionServiceFirewall(config shellagent.Config, executable string) error
 	return runFirewallCommand("--unblockapp", executable)
 }
 
+// Application Firewall changes need root and persist across restarts, so
+// the install-time provisioning is enough on macOS.
+func refreshServiceFirewall(shellagent.Config, string) error { return nil }
+
 func removeServiceFirewall(_ shellagent.Config, executable string) error {
 	output, err := exec.Command(macOSFirewallTool, "--listapps").CombinedOutput()
 	if err == nil && !strings.Contains(string(output), executable) {

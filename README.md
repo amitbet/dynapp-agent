@@ -304,12 +304,14 @@ Development builds do not poll because they carry the `dev` version. Use
 `enroll` and `configure-lan` remain available for scripted setups. They are not
 required for the default path above.
 
-Installing the service with LAN mode enabled also provisions the inbound
-firewall permission for the agent. Windows scopes the rule to the
-`dynapp-shell-agent` service and its configured UDP listener port. macOS adds
-the signed executable to Application Firewall. Uninstalling removes the rule
-when the platform supports it. Loopback-only installs do not change firewall
-settings.
+Installing the service with LAN mode or Internet access enabled also
+provisions the inbound firewall permission for the agent. Windows allows
+inbound UDP to the agent executable on every port and network profile, since
+the QUIC listener and ICE hole punching both answer on UDP, and refreshes the
+rule at each service start so a machine that enabled LAN mode after install
+is covered. macOS adds the signed executable to Application Firewall.
+Uninstalling removes the rule when the platform supports it. Loopback-only
+installs do not change firewall settings.
 
 ## Verified contract
 

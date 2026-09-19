@@ -388,6 +388,11 @@ func main() {
 		}
 		return
 	}
+	if executable, err := os.Executable(); err == nil {
+		if err := refreshServiceFirewall(config, executable); err != nil {
+			log.Printf("DynApp Shell agent: could not refresh the firewall rule: %v", err)
+		}
+	}
 	if err := svc.Run(); err != nil {
 		log.Fatal(err)
 	}
