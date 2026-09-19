@@ -1,0 +1,5 @@
+Origin: DynApp Agent
+Label: dynapp-agent
+Architectures: amd64 arm64
+Description: DynApp agent packages
+Date: Sat, 19 Sep 2026 12:36:28 +0000

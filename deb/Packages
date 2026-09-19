@@ -1,0 +1,16 @@
+Package: dynapp-shell-agent
+Version: 0.1.28
+Architecture: arm64
+Maintainer: DynApp <amit.bet@gmail.com>
+Filename: ./dynapp-shell-agent_0.1.28_arm64.deb
+Size: 5126718
+MD5sum: 30b73abd54003e2d4a1ba4cf1a0daeaa
+SHA1: 0ada26a74ff091cc6af0e4379a23ed4193a0ddc6
+SHA256: a31fcad4bad3519fbafb6701a11ef3ef82e12d689a0b1ffc78c1819bd93ed4b9
+Section: utils
+Priority: optional
+Homepage: https://github.com/amitbet/dynapp-agent
+Description: Local DynApp agent
+ The agent lets hosted DynApps use local files, network, processes,
+ and other approved capabilities.
+
