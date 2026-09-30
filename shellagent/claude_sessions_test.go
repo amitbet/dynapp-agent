@@ -223,3 +223,15 @@ func TestProbeAgentTimesOutASlowShim(t *testing.T) {
 		t.Fatalf("slow row = %#v", row)
 	}
 }
+
+func TestCodexArgsAddNoDaemonOnlyWhenSupported(t *testing.T) {
+	user := &desktop.UserEnvironment{}
+	current := writeProbeScript(t, "codex", `echo "      --no-daemon"`)
+	if got := strings.Join(codexArgs(context.Background(), user, current, "app-server"), " "); got != "--no-daemon app-server" {
+		t.Fatalf("current codex args = %q", got)
+	}
+	older := writeProbeScript(t, "codex", `echo "Usage: codex [OPTIONS]"`)
+	if got := strings.Join(codexArgs(context.Background(), user, older, "login", "status"), " "); got != "login status" {
+		t.Fatalf("older codex args = %q", got)
+	}
+}

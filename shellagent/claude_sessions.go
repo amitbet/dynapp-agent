@@ -93,6 +93,9 @@ func probeAgent(ctx context.Context, user *desktop.UserEnvironment, item agentCa
 	row["source"] = "external"
 	row["installed"] = true
 	auth := strings.Fields(item.auth)
+	if item.id == "codex" {
+		auth = codexArgs(ctx, user, path, auth...)
+	}
 	output, err = runAgentProbe(ctx, user, item, path, auth...)
 	if err != nil {
 		row["reason"] = probeFailure(item.binary+" "+item.auth, output, err)

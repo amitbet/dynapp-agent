@@ -1,9 +1,12 @@
 package shellagent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/amitbet/dynapp-agent/shellagent/desktop"
 )
@@ -54,4 +57,49 @@ func codexEnvironment(user *desktop.UserEnvironment) []string {
 		env = append(env, "CODEX_HOME="+home)
 	}
 	return env
+}
+
+type noDaemonKey struct {
+	path     string
+	modified time.Time
+}
+
+var codexNoDaemon sync.Map // noDaemonKey -> bool
+
+// codexArgs prefixes --no-daemon when this Codex supports it. The shared
+// app-server daemon refuses to start for a Windows administrator ("start the
+// Windows daemon from a non-elevated terminal"); DynApp talks to its own
+// stdio app-server and never needs the daemon. Older Codex builds reject the
+// flag, so it is detected from --help once per binary version.
+func codexArgs(ctx context.Context, user *desktop.UserEnvironment, path string, args ...string) []string {
+	if supportsCodexNoDaemon(ctx, user, path) {
+		return append([]string{"--no-daemon"}, args...)
+	}
+	return args
+}
+
+func supportsCodexNoDaemon(ctx context.Context, user *desktop.UserEnvironment, path string) bool {
+	key := noDaemonKey{path: path}
+	if info, err := os.Stat(path); err == nil {
+		key.modified = info.ModTime()
+	}
+	if known, ok := codexNoDaemon.Load(key); ok {
+		return known.(bool)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	helpCtx, cancel := context.WithTimeout(ctx, agentProbeTimeout)
+	defer cancel()
+	command := user.Command(helpCtx, path, "--help")
+	command.Env = codexEnvironment(user)
+	command.WaitDelay = 2 * time.Second
+	output, err := command.CombinedOutput()
+	if err != nil && helpCtx.Err() != nil {
+		// A timeout says nothing about the flag; ask again next time.
+		return false
+	}
+	supported := strings.Contains(string(output), "--no-daemon")
+	codexNoDaemon.Store(key, supported)
+	return supported
 }

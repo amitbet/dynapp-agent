@@ -167,7 +167,7 @@ func (a *agentService) start(ctx context.Context, request message) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	command := user.Command(nil, path, "app-server")
+	command := user.Command(nil, path, codexArgs(ctx, user, path, "app-server")...)
 	command.Dir = cwd
 	command.Env = codexEnvironment(user)
 	stdout, err := command.StdoutPipe()
