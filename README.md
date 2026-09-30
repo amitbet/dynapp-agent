@@ -232,6 +232,13 @@ requires a CGO build with AppKit and Carbon. A root LaunchDaemon is not a
 supported macOS UI host. Linux and macOS builds with CGO disabled omit these
 capabilities from their advertised list.
 
+Coding-agent CLIs (`codex`, `claude`) run the same way. The Windows service
+detects them, checks their sign-in, and starts sessions with the active
+user's token and environment, resolving the CLI from that user's PATH. Session
+workspaces live under the user's `%LOCALAPPDATA%\DynApp\agent-workspaces`.
+As LocalSystem they would see the machine PATH (often an older npm install),
+SYSTEM's profile, and no sign-in.
+
 The helper runs the same binary in a private mode. Its loopback connection
 uses a random single-use credential delivered through the child environment,
 not its command line. It cannot invoke privileged agent operations. Normal

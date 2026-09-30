@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amitbet/dynapp-agent/shellagent/desktop"
 	"nhooyr.io/websocket"
 )
 
@@ -193,14 +194,14 @@ func TestProbeAgentReportsWhyAnAgentIsUnavailable(t *testing.T) {
 	item := agentCandidate{"codex", "Codex", "DYNAPP_TEST_PROBE_BINARY", "codex", "login status"}
 	ready := writeProbeScript(t, "codex", `if [ "$1" = "--version" ]; then echo "codex-cli 1.2.3"; else echo "Logged in using ChatGPT"; fi`)
 	t.Setenv(item.env, ready)
-	row := probeAgent(context.Background(), item)
+	row := probeAgent(context.Background(), &desktop.UserEnvironment{}, item)
 	if row["available"] != true || row["version"] != "codex-cli 1.2.3" || row["reason"] != nil {
 		t.Fatalf("signed-in row = %#v", row)
 	}
 
 	signedOut := writeProbeScript(t, "codex", `if [ "$1" = "--version" ]; then echo "codex-cli 1.2.3"; else echo "Not logged in"; exit 1; fi`)
 	t.Setenv(item.env, signedOut)
-	row = probeAgent(context.Background(), item)
+	row = probeAgent(context.Background(), &desktop.UserEnvironment{}, item)
 	if row["installed"] != true || row["available"] != false || row["reason"] != "codex login status failed: Not logged in" {
 		t.Fatalf("signed-out row = %#v", row)
 	}
@@ -214,7 +215,7 @@ func TestProbeAgentTimesOutASlowShim(t *testing.T) {
 	agentProbeTimeout = 200 * time.Millisecond
 	defer func() { agentProbeTimeout = previous }()
 	started := time.Now()
-	row := probeAgent(context.Background(), item)
+	row := probeAgent(context.Background(), &desktop.UserEnvironment{}, item)
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("probe took %s", elapsed)
 	}

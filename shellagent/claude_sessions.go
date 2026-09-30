@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/amitbet/dynapp-agent/shellagent/desktop"
 )
 
 var claudeModels = []map[string]any{
@@ -58,13 +60,15 @@ var agentCandidates = []agentCandidate{{"codex", "Codex", "DYNAPP_AGENT_BINARY",
 var agentProbeTimeout = 20 * time.Second
 
 func discoverAgents(ctx context.Context) []map[string]any {
+	user := agentUser()
+	defer user.Close()
 	result := make([]map[string]any, len(agentCandidates))
 	var wg sync.WaitGroup
 	for index, item := range agentCandidates {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result[index] = probeAgent(ctx, item)
+			result[index] = probeAgent(ctx, user, item)
 		}()
 	}
 	wg.Wait()
@@ -73,18 +77,14 @@ func discoverAgents(ctx context.Context) []map[string]any {
 
 // probeAgent reports whether one CLI is installed and signed in. `reason`
 // says why it is unavailable, so apps can tell the user what to fix.
-func probeAgent(ctx context.Context, item agentCandidate) map[string]any {
+func probeAgent(ctx context.Context, user *desktop.UserEnvironment, item agentCandidate) map[string]any {
 	row := map[string]any{"id": item.id, "label": item.label, "source": nil, "version": nil, "installed": false, "configured": false, "available": false}
-	path := strings.TrimSpace(os.Getenv(item.env))
-	if path == "" {
-		found, err := exec.LookPath(item.binary)
-		if err != nil {
-			row["reason"] = item.binary + " was not found on the agent's PATH"
-			return row
-		}
-		path = found
+	path, err := agentBinary(user, item.env, item.binary)
+	if err != nil {
+		row["reason"] = item.binary + " was not found on the user's PATH"
+		return row
 	}
-	output, err := runAgentProbe(ctx, item, path, "--version")
+	output, err := runAgentProbe(ctx, user, item, path, "--version")
 	if err != nil {
 		row["reason"] = probeFailure(item.binary+" --version", output, err)
 		return row
@@ -93,7 +93,7 @@ func probeAgent(ctx context.Context, item agentCandidate) map[string]any {
 	row["source"] = "external"
 	row["installed"] = true
 	auth := strings.Fields(item.auth)
-	output, err = runAgentProbe(ctx, item, path, auth...)
+	output, err = runAgentProbe(ctx, user, item, path, auth...)
 	if err != nil {
 		row["reason"] = probeFailure(item.binary+" "+item.auth, output, err)
 		return row
@@ -103,12 +103,12 @@ func probeAgent(ctx context.Context, item agentCandidate) map[string]any {
 	return row
 }
 
-func runAgentProbe(ctx context.Context, item agentCandidate, path string, args ...string) (string, error) {
+func runAgentProbe(ctx context.Context, user *desktop.UserEnvironment, item agentCandidate, path string, args ...string) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, agentProbeTimeout)
 	defer cancel()
-	command := exec.CommandContext(probeCtx, path, args...)
-	if item.id == "codex" && os.Getenv("DYNAPP_AGENT_HOME") != "" {
-		command.Env = append(os.Environ(), "CODEX_HOME="+os.Getenv("DYNAPP_AGENT_HOME"))
+	command := user.Command(probeCtx, path, args...)
+	if item.id == "codex" {
+		command.Env = codexEnvironment(user)
 	}
 	// Killing a shim leaves its child holding the output pipe; don't wait
 	// for that child to exit on its own.
@@ -135,23 +135,18 @@ func probeFailure(command, output string, err error) string {
 }
 
 func (a *agentService) startClaude(ctx context.Context, request message, options map[string]any) (any, error) {
-	path := strings.TrimSpace(os.Getenv("DYNAPP_CLAUDE_BINARY"))
-	if path == "" {
-		path, _ = exec.LookPath("claude")
-	}
-	if path == "" {
-		return nil, errors.New("Claude Code is not installed or is not on the service PATH")
+	user := agentUser()
+	defer user.Close()
+	path, err := agentBinary(user, "DYNAPP_CLAUDE_BINARY", "claude")
+	if err != nil {
+		return nil, errors.New("Claude Code is not installed or is not on the user's PATH")
 	}
 	appID := request.AppID
 	if appID == "" {
 		appID = "pwa"
 	}
-	root := a.server.StateDir
-	if root == "" {
-		root, _ = DefaultStateDir()
-	}
-	cwd := filepath.Join(root, "agent-workspaces", safeName(appID))
-	if err := os.MkdirAll(cwd, 0o700); err != nil {
+	cwd, err := a.agentWorkspace(user, appID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -194,7 +189,7 @@ func (a *agentService) startClaude(ctx context.Context, request message, options
 		}
 		args = append(args, "--allowedTools", strings.Join(names, ","))
 	}
-	command := exec.Command(path, args...)
+	command := user.Command(nil, path, args...)
 	command.Dir = cwd
 	stdout, err := command.StdoutPipe()
 	if err != nil {

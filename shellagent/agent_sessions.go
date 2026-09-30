@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -151,12 +149,11 @@ func normalizeAgentModels(models []map[string]any) []map[string]any {
 	return result
 }
 func (a *agentService) start(ctx context.Context, request message) (any, error) {
-	path := strings.TrimSpace(os.Getenv("DYNAPP_AGENT_BINARY"))
-	if path == "" {
-		path, _ = exec.LookPath("codex")
-	}
-	if path == "" {
-		return nil, errors.New("Codex is not installed or is not on the service PATH")
+	user := agentUser()
+	defer user.Close()
+	path, err := agentBinary(user, "DYNAPP_AGENT_BINARY", "codex")
+	if err != nil {
+		return nil, errors.New("Codex is not installed or is not on the user's PATH")
 	}
 	options := map[string]any{}
 	if len(request.Args) > 0 {
@@ -166,19 +163,13 @@ func (a *agentService) start(ctx context.Context, request message) (any, error) 
 	if appID == "" {
 		appID = "pwa"
 	}
-	root := a.server.StateDir
-	if root == "" {
-		root, _ = DefaultStateDir()
-	}
-	cwd := filepath.Join(root, "agent-workspaces", safeName(appID))
-	if err := os.MkdirAll(cwd, 0o700); err != nil {
+	cwd, err := a.agentWorkspace(user, appID)
+	if err != nil {
 		return nil, err
 	}
-	command := exec.Command(path, "app-server")
+	command := user.Command(nil, path, "app-server")
 	command.Dir = cwd
-	if home := strings.TrimSpace(os.Getenv("DYNAPP_AGENT_HOME")); home != "" {
-		command.Env = append(os.Environ(), "CODEX_HOME="+home)
-	}
+	command.Env = codexEnvironment(user)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		return nil, err
