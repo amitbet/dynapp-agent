@@ -176,3 +176,49 @@ func TestInstalledClaudeProviderHandshake(t *testing.T) {
 		t.Fatalf("started = %#v", started)
 	}
 }
+
+func writeProbeScript(t *testing.T, name, body string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("probe scripts are POSIX shell")
+	}
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestProbeAgentReportsWhyAnAgentIsUnavailable(t *testing.T) {
+	item := agentCandidate{"codex", "Codex", "DYNAPP_TEST_PROBE_BINARY", "codex", "login status"}
+	ready := writeProbeScript(t, "codex", `if [ "$1" = "--version" ]; then echo "codex-cli 1.2.3"; else echo "Logged in using ChatGPT"; fi`)
+	t.Setenv(item.env, ready)
+	row := probeAgent(context.Background(), item)
+	if row["available"] != true || row["version"] != "codex-cli 1.2.3" || row["reason"] != nil {
+		t.Fatalf("signed-in row = %#v", row)
+	}
+
+	signedOut := writeProbeScript(t, "codex", `if [ "$1" = "--version" ]; then echo "codex-cli 1.2.3"; else echo "Not logged in"; exit 1; fi`)
+	t.Setenv(item.env, signedOut)
+	row = probeAgent(context.Background(), item)
+	if row["installed"] != true || row["available"] != false || row["reason"] != "codex login status failed: Not logged in" {
+		t.Fatalf("signed-out row = %#v", row)
+	}
+}
+
+func TestProbeAgentTimesOutASlowShim(t *testing.T) {
+	item := agentCandidate{"codex", "Codex", "DYNAPP_TEST_PROBE_BINARY", "codex", "login status"}
+	// The grandchild keeps the output pipe open, as Node does under a .cmd shim.
+	t.Setenv(item.env, writeProbeScript(t, "codex", "sleep 30 &\nsleep 30\n"))
+	previous := agentProbeTimeout
+	agentProbeTimeout = 200 * time.Millisecond
+	defer func() { agentProbeTimeout = previous }()
+	started := time.Now()
+	row := probeAgent(context.Background(), item)
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("probe took %s", elapsed)
+	}
+	if row["installed"] != false || !strings.Contains(stringValue(row["reason"]), "did not finish within") {
+		t.Fatalf("slow row = %#v", row)
+	}
+}

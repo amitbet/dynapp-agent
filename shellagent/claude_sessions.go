@@ -49,42 +49,89 @@ type claudeSession struct {
 	closed                   bool
 }
 
+type agentCandidate struct{ id, label, env, binary, auth string }
+
+var agentCandidates = []agentCandidate{{"codex", "Codex", "DYNAPP_AGENT_BINARY", "codex", "login status"}, {"claude", "Claude Code", "DYNAPP_CLAUDE_BINARY", "claude", "auth status"}}
+
+// Windows installs these CLIs as npm .cmd shims that start Node, which starts
+// the native binary; a cold start there regularly takes several seconds.
+var agentProbeTimeout = 20 * time.Second
+
 func discoverAgents(ctx context.Context) []map[string]any {
-	type candidate struct{ id, label, env, binary, auth string }
-	items := []candidate{{"codex", "Codex", "DYNAPP_AGENT_BINARY", "codex", "login status"}, {"claude", "Claude Code", "DYNAPP_CLAUDE_BINARY", "claude", "auth status"}}
-	result := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		path := strings.TrimSpace(os.Getenv(item.env))
-		var source any
-		var err error
-		if path == "" {
-			path, err = exec.LookPath(item.binary)
-		}
-		installed := err == nil && path != ""
-		var version any
-		configured := false
-		if installed {
-			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			output, versionErr := exec.CommandContext(checkCtx, path, "--version").CombinedOutput()
-			cancel()
-			if versionErr == nil {
-				version = strings.TrimSpace(string(output))
-				source = "external"
-				authCtx, authCancel := context.WithTimeout(ctx, 5*time.Second)
-				parts := strings.Fields(item.auth)
-				command := exec.CommandContext(authCtx, path, parts...)
-				if item.id == "codex" && os.Getenv("DYNAPP_AGENT_HOME") != "" {
-					command.Env = append(os.Environ(), "CODEX_HOME="+os.Getenv("DYNAPP_AGENT_HOME"))
-				}
-				configured = command.Run() == nil
-				authCancel()
-			} else {
-				installed = false
-			}
-		}
-		result = append(result, map[string]any{"id": item.id, "label": item.label, "source": source, "version": version, "installed": installed, "configured": configured, "available": installed && configured})
+	result := make([]map[string]any, len(agentCandidates))
+	var wg sync.WaitGroup
+	for index, item := range agentCandidates {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result[index] = probeAgent(ctx, item)
+		}()
 	}
+	wg.Wait()
 	return result
+}
+
+// probeAgent reports whether one CLI is installed and signed in. `reason`
+// says why it is unavailable, so apps can tell the user what to fix.
+func probeAgent(ctx context.Context, item agentCandidate) map[string]any {
+	row := map[string]any{"id": item.id, "label": item.label, "source": nil, "version": nil, "installed": false, "configured": false, "available": false}
+	path := strings.TrimSpace(os.Getenv(item.env))
+	if path == "" {
+		found, err := exec.LookPath(item.binary)
+		if err != nil {
+			row["reason"] = item.binary + " was not found on the agent's PATH"
+			return row
+		}
+		path = found
+	}
+	output, err := runAgentProbe(ctx, item, path, "--version")
+	if err != nil {
+		row["reason"] = probeFailure(item.binary+" --version", output, err)
+		return row
+	}
+	row["version"] = strings.TrimSpace(output)
+	row["source"] = "external"
+	row["installed"] = true
+	auth := strings.Fields(item.auth)
+	output, err = runAgentProbe(ctx, item, path, auth...)
+	if err != nil {
+		row["reason"] = probeFailure(item.binary+" "+item.auth, output, err)
+		return row
+	}
+	row["configured"] = true
+	row["available"] = true
+	return row
+}
+
+func runAgentProbe(ctx context.Context, item agentCandidate, path string, args ...string) (string, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, agentProbeTimeout)
+	defer cancel()
+	command := exec.CommandContext(probeCtx, path, args...)
+	if item.id == "codex" && os.Getenv("DYNAPP_AGENT_HOME") != "" {
+		command.Env = append(os.Environ(), "CODEX_HOME="+os.Getenv("DYNAPP_AGENT_HOME"))
+	}
+	// Killing a shim leaves its child holding the output pipe; don't wait
+	// for that child to exit on its own.
+	command.WaitDelay = 2 * time.Second
+	output, err := command.CombinedOutput()
+	if err != nil && probeCtx.Err() != nil {
+		err = probeCtx.Err()
+	}
+	return string(output), err
+}
+
+func probeFailure(command, output string, err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("%s did not finish within %s", command, agentProbeTimeout)
+	}
+	detail := strings.TrimSpace(output)
+	if len(detail) > 300 {
+		detail = detail[:300] + "…"
+	}
+	if detail == "" {
+		detail = err.Error()
+	}
+	return command + " failed: " + detail
 }
 
 func (a *agentService) startClaude(ctx context.Context, request message, options map[string]any) (any, error) {
