@@ -17,3 +17,13 @@ func TestURLHandlerCommandQuotesTheExecutable(t *testing.T) {
 		t.Fatalf("command = %s", got)
 	}
 }
+
+func TestUserPathEditsAreCaseAndSlashInsensitive(t *testing.T) {
+	list := `C:\Windows;C:\Users\a\AppData\Local\Programs\DynApp\;D:\tools`
+	if !pathListContains(list, `c:\users\a\appdata\local\programs\dynapp`) {
+		t.Fatal("existing entry not found")
+	}
+	if got := pathListWithout(list, `C:\Users\a\AppData\Local\Programs\DynApp`); got != `C:\Windows;D:\tools` {
+		t.Fatalf("removed = %q", got)
+	}
+}

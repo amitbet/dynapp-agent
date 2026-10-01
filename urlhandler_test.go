@@ -99,3 +99,16 @@ func TestBlockedUpdateHelperKeepsTheAgentRunning(t *testing.T) {
 		t.Fatalf("update artifacts left behind: %v %v", leftovers, prepared)
 	}
 }
+
+func TestStateDirFromServiceCommandLine(t *testing.T) {
+	cases := map[string]string{
+		`"C:\Program Files\DynApp\dynapp-shell-agent.exe" --address 127.0.0.1:9011 --state-dir "C:\Users\AMNON\AppData\Roaming\DynApp\shell-agent"`: `C:\Users\AMNON\AppData\Roaming\DynApp\shell-agent`,
+		`C:\DynApp\agent.exe --state-dir C:\data\agent --relay`:                                                                                     `C:\data\agent`,
+		`C:\DynApp\agent.exe --address 127.0.0.1:9011`:                                                                                            "",
+	}
+	for commandLine, want := range cases {
+		if got := stateDirFromCommandLine(commandLine); got != want {
+			t.Fatalf("%s => %q, want %q", commandLine, got, want)
+		}
+	}
+}

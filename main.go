@@ -154,6 +154,21 @@ func main() {
 		}
 		return
 	}
+	if len(flag.Args()) >= 1 && flag.Arg(0) == "install-user" {
+		installFlags := flag.NewFlagSet("install-user", flag.ExitOnError)
+		nativeApps := installFlags.Bool("native-apps", false, "also turn on native desktop apps")
+		_ = installFlags.Parse(flag.Args()[1:])
+		if err := runInstallUser(*nativeApps); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(flag.Args()) == 1 && flag.Arg(0) == "remove-service" {
+		if err := runRemoveService(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(flag.Args()) >= 1 && flag.Arg(0) == "open-url" {
 		// Launched by the browser for dynapp:// links: never keep a console.
 		detachConsole()
