@@ -18,6 +18,13 @@ import (
 
 const updateHelperWait = time.Minute
 
+// helperTakeoverGrace is how long a started helper must stay alive before the
+// agent hands over to it. A working helper waits for the agent to exit.
+var helperTakeoverGrace = 5 * time.Second
+
+// helperCommand is replaceable so tests can simulate a blocked helper.
+var helperCommand = wrapHelperCommand
+
 var startUpdated = startUpdatedAgent
 var stopUpdated = stopUpdatedService
 var osExit = os.Exit
@@ -129,7 +136,7 @@ func (p *program) scheduleHelperUpdate(downloadedPath, executable, version strin
 		"--update-target", executable,
 		"--update-parent", strconv.Itoa(os.Getpid()),
 	}
-	command := wrapHelperCommand(helperPath, helperArgs)
+	command := helperCommand(helperPath, helperArgs)
 	command.Env = append(os.Environ(), "DYNAPP_UPDATE_RESTART_ARGS="+base64.RawStdEncoding.EncodeToString(restartArgs))
 	command.Env = append(command.Env, "DYNAPP_UPDATE_LOG="+filepath.Join(p.server.StateDir, "logs", "update.log"))
 	if p.serviceMode {
@@ -143,8 +150,17 @@ func (p *program) scheduleHelperUpdate(downloadedPath, executable, version strin
 		_ = os.Remove(preparedPath)
 		return fmt.Errorf("start update helper: %w", err)
 	}
-	if command.Process != nil {
-		_ = command.Process.Release()
+	// A helper killed right after it starts (antivirus blocks an unsigned
+	// copy of the agent) must not take the agent down with it: keep serving
+	// and report the failure so the updater backs off.
+	exited := make(chan error, 1)
+	go func() { exited <- command.Wait() }()
+	select {
+	case waitErr := <-exited:
+		_ = os.Remove(helperPath)
+		_ = os.Remove(preparedPath)
+		return fmt.Errorf("update helper exited before taking over: %v", waitErr)
+	case <-time.After(helperTakeoverGrace):
 	}
 	log.Printf("DynApp Shell agent: applying release %s", version)
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)

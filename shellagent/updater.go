@@ -152,6 +152,7 @@ func (s *Server) startSelfUpdater() {
 		s.mu.Unlock()
 		return
 	}
+	s.clearCompletedUpdateAttempt(config.Version)
 	log.Printf("self-update enabled: current=%s repository=%s interval=%s; checking now", config.Version, config.Repository, config.Interval)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.selfUpdateCancel = cancel
@@ -191,6 +192,11 @@ func (s *Server) checkSelfUpdateWithVerifier(ctx context.Context, config SelfUpd
 		return
 	}
 	log.Printf("self-update available: current=%s latest=%s", config.Version, release.TagName)
+	if attempt, ok := s.recentUpdateAttempt(normalizedReleaseVersion(release.TagName)); ok {
+		log.Printf("DynApp Shell agent: skipping %s; the attempt at %s did not complete, retrying after %s",
+			release.TagName, attempt.At.Format(time.RFC3339), attempt.At.Add(updateAttemptBackoff).Format(time.RFC3339))
+		return
+	}
 	assets, err := selectAgentAssets(release, release.TagName)
 	if err != nil {
 		log.Printf("DynApp Shell agent: release %s has no %s asset: %v", release.TagName, runtime.GOOS, err)
@@ -219,6 +225,9 @@ func (s *Server) checkSelfUpdateWithVerifier(ctx context.Context, config SelfUpd
 		log.Printf("DynApp Shell agent: staged update %s failed re-verification: %v", release.TagName, err)
 		return
 	}
+	// Recorded first: if the update kills this process without installing
+	// (antivirus stopping a helper, for example), the next run backs off.
+	s.recordUpdateAttempt(normalizedReleaseVersion(release.TagName))
 	if err := config.OnUpdate(ctx, path, normalizedReleaseVersion(release.TagName)); err != nil {
 		s.cancelUpdate()
 		log.Printf("DynApp Shell agent: applying update %s failed: %v", release.TagName, err)
@@ -539,6 +548,10 @@ func normalizedReleaseVersion(value string) string {
 	return value
 }
 
+// IsReleaseBuild reports a signed release build, as opposed to `go run` or a
+// local build whose path should not be registered with the OS.
+func IsReleaseBuild() bool { return isReleaseVersion(AgentVersion) }
+
 func isReleaseVersion(value string) bool {
 	parts := strings.Split(normalizedReleaseVersion(value), ".")
 	if len(parts) != 3 {
@@ -576,4 +589,62 @@ func newerRelease(latest, current string) bool {
 		}
 	}
 	return false
+}
+
+// updateAttemptBackoff keeps a release that failed to install from being
+// retried, and failing again, on every hourly check.
+const updateAttemptBackoff = 12 * time.Hour
+
+type updateAttempt struct {
+	Version string    `json:"version"`
+	At      time.Time `json:"at"`
+}
+
+func (s *Server) updateAttemptPath() string {
+	if s.StateDir == "" {
+		return ""
+	}
+	return filepath.Join(s.StateDir, "update-attempt.json")
+}
+
+func (s *Server) recordUpdateAttempt(version string) {
+	path := s.updateAttemptPath()
+	if path == "" {
+		return
+	}
+	data, _ := json.Marshal(updateAttempt{Version: version, At: time.Now().UTC()})
+	_ = os.WriteFile(path, data, 0o600)
+}
+
+// recentUpdateAttempt reports an unfinished attempt at this version inside
+// the backoff window. A running agent of that version clears it at startup.
+func (s *Server) recentUpdateAttempt(version string) (updateAttempt, bool) {
+	path := s.updateAttemptPath()
+	if path == "" {
+		return updateAttempt{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return updateAttempt{}, false
+	}
+	var attempt updateAttempt
+	if json.Unmarshal(data, &attempt) != nil || attempt.Version != version {
+		return updateAttempt{}, false
+	}
+	return attempt, time.Since(attempt.At) < updateAttemptBackoff
+}
+
+func (s *Server) clearCompletedUpdateAttempt(current string) {
+	path := s.updateAttemptPath()
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var attempt updateAttempt
+	if json.Unmarshal(data, &attempt) == nil && normalizedReleaseVersion(attempt.Version) == normalizedReleaseVersion(current) {
+		_ = os.Remove(path)
+	}
 }

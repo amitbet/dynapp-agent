@@ -364,3 +364,54 @@ func TestTryBeginUpdateCanIgnoreActiveBridges(t *testing.T) {
 		t.Fatal("bridge open was allowed during a forced update")
 	}
 }
+
+// An update that killed the agent without installing (a blocked helper) is
+// not retried on every hourly check.
+func TestUnfinishedUpdateAttemptBacksOff(t *testing.T) {
+	sign := useTestReleaseKey(t)
+	release := newFakeRelease(t, "1.2.4", []byte("new shell agent"), sign, true)
+	var applied atomic.Int64
+	agent := &Server{StateDir: t.TempDir()}
+	config := release.config("1.2.3", func(_ context.Context, _, _ string) error {
+		applied.Add(1)
+		return nil
+	})
+	agent.SelfUpdate = config
+	agent.checkSelfUpdateWithVerifier(t.Context(), config, func(string) error { return nil })
+	if applied.Load() != 1 {
+		t.Fatalf("first attempt count = %d", applied.Load())
+	}
+	// The process is still 1.2.3 afterwards: the attempt did not complete.
+	agent.cancelUpdate()
+	agent.checkSelfUpdateWithVerifier(t.Context(), config, func(string) error { return nil })
+	if applied.Load() != 1 {
+		t.Fatalf("a failed version was retried inside the backoff window (%d attempts)", applied.Load())
+	}
+	attempt, ok := agent.recentUpdateAttempt("1.2.4")
+	if !ok || attempt.Version != "1.2.4" {
+		t.Fatalf("attempt record = %#v %v", attempt, ok)
+	}
+	// After the window the release is tried again.
+	attempt.At = time.Now().Add(-updateAttemptBackoff - time.Minute)
+	data, _ := json.Marshal(attempt)
+	if err := os.WriteFile(agent.updateAttemptPath(), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agent.checkSelfUpdateWithVerifier(t.Context(), config, func(string) error { return nil })
+	if applied.Load() != 2 {
+		t.Fatalf("attempts after the backoff = %d, want 2", applied.Load())
+	}
+}
+
+func TestCompletedUpdateClearsItsAttempt(t *testing.T) {
+	agent := &Server{StateDir: t.TempDir()}
+	agent.recordUpdateAttempt("1.2.4")
+	agent.clearCompletedUpdateAttempt("1.2.3")
+	if _, ok := agent.recentUpdateAttempt("1.2.4"); !ok {
+		t.Fatal("an older running version cleared the attempt")
+	}
+	agent.clearCompletedUpdateAttempt("v1.2.4")
+	if _, err := os.Stat(agent.updateAttemptPath()); !os.IsNotExist(err) {
+		t.Fatalf("the completed attempt was not cleared: %v", err)
+	}
+}

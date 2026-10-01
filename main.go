@@ -154,6 +154,14 @@ func main() {
 		}
 		return
 	}
+	if len(flag.Args()) >= 1 && flag.Arg(0) == "open-url" {
+		// Launched by the browser for dynapp:// links: never keep a console.
+		detachConsole()
+		if err := runOpenURL(flag.Arg(1), *address); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(flag.Args()) == 2 && flag.Arg(0) == "presentation-helper" {
 		token := os.Getenv("DYNAPP_PRESENTATION_TOKEN")
 		os.Unsetenv("DYNAPP_PRESENTATION_TOKEN")
@@ -413,6 +421,11 @@ func main() {
 			return
 		}
 	}
+	if executable, err := installedExecutable(); err == nil && (shellagent.IsReleaseBuild() || shellagent.EnvEnabled("DYNAPP_REGISTER_URL_HANDLER")) {
+		if err := registerURLHandler(*stateDir, executable); err != nil {
+			log.Printf("DynApp Shell agent: could not register dynapp:// links: %v", err)
+		}
+	}
 	log.Printf("DynApp Shell agent listening on %s · WebTransport %s (%s) · settings http://%s/", *address, config.LANAddress, config.ListenerMode, *address)
 	if service.Interactive() || os.Getenv("DYNAPP_AGENT_FOREGROUND") == "1" {
 		if err := p.server.ListenAndServe(); err != nil {
@@ -423,6 +436,9 @@ func main() {
 	if executable, err := os.Executable(); err == nil {
 		if err := refreshServiceFirewall(config, executable); err != nil {
 			log.Printf("DynApp Shell agent: could not refresh the firewall rule: %v", err)
+		}
+		if err := prepareServiceRecovery(); err != nil {
+			log.Printf("DynApp Shell agent: could not set service recovery (updates keep the helper route): %v", err)
 		}
 	}
 	if err := svc.Run(); err != nil {

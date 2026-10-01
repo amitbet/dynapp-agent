@@ -101,3 +101,33 @@ through `CreateProcessAsUser`, and uses `\\.\pipe\dynapp-native-host`.
       in session 0.
 - [ ] The shortcut and icon land in the user's profile, not the system
       profile.
+
+## 9. dynapp:// and agent start
+
+- [ ] After the agent has started once, `HKCU\Software\Classes\dynapp` (per-user)
+      or `HKLM\Software\Classes\dynapp` (service) exists and points at the
+      installed `.exe` with `open-url "%1"`.
+- [ ] With the agent stopped, `start dynapp://start` (or Dyner's **Start DynApp**
+      button) starts it: the per-user agent with no console window, or the
+      service when it is installed, also from a non-administrator account.
+- [ ] With the agent running, `start dynapp://start` does nothing visible.
+- [ ] `sc sdshow dynapp-shell-agent` shows `RP` in the `IU` entry and nothing
+      else changed.
+
+## 10. Updates without a helper copy
+
+Publish a test release (or point `--update-repository` at a fork) and let the
+agent update.
+
+- [ ] Service: `sc qfailure dynapp-shell-agent` lists three restart actions.
+      The agent log shows "applying release … in place" and "exiting so
+      Windows restarts the service"; the service comes back on the new version
+      within about 5 seconds.
+- [ ] Per-user agent: the log shows the in-place update and the new version
+      starts with no console window.
+- [ ] With Bitdefender (or another behavior-based antivirus) active, no threat
+      is reported during the update.
+- [ ] The blocked-helper fallback cannot be forced by hand (the service sets
+      its recovery actions again at every start). It is covered by
+      `go test -run TestBlockedUpdateHelperKeepsTheAgentRunning .`, which also
+      runs on Windows.

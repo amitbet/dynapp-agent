@@ -246,7 +246,9 @@ func (h *host) connectControl() string {
 	conn, err := dialAgent(h.options.Pipe)
 	if err != nil {
 		if executable, exeErr := os.Executable(); exeErr == nil {
-			command := exec.Command(executable)
+			// open-url starts the machine service when it exists, else a
+			// per-user agent, so a stopped service is not shadowed.
+			command := exec.Command(executable, "open-url", "dynapp://start")
 			command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.DETACHED_PROCESS}
 			_ = command.Start()
 		}

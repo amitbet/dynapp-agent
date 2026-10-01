@@ -254,6 +254,36 @@ end. `DYNAPP_PWA_SHELL_CONTENT=<dynapp>/apps/pwa-shell/content` adds a run
 against the real PWA Shell runtime, and `DYNAPP_SHEET_SCREENSHOT=<dir>` saves
 the permission sheet as a PNG.
 
+## Starting from the browser (`dynapp://start`)
+
+Release builds register the `dynapp://` URL scheme for the signed-in user
+(macOS: a background launcher bundle in the state directory; Windows: HKCU, or
+HKLM for the machine service). `dynapp-shell-agent open-url dynapp://start`
+starts the installed agent when none answers on `127.0.0.1:9011`: the launchd
+job on macOS, the service or a per-user `--background` agent on Windows. The
+URL accepts no other action and grants nothing. Dyner opens it from its
+**Start DynApp** button. Set `DYNAPP_REGISTER_URL_HANDLER=1` to register from a
+development build.
+
+## Windows updates without a helper copy
+
+Behavior-based antivirus (for example Bitdefender Advanced Threat Defense)
+blocks an unsigned service that starts an unsigned copy of itself, which is
+what the original update helper does. Windows agents now avoid that:
+
+- The machine service sets its own recovery actions (restart after 5 s, 5 s,
+  then 60 s; also for non-crash failures) at every start. When Windows confirms
+  them, an update renames the running `.exe`, moves the new one into place, and
+  exits with a failure code so the Service Control Manager restarts the
+  service from the new file.
+- A per-user agent replaces itself the same way and starts the installed
+  `.exe` again.
+- Without confirmed recovery actions the original helper route is used. A
+  helper that exits within 5 seconds of starting (blocked) cancels the update
+  and the agent keeps serving.
+- An update that did not complete is not retried for 12 hours
+  (`update-attempt.json` in the state directory).
+
 ## Linux Chromium PWA shortcuts
 
 On container/webtop desktops, Chromium writes PWA `.desktop` files without

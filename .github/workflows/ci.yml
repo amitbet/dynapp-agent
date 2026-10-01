@@ -30,6 +30,7 @@ jobs:
         run: |
           go build ./...
           go test -c -o /dev/null ./shellagent/
+          go test -c -o /dev/null .
 
   release:
     needs: test
