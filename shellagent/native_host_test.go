@@ -390,3 +390,38 @@ func TestNativePermissionGroupsCarryReasonsAndDefaults(t *testing.T) {
 		t.Fatalf("filesystem group = %#v", byID["filesystem"])
 	}
 }
+
+// A config.json zero-filled by an interrupted write (seen on Windows after an
+// antivirus killed the service) must not stop the agent from starting.
+func TestUnreadableConfigIsSetAsideInsteadOfBlockingStartup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig with a zero-filled file: %v", err)
+	}
+	if config.SchemaVersion != ConfigSchemaVersion || len(config.BrowserIdentities) != 0 {
+		t.Fatalf("config = %#v", config)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the damaged file is still in place: %v", err)
+	}
+	damaged, _ := filepath.Glob(path + ".damaged-*")
+	if len(damaged) != 1 {
+		t.Fatalf("damaged copies = %v", damaged)
+	}
+	// A newer agent's config is valid JSON and must still fail loudly rather
+	// than be discarded.
+	if err := os.WriteFile(path, []byte(`{"schemaVersion":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(dir); err == nil {
+		t.Fatal("a newer schema version was accepted")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("a newer config was moved aside: %v", err)
+	}
+}

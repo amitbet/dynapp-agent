@@ -3,12 +3,15 @@ package shellagent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const ConfigSchemaVersion = 1
@@ -193,7 +196,15 @@ func LoadConfig(stateDir string) (Config, error) {
 	}
 	var config Config
 	if err := json.Unmarshal(data, &config); err != nil {
-		return Config{}, err
+		// A file that is not JSON at all (zero-filled after an interrupted
+		// write, truncated) must not keep the agent from starting: set it
+		// aside for inspection and start with a fresh configuration.
+		damaged := fmt.Sprintf("%s.damaged-%d", path, time.Now().Unix())
+		if renameErr := os.Rename(path, damaged); renameErr != nil {
+			return Config{}, fmt.Errorf("%w (and could not move the damaged file aside: %v)", err, renameErr)
+		}
+		log.Printf("DynApp Shell agent: %s was unreadable (%v); moved it to %s and started with a fresh configuration", path, err, damaged)
+		return Config{SchemaVersion: ConfigSchemaVersion}, nil
 	}
 	if config.SchemaVersion != ConfigSchemaVersion {
 		return Config{}, errors.New("unsupported shell-agent configuration version")
