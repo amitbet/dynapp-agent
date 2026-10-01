@@ -194,6 +194,9 @@ func Run(options Options) error {
 	runtime.LockOSThread()
 	// The agent is a console program; the app window must not bring one.
 	_, _, _ = procFreeConsole.Call()
+	closeLog := openHostLog(options)
+	defer closeLog()
+	log.Printf("app host starting: storeId=%s origin=%s url=%s pipe=%s", options.StoreID, options.Origin, options.URL, options.Pipe)
 	appID := AppUserModelID(options.StoreID)
 	_, _, _ = procSetAppUserModelID.Call(uintptr(unsafe.Pointer(utf16(appID))))
 	if focusExistingInstance(appID, options.Name) {
@@ -202,7 +205,9 @@ func Run(options Options) error {
 	h := &host{options: options, startURL: options.URL, origin: originKey(options.Origin), sockets: map[string]*frameConn{}, prompts: map[string]bool{}, reviews: map[string]string{}}
 	bootstrap := h.connectControl()
 	dataPath := filepath.Join(filepath.Dir(options.Icon), "WebView2")
+	debug := os.Getenv("DYNAPP_HOST_DEBUG") == "1"
 	h.view = webview2.NewWithOptions(webview2.WebViewOptions{
+		Debug:     debug,
 		AutoFocus: true,
 		DataPath:  dataPath,
 		WindowOptions: webview2.WindowOptions{
@@ -261,6 +266,7 @@ func (h *host) connectControl() string {
 			conn, err = dialAgent(h.options.Pipe)
 		}
 		if err != nil {
+			log.Printf("control: cannot reach the agent on %s: %v; loading without the bridge", h.options.Pipe, err)
 			return ""
 		}
 	}
@@ -269,11 +275,13 @@ func (h *host) connectControl() string {
 	kind, payload, err := conn.read()
 	_ = conn.conn.SetReadDeadline(time.Time{})
 	if err != nil || kind != frameText {
+		log.Printf("control: no ready frame: %v", err)
 		_ = conn.conn.Close()
 		return ""
 	}
 	var ready map[string]any
 	if json.Unmarshal(payload, &ready) != nil || ready["type"] != "native-host-ready" {
+		log.Printf("control: agent refused the app: %s", truncate(string(payload), 300))
 		if message, _ := ready["error"].(string); message != "" {
 			messageBox(0, message, h.options.Name, mbIconWarning)
 		}
@@ -286,6 +294,7 @@ func (h *host) connectControl() string {
 	h.control = conn
 	go h.readControl(conn)
 	script, _ := ready["bootstrapScript"].(string)
+	log.Printf("control: ready; bridge script %d bytes, start %s, capabilities %v", len(script), h.startURL, ready["capabilities"])
 	return script
 }
 
@@ -362,7 +371,8 @@ func (h *host) hookWebView(bridge bool) error {
 			return
 		}
 		// Only the installed app's own top-level document may use the bridge.
-		if !bridge || originKey(documentSource(h.core)) != h.origin {
+		if source := documentSource(h.core); !bridge || originKey(source) != h.origin {
+			log.Printf("bridge: dropped a message from %q (app origin %s, bridge %v)", source, h.origin, bridge)
 			return
 		}
 		h.handleBridge(message)
@@ -515,6 +525,7 @@ func (h *host) handleBridge(raw string) {
 func (h *host) openSocket(sid string) {
 	conn, err := dialAgent(h.options.Pipe)
 	if err != nil {
+		log.Printf("socket %s: cannot reach the agent: %v", sid, err)
 		h.deliver(map[string]any{"sid": sid, "event": "error", "error": errAgentNotAvailable.Error()})
 		h.deliver(map[string]any{"sid": sid, "event": "close", "code": 1006, "reason": errAgentNotAvailable.Error()})
 		return
@@ -530,18 +541,21 @@ func (h *host) openSocket(sid string) {
 			h.endSocket(sid, 1006, "The DynApp agent connection closed")
 			return
 		}
-		if kind == frameText && (!ready || strings.HasPrefix(string(payload), `{"type":"native-host-`)) {
+		// The agent writes JSON with sorted keys, so "type" is rarely first.
+		if kind == frameText && (!ready || strings.Contains(string(payload), `"type":"native-host-`)) {
 			var frame map[string]any
 			if json.Unmarshal(payload, &frame) == nil {
 				if kindName, _ := frame["type"].(string); strings.HasPrefix(kindName, "native-host-") {
 					switch kindName {
 					case "native-host-ready":
 						ready = true
+						log.Printf("socket %s: ready, capabilities %v", sid, frame["capabilities"])
 						h.deliver(map[string]any{"sid": sid, "event": "open"})
 					case "native-host-permission-request":
 						h.prompt(frame, conn)
 					case "native-host-error":
 						text, _ := frame["error"].(string)
+						log.Printf("socket %s: agent refused: %s", sid, text)
 						h.deliver(map[string]any{"sid": sid, "event": "error", "error": text})
 						h.endSocket(sid, 4401, text)
 						return
@@ -770,4 +784,31 @@ func bringToFront(hwnd uintptr, show uintptr) {
 	_, _, _ = procSetWindowPos.Call(hwnd, hwndNoTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow)
 	_, _, _ = procBringWindowToTop.Call(hwnd)
 	_, _, _ = procSetForeground.Call(hwnd)
+}
+
+// openHostLog writes host.log next to the app's icon; it is how a native app
+// on Windows can be diagnosed, since the host has no console.
+func openHostLog(options Options) func() {
+	dir := filepath.Dir(options.Icon)
+	if options.Icon == "" {
+		dir = filepath.Join(os.Getenv("LOCALAPPDATA"), "DynApp")
+	}
+	path := filepath.Join(dir, "host.log")
+	if info, err := os.Stat(path); err == nil && info.Size() > 1<<20 {
+		_ = os.Remove(path)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return func() {}
+	}
+	log.SetOutput(file)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	return func() { _ = file.Close() }
+}
+
+func truncate(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "…"
 }
