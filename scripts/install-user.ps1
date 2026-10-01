@@ -94,4 +94,4 @@ Start-Process -FilePath $destination -ArgumentList '--background' -WindowStyle H
 
 Write-Host "installed $destination from $tag for $env:USERNAME"
 Write-Host 'The agent is running and starts automatically when you sign in.'
-Write-Host "To remove it: irm https://raw.githubusercontent.com/${Repo}/main/scripts/uninstall.ps1 | iex"
+Write-Host "To remove it: irm https://raw.githubusercontent.com/${Repo}/main/scripts/uninstall-user.ps1 | iex"

@@ -58,16 +58,18 @@ The per-user installers replace an existing machine service automatically
 (one UAC prompt, via `scripts/remove-service.ps1`), because both would serve the
 same local port.
 
-To remove the per-user agent (and the machine service, if one is installed):
+To remove the per-user agent (no Administrator):
 
 ```powershell
-irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/uninstall-user.ps1 | iex
 ```
 
 It stops the agent and native app windows and removes the sign-in start, the
 `dynapp://` handler, the PATH entry, the native-apps setting, native app
 shortcuts, and the program files. Pairings, grants, and app data are kept; set
-`$env:DYNAPP_REMOVE_DATA = '1'` first to delete them too.
+`$env:DYNAPP_REMOVE_DATA = '1'` first to delete them too. `uninstall.ps1` does
+the same and then also removes a machine service if one is installed (one UAC
+prompt).
 
 Windows, winget (portable package `AmitBet.DynAppShellAgent`):
 
