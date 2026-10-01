@@ -76,6 +76,12 @@ var (
 	procShellExecute       = shell32.NewProc("ShellExecuteW")
 	procCreateMutex        = kernel32.NewProc("CreateMutexW")
 	procFreeConsole        = kernel32.NewProc("FreeConsole")
+	procGetForegroundWnd   = user32.NewProc("GetForegroundWindow")
+	procGetWindowThreadPID = user32.NewProc("GetWindowThreadProcessId")
+	procAttachThreadInput  = user32.NewProc("AttachThreadInput")
+	procSetWindowPos       = user32.NewProc("SetWindowPos")
+	procBringWindowToTop   = user32.NewProc("BringWindowToTop")
+	procGetCurrentThreadID = kernel32.NewProc("GetCurrentThreadId")
 	errAgentNotAvailable   = errors.New("the DynApp agent is not running")
 	permissionsMenuCommand = uintptr(0x0010)
 )
@@ -210,8 +216,7 @@ func Run(options Options) error {
 	h.hwnd = uintptr(h.view.Window())
 	// The shortcut starts minimized so its console stays out of sight; the
 	// first ShowWindow call follows that, so show the window again.
-	_, _, _ = procShowWindow.Call(h.hwnd, swShowNormal)
-	_, _, _ = procSetForeground.Call(h.hwnd)
+	bringToFront(h.hwnd, swShowNormal)
 	h.applyIcon()
 	if err := h.hookWebView(bootstrap != ""); err != nil {
 		log.Printf("DynApp app host: %v", err)
@@ -233,8 +238,7 @@ func focusExistingInstance(appID, title string) bool {
 		return false
 	}
 	if hwnd, _, _ := procFindWindow.Call(uintptr(unsafe.Pointer(utf16("webview"))), uintptr(unsafe.Pointer(utf16(title)))); hwnd != 0 {
-		_, _, _ = procShowWindow.Call(hwnd, swRestore)
-		_, _, _ = procSetForeground.Call(hwnd)
+		bringToFront(hwnd, swRestore)
 	}
 	return true
 }
@@ -734,4 +738,36 @@ func askPermissions(owner uintptr, kind, appName, origin string, groups []permis
 func messageBox(owner uintptr, text, title string, flags uintptr) int {
 	result, _, _ := procMessageBox.Call(owner, uintptr(unsafe.Pointer(utf16(text))), uintptr(unsafe.Pointer(utf16(title))), flags)
 	return int(result)
+}
+
+const (
+	swpNoSize     = 0x0001
+	swpNoMove     = 0x0002
+	swpShowWindow = 0x0040
+)
+
+var (
+	hwndTopmost   = ^uintptr(0)     // HWND_TOPMOST (-1)
+	hwndNoTopmost = ^uintptr(0) - 1 // HWND_NOTOPMOST (-2)
+)
+
+// bringToFront raises a window that a background process (the agent, asked
+// by Dyner in the browser) started. Windows refuses SetForegroundWindow from a
+// process without the last input, so share the foreground window's input
+// queue for the call, and pass through topmost so the window at least lands
+// above the browser if the focus change is still refused.
+func bringToFront(hwnd uintptr, show uintptr) {
+	_, _, _ = procShowWindow.Call(hwnd, show)
+	current, _, _ := procGetCurrentThreadID.Call()
+	if foreground, _, _ := procGetForegroundWnd.Call(); foreground != 0 && foreground != hwnd {
+		if thread, _, _ := procGetWindowThreadPID.Call(foreground, 0); thread != 0 && thread != current {
+			if attached, _, _ := procAttachThreadInput.Call(current, thread, 1); attached != 0 {
+				defer procAttachThreadInput.Call(current, thread, 0)
+			}
+		}
+	}
+	_, _, _ = procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow)
+	_, _, _ = procSetWindowPos.Call(hwnd, hwndNoTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow)
+	_, _, _ = procBringWindowToTop.Call(hwnd)
+	_, _, _ = procSetForeground.Call(hwnd)
 }
