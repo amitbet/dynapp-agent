@@ -14,6 +14,11 @@ on:
         description: Version to stamp, without a v prefix. Empty patch-bumps the latest v* tag.
         required: false
         type: string
+      prerelease:
+        description: Publish as a prerelease. Agents never auto-update to it and package manifests are not bumped; promote it later with gh release edit --prerelease=false --latest.
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       optional:
@@ -123,17 +128,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ github.event.inputs.prerelease }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists"
             exit 0
           fi
+          flags=()
+          if [ "${PRERELEASE:-false}" = true ]; then flags+=(--prerelease); fi
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "DynApp Agent ${VERSION}" \
-            --generate-notes
+            --generate-notes "${flags[@]}"
 
   binaries:
     needs: [version, create-release]
@@ -251,7 +259,7 @@ jobs:
 
   packages:
     needs: [version, binaries, macos]
-    if: needs.version.outputs.ready == 'true'
+    if: needs.version.outputs.ready == 'true' && github.event.inputs.prerelease != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
