@@ -47,6 +47,13 @@ and starts at sign-in):
 irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install-user.ps1 | iex
 ```
 
+To also turn on the native Windows apps preview, use the wrapper instead (it
+runs `install-user.ps1` with `DYNAPP_NATIVE_APPS=1` and keeps that setting):
+
+```powershell
+irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install-native-apps.ps1 | iex
+```
+
 Use one or the other: the per-user agent refuses to install while the machine
 service exists, because both would serve the same local port.
 
