@@ -20,6 +20,16 @@ jobs:
         run: go test ./...
       - name: Vet
         run: go vet ./...
+      - name: Native host bridge
+        run: node --test shellagent/*.test.mjs
+      - name: Windows build
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          go build ./...
+          go test -c -o /dev/null ./shellagent/
 
   release:
     needs: test

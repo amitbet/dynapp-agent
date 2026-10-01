@@ -49,7 +49,16 @@ func (p *program) Stop(service.Service) error {
 	return p.server.Shutdown(ctx)
 }
 
-func configureLogging(stateDir string) (func(), error) {
+// bestEffortWriter never fails, so a missing console cannot stop io.MultiWriter
+// from reaching the log file.
+type bestEffortWriter struct{ io.Writer }
+
+func (w bestEffortWriter) Write(data []byte) (int, error) {
+	_, _ = w.Writer.Write(data)
+	return len(data), nil
+}
+
+func configureLogging(stateDir string, console bool) (func(), error) {
 	logDir := filepath.Join(stateDir, "logs")
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return nil, err
@@ -61,7 +70,11 @@ func configureLogging(stateDir string) (func(), error) {
 	// stdout is intentional: some terminal hosts capture or hide stderr for a
 	// long-running `go run` process. Always tee every standard-library log call
 	// to the visible console and the service-owned persistent log.
-	log.SetOutput(io.MultiWriter(os.Stdout, file))
+	if console {
+		log.SetOutput(io.MultiWriter(bestEffortWriter{os.Stdout}, file))
+	} else {
+		log.SetOutput(file)
+	}
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	return func() { _ = file.Close() }, nil
 }
@@ -120,9 +133,25 @@ func main() {
 	updateTarget := flag.String("update-target", "", "installed binary for the self-update helper")
 	updateParent := flag.Int("update-parent", 0, "old agent PID for the self-update helper")
 	printVersion := flag.Bool("version", false, "print version and exit")
+	background := flag.Bool("background", false, "run without a console window (per-user agent started at sign-in)")
 	flag.Parse()
 	if *printVersion {
 		fmt.Println(shellagent.AgentVersion)
+		return
+	}
+	if len(flag.Args()) >= 1 && flag.Arg(0) == "app" {
+		appFlags := flag.NewFlagSet("app", flag.ExitOnError)
+		var options appHostOptions
+		appFlags.StringVar(&options.StoreID, "id", "", "installed app store id (owner/slug)")
+		appFlags.StringVar(&options.Pipe, "pipe", "", "agent named pipe")
+		appFlags.StringVar(&options.URL, "url", "", "start URL when the agent is unavailable")
+		appFlags.StringVar(&options.Origin, "origin", "", "app origin")
+		appFlags.StringVar(&options.Name, "name", "DynApp", "window title")
+		appFlags.StringVar(&options.Icon, "icon", "", "window icon (.ico)")
+		_ = appFlags.Parse(flag.Args()[1:])
+		if err := runAppHost(options); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 	if len(flag.Args()) == 2 && flag.Arg(0) == "presentation-helper" {
@@ -158,7 +187,10 @@ func main() {
 		}
 		*stateDir = resolved
 	}
-	closeLog, err := configureLogging(*stateDir)
+	if *background {
+		detachConsole()
+	}
+	closeLog, err := configureLogging(*stateDir, !*background)
 	if err != nil {
 		log.Fatal(err)
 	}

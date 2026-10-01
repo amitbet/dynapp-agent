@@ -108,3 +108,48 @@ func (u *UserEnvironment) Command(ctx context.Context, path string, args ...stri
 }
 
 type userToken = windows.Token
+
+// StartGUI starts a windowed program on the user's interactive desktop. A
+// LocalSystem service must name winsta0\default explicitly, which
+// exec.Cmd cannot, so this calls CreateProcessAsUser directly.
+func (u *UserEnvironment) StartGUI(path string, args []string, dir string) error {
+	if u.env == nil {
+		command := exec.Command(path, args...)
+		command.Dir = dir
+		command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
+		return command.Start()
+	}
+	commandLine := windows.EscapeArg(path)
+	for _, arg := range args {
+		commandLine += " " + windows.EscapeArg(arg)
+	}
+	commandLinePtr, err := windows.UTF16PtrFromString(commandLine)
+	if err != nil {
+		return err
+	}
+	desktopName, _ := windows.UTF16PtrFromString(`winsta0\default`)
+	var dirPtr *uint16
+	if dir != "" {
+		if dirPtr, err = windows.UTF16PtrFromString(dir); err != nil {
+			return err
+		}
+	}
+	var block []uint16
+	for _, entry := range u.env {
+		encoded, err := windows.UTF16FromString(entry)
+		if err != nil {
+			return err
+		}
+		block = append(block, encoded...)
+	}
+	block = append(block, 0)
+	startup := windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfo{})), Desktop: desktopName}
+	var process windows.ProcessInformation
+	if err := windows.CreateProcessAsUser(u.token, nil, commandLinePtr, nil, nil, false,
+		windows.CREATE_UNICODE_ENVIRONMENT|createNoWindow, &block[0], dirPtr, &startup, &process); err != nil {
+		return fmt.Errorf("start %s as the desktop user: %w", filepath.Base(path), err)
+	}
+	windows.CloseHandle(process.Thread)
+	windows.CloseHandle(process.Process)
+	return nil
+}

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -46,10 +47,16 @@ type pendingRequest struct {
 	ExpiresAt time.Time
 	decision  chan []string // nil slice means denied
 	once      sync.Once
+	resolved  atomic.Bool
 }
+
+// wasResolved reports whether someone decided the request, as opposed to it
+// expiring or its socket going away.
+func (p *pendingRequest) wasResolved() bool { return p.resolved.Load() }
 
 func (p *pendingRequest) resolve(granted []string, approved bool) {
 	p.once.Do(func() {
+		p.resolved.Store(true)
 		if !approved {
 			p.decision <- nil
 			return
@@ -298,6 +305,12 @@ func (s *Server) listPermissions() map[string]any {
 	for _, identity := range identities {
 		grants = append(grants, grantPayload(identity))
 	}
+	s.mu.Lock()
+	nativeApps := append([]NativeApp(nil), s.Config.NativeApps...)
+	s.mu.Unlock()
+	for _, app := range nativeApps {
+		grants = append(grants, nativeGrantPayload(app))
+	}
 	return map[string]any{"pending": pending, "grants": grants, "preapproved": preapproved}
 }
 
@@ -458,6 +471,16 @@ func (s *Server) updateGrant(args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if strings.HasPrefix(keyID, nativeKeyPrefix) {
+		requested, present := capabilityArg(args)
+		if !present {
+			return nil, errors.New("capabilities must be a list")
+		}
+		if storeID == "" {
+			storeID = strings.TrimPrefix(keyID, nativeKeyPrefix)
+		}
+		return s.updateNativeGrant(storeID, requested)
+	}
 	identity, ok := s.findIdentity(keyID, origin, storeID)
 	if !ok {
 		return nil, errors.New("no grant matches that identity")
@@ -493,6 +516,12 @@ func (s *Server) revokeGrant(args map[string]any) (any, error) {
 	keyID, origin, storeID, err := grantSelector(args)
 	if err != nil {
 		return nil, err
+	}
+	if strings.HasPrefix(keyID, nativeKeyPrefix) {
+		if storeID == "" {
+			storeID = strings.TrimPrefix(keyID, nativeKeyPrefix)
+		}
+		return s.revokeNativeGrant(storeID)
 	}
 	identity, ok := s.findIdentity(keyID, origin, storeID)
 	if !ok {

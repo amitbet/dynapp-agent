@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os/exec"
@@ -109,6 +110,10 @@ type Server struct {
 	presentations        map[*presentationBridge]struct{}
 	presentationClosed   bool
 	chromiumRepairCancel context.CancelFunc
+	nativeListener       net.Listener
+	nativeInstallMu      sync.Mutex
+	nativeAskMu          sync.Mutex
+	nativeAsks           map[string]*nativeAsk
 }
 
 type protocolSocket interface {
@@ -263,6 +268,7 @@ func (s *Server) ListenAndServe() error {
 	// asks Dyner for one, and the sync loop below opens it on demand.
 	s.startSelfUpdater()
 	s.startChromiumDesktopRepair()
+	s.startNativeHost()
 	hydrateExecutablePath()
 	if managedNodeAvailable(s.StateDir) {
 		prependPathDir(managedNodeBinDir(s.StateDir))
@@ -451,6 +457,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if lanClose != nil {
 		_ = lanClose()
 	}
+	s.stopNativeHost()
 	s.closeLivePreviews()
 	s.closePresentations()
 	if httpServer == nil {

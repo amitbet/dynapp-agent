@@ -17,6 +17,8 @@ var draftAppIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
 func (s *Server) handleAppsRPC(ctx context.Context, request message) (any, error) {
 	switch request.Method {
+	case "nativeSupport", "listNative", "installNative", "uninstallNative", "launchNative":
+		return s.handleNativeAppsRPC(ctx, request)
 	case "createFromBoilerplate":
 		return s.createBoilerplateDraft(objectArg(request.Args, 0))
 	case "listDrafts":

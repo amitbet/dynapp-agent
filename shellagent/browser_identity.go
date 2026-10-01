@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -422,6 +423,9 @@ func mergeSyncedIdentities(existing, fresh []BrowserIdentity) []BrowserIdentity 
 }
 
 func (s *Server) hasBrowserIdentity(auth socketAuthentication) bool {
+	if strings.HasPrefix(auth.keyID, nativeKeyPrefix) {
+		return s.hasNativeGrant(auth)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, identity := range s.Config.BrowserIdentities {

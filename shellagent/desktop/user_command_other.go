@@ -23,3 +23,10 @@ func (u *UserEnvironment) Command(ctx context.Context, path string, args ...stri
 }
 
 type userToken = struct{}
+
+// StartGUI starts a windowed program as the user.
+func (u *UserEnvironment) StartGUI(path string, args []string, dir string) error {
+	command := exec.Command(path, args...)
+	command.Dir = dir
+	return command.Start()
+}

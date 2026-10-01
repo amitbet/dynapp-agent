@@ -3,8 +3,10 @@ module github.com/amitbet/dynapp-agent
 go 1.25.0
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/jlaffaye/ftp v0.2.0
 	github.com/kardianos/service v1.2.4
 	github.com/pion/webrtc/v4 v4.1.6
@@ -26,6 +28,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
+	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v3 v3.0.7 // indirect

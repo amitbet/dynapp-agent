@@ -223,7 +223,7 @@ func configureUpdateLogging(target string) func() {
 		log.Printf("could not open update log %q: %v", path, err)
 		return func() {}
 	}
-	log.SetOutput(io.MultiWriter(os.Stdout, file))
+	log.SetOutput(io.MultiWriter(bestEffortWriter{os.Stdout}, file))
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	return func() { _ = file.Close() }
 }

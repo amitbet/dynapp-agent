@@ -49,6 +49,13 @@ type Config struct {
 	// CatalogAppID is the Dyner catalog app (`owner/slug`) that hosts the
 	// permission screen. Defaults to DefaultCatalogAppID.
 	CatalogAppID string `json:"catalogAppId,omitempty"`
+	// NativeApps are apps installed as native desktop apps, with their grants.
+	// A damaged entry is dropped on load and never blocks the rest of the
+	// configuration (see NativeAppList.UnmarshalJSON).
+	NativeApps NativeAppList `json:"nativeApps,omitempty"`
+	// NativeAppsEnabled opts in to native apps where they are still in
+	// preview (Windows). DYNAPP_NATIVE_APPS=1 does the same.
+	NativeAppsEnabled bool `json:"nativeAppsEnabled,omitempty"`
 }
 
 // DefaultCatalogAppID is the store id of the Dyner client unless configured.

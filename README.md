@@ -39,6 +39,17 @@ Windows, PowerShell (elevated; installs into `C:\Program Files\DynApp` and the m
 irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install.ps1 | iex
 ```
 
+Windows, PowerShell for the current user only (no Administrator, no machine
+service, no SmartScreen prompt; installs into `%LOCALAPPDATA%\Programs\DynApp`
+and starts at sign-in):
+
+```powershell
+irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install-user.ps1 | iex
+```
+
+Use one or the other: the per-user agent refuses to install while the machine
+service exists, because both would serve the same local port.
+
 Windows, winget (portable package `AmitBet.DynAppShellAgent`):
 
 ```powershell
@@ -208,6 +219,40 @@ interactive launch also mirrors them to stdout. If the default UDP/TCP port is
 already occupied on a first no-argument launch, the agent selects an available
 loopback port, persists it, and registers that endpoint with Dyner so the PWA
 Shell can still present it as **This machine**.
+
+## Native desktop apps
+
+The agent can install a hosted DynApp as a native desktop app with its own
+Dock or taskbar entry, window, and web storage
+([contract](https://github.com/amitbet/dynapp/blob/main/docs/native-host.md)).
+Dyner calls the authority-only `apps` RPC methods `nativeSupport`,
+`listNative`, `installNative`, `uninstallNative`, and `launchNative`.
+
+- **macOS:** each app is `~/Applications/DynApp/<Name>.app`, an ad-hoc signed
+  bundle around the committed Swift host in `shellagent/nativehost/darwin/`.
+  The host connects to `<stateDir>/native-host.sock`; the agent only accepts
+  the host executable inside the bundle it installed, with the cdhash it
+  recorded. Rebuild the host only for real changes (see its README): a new
+  binary makes installed apps ask macOS for camera, microphone, and Local
+  Network access again.
+- **Windows (preview):** each app is a Start menu shortcut that runs
+  `dynapp-shell-agent.exe app --id <owner/slug>` in a WebView2 window with its
+  own AppUserModelID. It stays off until `DYNAPP_NATIVE_APPS=1` is set for the
+  agent or `nativeAppsEnabled` is `true` in its config, so an agent update
+  changes nothing on Windows machines that have not opted in. The
+  [Windows test plan](docs/native-apps-windows-test.md) lists what to verify.
+
+The page bridge (`shellagent/native_host_bridge.js`) is served by the agent,
+so bridge changes ship with agent releases and never rewrite app bundles.
+Permissions an installed app has not been granted are asked in its own window
+and can be reviewed from its **Permissions…** menu item; Dyner → Permissions
+lists the same grants.
+
+`go test -tags nativee2e -run 'TestNativeApp|TestNativePermissionSheet' ./shellagent/`
+installs real bundles under a temporary home on macOS and drives them end to
+end. `DYNAPP_PWA_SHELL_CONTENT=<dynapp>/apps/pwa-shell/content` adds a run
+against the real PWA Shell runtime, and `DYNAPP_SHEET_SCREENSHOT=<dir>` saves
+the permission sheet as a PNG.
 
 ## Linux Chromium PWA shortcuts
 
