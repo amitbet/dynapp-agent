@@ -54,8 +54,20 @@ runs `install-user.ps1` with `DYNAPP_NATIVE_APPS=1` and keeps that setting):
 irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install-native-apps.ps1 | iex
 ```
 
-Use one or the other: the per-user agent refuses to install while the machine
-service exists, because both would serve the same local port.
+The per-user installers replace an existing machine service automatically
+(one UAC prompt, via `scripts/remove-service.ps1`), because both would serve the
+same local port.
+
+To remove the per-user agent (and the machine service, if one is installed):
+
+```powershell
+irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/uninstall.ps1 | iex
+```
+
+It stops the agent and native app windows and removes the sign-in start, the
+`dynapp://` handler, the PATH entry, the native-apps setting, native app
+shortcuts, and the program files. Pairings, grants, and app data are kept; set
+`$env:DYNAPP_REMOVE_DATA = '1'` first to delete them too.
 
 Windows, winget (portable package `AmitBet.DynAppShellAgent`):
 

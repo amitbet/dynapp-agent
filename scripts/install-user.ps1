@@ -26,10 +26,15 @@ function Get-NativeArch {
 
 # The machine-wide service and a per-user agent would compete for the same
 # local port and pairings.
-$service = Get-Service -Name 'dynapp-shell-agent' -ErrorAction SilentlyContinue
-if ($service) {
-  throw ("The machine-wide DynApp agent service is installed. Remove it first from an elevated prompt " +
-    "('dynapp-shell-agent stop' then 'dynapp-shell-agent uninstall'), then run this installer again.")
+# Remove an existing machine service first (one UAC prompt); its state
+# directory is normally this user's, so pairings carry over.
+if ((Get-Service -Name 'dynapp-shell-agent' -ErrorAction SilentlyContinue) -or
+    (Test-Path 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\dynapp')) {
+  Write-Host 'Found the machine-wide DynApp agent service; replacing it with a per-user agent.'
+  Invoke-RestMethod "https://raw.githubusercontent.com/${Repo}/main/scripts/remove-service.ps1" | Invoke-Expression
+  if (Get-Service -Name 'dynapp-shell-agent' -ErrorAction SilentlyContinue) {
+    throw 'The machine-wide DynApp agent service could not be removed, so the per-user agent was not installed.'
+  }
 }
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -89,4 +94,4 @@ Start-Process -FilePath $destination -ArgumentList '--background' -WindowStyle H
 
 Write-Host "installed $destination from $tag for $env:USERNAME"
 Write-Host 'The agent is running and starts automatically when you sign in.'
-Write-Host "To remove it: delete the '$RunValue' value under $RunKey, stop dynapp-shell-agent, and delete $installDir."
+Write-Host "To remove it: irm https://raw.githubusercontent.com/${Repo}/main/scripts/uninstall.ps1 | iex"
