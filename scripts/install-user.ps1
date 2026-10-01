@@ -5,7 +5,7 @@
 #   irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install-user.ps1 | iex
 #
 # Set $env:DYNAPP_NATIVE_APPS = '1' before running to also turn on the native
-# Windows apps preview.
+# Windows apps preview, and $env:DYNAPP_AGENT_VERSION to pin a release.
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -35,7 +35,14 @@ if ($service) {
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $arch = Get-NativeArch
-$release = Invoke-RestMethod -Uri "https://api.github.com/repos/${Repo}/releases/latest" -Headers @{ 'User-Agent' = 'dynapp-agent-installer' }
+# $env:DYNAPP_AGENT_VERSION = '0.1.33' installs that release (also a
+# prerelease) instead of the latest one.
+$releaseUrl = if ($env:DYNAPP_AGENT_VERSION) {
+  "https://api.github.com/repos/${Repo}/releases/tags/v$($env:DYNAPP_AGENT_VERSION.TrimStart('v'))"
+} else {
+  "https://api.github.com/repos/${Repo}/releases/latest"
+}
+$release = Invoke-RestMethod -Uri $releaseUrl -Headers @{ 'User-Agent' = 'dynapp-agent-installer' }
 $tag = [string]$release.tag_name
 if (-not $tag) { throw 'could not resolve the latest GitHub release' }
 $version = $tag.TrimStart('v')
