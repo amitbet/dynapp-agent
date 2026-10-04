@@ -292,7 +292,7 @@ func nativeInfoPlist(spec nativeInstallSpec, bundleID string) []byte {
 	return buffer.Bytes()
 }
 
-// nativeIcns converts the app's 512 px PNG with the system sips and iconutil.
+// nativeIcns resizes and masks the app PNG before encoding its macOS icon.
 func nativeIcns(png []byte) ([]byte, error) {
 	work, err := os.MkdirTemp("", "dynapp-icon-*")
 	if err != nil {
@@ -316,6 +316,18 @@ func nativeIcns(png []byte) ([]byte, error) {
 		output, err := exec.Command("/usr/bin/sips", "-s", "format", "png", "-z", fmt.Sprint(size), fmt.Sprint(size), source, "--out", filepath.Join(iconset, name)).CombinedOutput()
 		if err != nil {
 			return nil, fmt.Errorf("resize the app icon: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		path := filepath.Join(iconset, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		masked, err := maskNativeMacIcon(data)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(path, masked, 0o600); err != nil {
+			return nil, err
 		}
 	}
 	icns := filepath.Join(work, "AppIcon.icns")

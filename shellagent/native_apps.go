@@ -542,15 +542,31 @@ const maxNativeIconBytes = 4 << 20
 
 var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 
-// fetchNativeIcon downloads the PNG every hosted app serves at /icon-512.png.
+// fetchNativeIcon prefers the full-bleed maskable image on macOS, where the
+// bundle builder applies the platform mask without shrinking the glyph.
 func fetchNativeIcon(ctx context.Context, client *http.Client, origin string) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/icon-512.png", nil)
+	iconURL := origin + "/icon-512.png"
+	if runtime.GOOS == "darwin" {
+		iconURL = origin + "/icon-512-maskable.png"
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, iconURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("could not download the app icon: %w", err)
+	}
+	if runtime.GOOS == "darwin" && response.StatusCode == http.StatusNotFound {
+		response.Body.Close()
+		request, err = http.NewRequestWithContext(ctx, http.MethodGet, origin+"/icon-512.png", nil)
+		if err != nil {
+			return nil, err
+		}
+		response, err = client.Do(request)
+		if err != nil {
+			return nil, fmt.Errorf("could not download the app icon: %w", err)
+		}
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {

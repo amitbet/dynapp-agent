@@ -263,6 +263,11 @@ Dyner calls the authority-only `apps` RPC methods `nativeSupport`,
   changes nothing on Windows machines that have not opted in. The
   [Windows test plan](docs/native-apps-windows-test.md) lists what to verify.
 
+macOS bundle icons use the hosted maskable PNG and the macOS rounded icon
+grid, keeping the glyph at its original size to match Chrome-installed PWAs.
+Older hosts without a maskable PNG fall back to the ordinary PNG. Reinstall
+an existing app from Dyner after updating the agent to refresh its icon.
+
 The page bridge (`shellagent/native_host_bridge.js`) is served by the agent,
 so bridge changes ship with agent releases and never rewrite app bundles.
 Permissions an installed app has not been granted are asked in its own window
