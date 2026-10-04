@@ -262,6 +262,32 @@ func nativeInfoPlist(spec nativeInstallSpec, bundleID string) []byte {
 	for _, entry := range entries {
 		fmt.Fprintf(&buffer, "\t<key>%s</key>\n\t<string>%s</string>\n", entry[0], entry[1])
 	}
+	if len(spec.DocumentTypes) > 0 {
+		buffer.WriteString("<key>CFBundleDocumentTypes</key><array>\n")
+		for _, doc := range spec.DocumentTypes {
+			if len(doc.Extensions) == 0 {
+				continue
+			}
+			role := doc.Role
+			if role != "Editor" && role != "Viewer" && role != "Shell" {
+				role = "Viewer"
+			}
+			rank := doc.Rank
+			if rank != "Owner" && rank != "Default" && rank != "None" {
+				rank = "Alternate"
+			}
+			fmt.Fprintf(&buffer, "<dict><key>CFBundleTypeName</key><string>%s</string><key>CFBundleTypeRole</key><string>%s</string><key>LSHandlerRank</key><string>%s</string><key>CFBundleTypeExtensions</key><array>", plistEscape(doc.Name), role, rank)
+			for _, ext := range doc.Extensions {
+				fmt.Fprintf(&buffer, "<string>%s</string>", plistEscape(strings.TrimPrefix(ext, ".")))
+			}
+			buffer.WriteString("</array><key>CFBundleTypeMIMETypes</key><array>")
+			for _, mime := range doc.MimeTypes {
+				fmt.Fprintf(&buffer, "<string>%s</string>", plistEscape(mime))
+			}
+			buffer.WriteString("</array></dict>\n")
+		}
+		buffer.WriteString("</array>\n")
+	}
 	buffer.WriteString("\t<key>NSHighResolutionCapable</key>\n\t<true/>\n</dict>\n</plist>\n")
 	return buffer.Bytes()
 }
@@ -332,10 +358,10 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 		target = filepath.Join(root, name+" ("+nativeBundleName(owner)+").app")
 	}
 	files := map[string][]byte{
-		"Contents/Info.plist":                  nativeInfoPlist(spec, bundleID),
-		"Contents/PkgInfo":                     []byte("APPL????"),
+		"Contents/Info.plist":                    nativeInfoPlist(spec, bundleID),
+		"Contents/PkgInfo":                       []byte("APPL????"),
 		"Contents/MacOS/" + nativeHostExecutable: nativeHostBinary,
-		"Contents/Resources/AppIcon.icns":      icns,
+		"Contents/Resources/AppIcon.icns":        icns,
 	}
 	if !bundleMatches(target, files) {
 		staging := filepath.Join(root, fmt.Sprintf(".%s.partial-%d", filepath.Base(target), os.Getpid()))

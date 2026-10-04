@@ -250,6 +250,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   let settings: HostSettings
   var window: NSWindow!
   var webView: HostWebView!
+  var pendingOpenFiles: [[String]] = []
   var control: AgentConnection?
   var agentOrigin = ""
   var sockets: [String: PageSocket] = [:]
@@ -285,6 +286,21 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     return true
   }
 
+  func application(_ sender: NSApplication, openFiles filenames: [String]) {
+    pendingOpenFiles.append(filenames)
+    window?.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    flushOpenFiles()
+  }
+
+  func flushOpenFiles() {
+    guard let control else { return }
+    for paths in pendingOpenFiles {
+      control.sendJSON(["type": "native-host-open-files", "paths": paths])
+    }
+    pendingOpenFiles.removeAll()
+  }
+
   /// The control connection supplies the bridge script and start URL. Without
   /// an agent the app still loads as a plain web app.
   func connectControl(attempt: Int) {
@@ -315,6 +331,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
           loaded = true
           timeout.cancel()
           self.control = connection
+          self.flushOpenFiles()
           let url = (frame["url"] as? String).flatMap(URL.init(string:)) ?? self.settings.startURL
           self.agentOrigin = (frame["origin"] as? String) ?? ""
           self.loadPage(bootstrap: frame["bootstrapScript"] as? String, url: url)
@@ -324,6 +341,13 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
               "type": "native-host-permission-decision", "requestId": frame["requestId"] ?? "",
               "capabilities": capabilities.map { $0 as Any } ?? NSNull(),
             ])
+          }
+        case "native-host-open-files-result":
+          if let error = frame["error"] as? String {
+            self.showError(error)
+            NSApp.reply(toOpenOrPrint: .failure)
+          } else {
+            NSApp.reply(toOpenOrPrint: .success)
           }
         case "native-host-review-result":
           self.finishReview(frame)

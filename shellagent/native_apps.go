@@ -103,8 +103,18 @@ func (s *Server) nativeAvailable() (bool, string) {
 	return nativeSupported()
 }
 
+// nativeDocumentType is an app-declared document association.
+type nativeDocumentType struct {
+	Name       string   `json:"name"`
+	Extensions []string `json:"extensions"`
+	MimeTypes  []string `json:"mimeTypes"`
+	Role       string   `json:"role"`
+	Rank       string   `json:"rank"`
+}
+
 // nativeInstallSpec is what a platform needs to materialize one app.
 type nativeInstallSpec struct {
+	DocumentTypes []nativeDocumentType
 	StoreID       string
 	Name          string
 	Origin        string
@@ -242,9 +252,10 @@ func nativeGrantPayload(app NativeApp) map[string]any {
 // nativeManifest is a resolved app plus what the native prompt and installer
 // need beyond resolvedApp.
 type nativeManifest struct {
-	app     resolvedApp
-	origin  string
-	reasons map[string]string
+	app           resolvedApp
+	origin        string
+	reasons       map[string]string
+	documentTypes []nativeDocumentType
 }
 
 func (s *Server) resolveNativeManifest(ctx context.Context, config Config, storeID string) (nativeManifest, error) {
@@ -275,7 +286,7 @@ func (s *Server) resolveNativeManifest(ctx context.Context, config Config, store
 	if origin == "" {
 		return nativeManifest{}, errors.New("Dyner did not report a hosted origin for this app")
 	}
-	return nativeManifest{app: resolved, origin: origin, reasons: manifestPermissionReasons(detail)}, nil
+	return nativeManifest{app: resolved, origin: origin, reasons: manifestPermissionReasons(detail), documentTypes: manifestDocumentTypes(detail)}, nil
 }
 
 // legacyHostedOrigin is the app host Dyner uses when hostedOrigins is absent:
@@ -432,7 +443,7 @@ func (s *Server) installNativeApp(ctx context.Context, args map[string]any) (any
 	}
 	result, err := nativeInstall(nativeInstallSpec{
 		StoreID: storeID, Name: manifest.app.Name, Origin: manifest.origin, URL: startURL, Icon: icon,
-		AgentEndpoint: s.nativeEndpoint(), StateDir: stateDir,
+		AgentEndpoint: s.nativeEndpoint(), StateDir: stateDir, DocumentTypes: manifest.documentTypes,
 	})
 	if err != nil {
 		return nil, err
@@ -584,4 +595,20 @@ func fetchNativeStartURL(ctx context.Context, client *http.Client, origin string
 	}
 	resolved.Fragment = ""
 	return resolved.String()
+}
+
+// Document declarations come from the same app manifest as permissions.
+func manifestDocumentTypes(detail map[string]any) []nativeDocumentType {
+	revision, _ := detail["latestRevision"].(map[string]any)
+	if revision == nil {
+		if revisions, _ := detail["revisions"].([]any); len(revisions) > 0 {
+			revision, _ = revisions[0].(map[string]any)
+		}
+	}
+	manifest, _ := revision["manifest"].(map[string]any)
+	launch, _ := manifest["launch"].(map[string]any)
+	data, _ := json.Marshal(launch["fileTypes"])
+	var types []nativeDocumentType
+	_ = json.Unmarshal(data, &types)
+	return types
 }

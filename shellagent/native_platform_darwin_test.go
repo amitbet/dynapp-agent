@@ -112,3 +112,20 @@ func TestNativeInstallKeepsAnUnchangedBundle(t *testing.T) {
 		t.Fatal("uninstall removed another app's bundle")
 	}
 }
+
+func TestNativeDocumentTypesUseManifestDeclarations(t *testing.T) {
+	detail := map[string]any{"latestRevision": map[string]any{"manifest": map[string]any{"launch": map[string]any{"fileTypes": []any{map[string]any{"name": "Spreadsheet & data", "extensions": []any{"xlsx", "ods"}, "mimeTypes": []any{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}, "role": "Editor", "rank": "Alternate"}}}}}}
+	docs := manifestDocumentTypes(detail)
+	if len(docs) != 1 || len(docs[0].Extensions) != 2 {
+		t.Fatalf("document types = %#v", docs)
+	}
+	text := string(nativeInfoPlist(nativeInstallSpec{DocumentTypes: docs}, "test.app"))
+	for _, want := range []string{"CFBundleDocumentTypes", "Spreadsheet &amp; data", "<string>xlsx</string>", "<string>Editor</string>", "<string>Alternate</string>"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %s in %s", want, text)
+		}
+	}
+	if strings.Contains(string(nativeInfoPlist(nativeInstallSpec{}, "test.app")), "CFBundleDocumentTypes") {
+		t.Fatal("app without file declarations claims documents")
+	}
+}

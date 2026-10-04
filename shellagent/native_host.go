@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,12 +22,12 @@ import (
 // The native channel carries the unchanged agent protocol between an
 // installed app's host process and the agent (docs/native-host.md).
 const (
-	nativeFrameText   byte = 1
-	nativeFrameBinary byte = 2
-	maxNativeFrame         = maxReadBytes + 1024*1024
-	nativeHelloTimeout     = 10 * time.Second
-	nativeReviewTimeout    = 10 * time.Minute
-	nativeProtocolVersion  = 1
+	nativeFrameText       byte = 1
+	nativeFrameBinary     byte = 2
+	maxNativeFrame             = maxReadBytes + 1024*1024
+	nativeHelloTimeout         = 10 * time.Second
+	nativeReviewTimeout        = 10 * time.Minute
+	nativeProtocolVersion      = 1
 )
 
 //go:embed native_host_bridge.js
@@ -116,6 +117,7 @@ type nativeHello struct {
 }
 
 type nativeHostFrame struct {
+	Paths        []string `json:"paths,omitempty"`
 	Type         string   `json:"type"`
 	ID           string   `json:"id,omitempty"`
 	RequestID    string   `json:"requestId,omitempty"`
@@ -450,7 +452,21 @@ func (s *Server) serveNativeControl(ctx context.Context, socket *nativeFrameSock
 			continue
 		}
 		var frame nativeHostFrame
-		if json.Unmarshal(data, &frame) != nil || frame.Type != "native-host-review" {
+		if json.Unmarshal(data, &frame) != nil {
+			continue
+		}
+		if frame.Type == "native-host-open-files" {
+			err := s.queueNativeOpenFiles(app.StoreID, frame.Paths)
+			result := map[string]any{"type": "native-host-open-files-result", "id": frame.ID}
+			if err != nil {
+				result["error"] = err.Error()
+			}
+			if !send(socket, ctx, result) {
+				return
+			}
+			continue
+		}
+		if frame.Type != "native-host-review" {
 			continue
 		}
 		result, updated, err := s.reviewNativeApp(ctx, socket, app.StoreID)
@@ -545,3 +561,41 @@ func (s *Server) reviewNativeApp(ctx context.Context, socket *nativeFrameSocket,
 }
 
 func (app NativeApp) String() string { return fmt.Sprintf("%s (%s)", app.Name, app.StoreID) }
+
+// Only the authenticated native host can submit paths for its own app.
+// The page can consume them only with the externalOpen.files grant.
+func (s *Server) queueNativeOpenFiles(storeID string, paths []string) error {
+	app, ok := s.nativeApp(storeID)
+	if !ok {
+		return errors.New("native app is no longer installed")
+	}
+	s.mu.Lock()
+	capabilities := authForNative(s.Config, app, nil).capabilities
+	s.mu.Unlock()
+	allowed := false
+	for _, capability := range capabilities {
+		if capability == "externalOpen.files" {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return errors.New("Allow opening external files in this app's permissions first")
+	}
+	if len(paths) == 0 || len(paths) > 64 {
+		return errors.New("invalid number of files")
+	}
+	valid := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !filepath.IsAbs(path) {
+			return errors.New("file path must be absolute")
+		}
+		valid = append(valid, filepath.Clean(path))
+	}
+	s.externalMu.Lock()
+	defer s.externalMu.Unlock()
+	if s.externalOpens == nil {
+		s.externalOpens = map[string][]string{}
+	}
+	s.externalOpens[storeID] = append(s.externalOpens[storeID], valid...)
+	return nil
+}

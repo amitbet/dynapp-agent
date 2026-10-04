@@ -54,6 +54,19 @@ const report = (data) => fetch("/report", { method: "POST", body: JSON.stringify
   const read = await wait((frame) => frame.id === "f1");
   socket.send(JSON.stringify({ type: "exec", id: "e1", command: "echo hi" }));
   const exec = await wait((frame) => frame.id === "e1");
+  let openSequence = 0;
+  let polling = false;
+  setInterval(async () => {
+    if (polling) return;
+    polling = true;
+    try {
+      const id = "open" + (++openSequence);
+      socket.send(JSON.stringify({ type: "rpc", id, service: "externalOpen", method: "takeData", args: [] }));
+      const result = await wait((frame) => frame.id === id);
+      if (result.error) report({ opened: false, error: result.error });
+      for (const record of result.result || []) report({ opened: record });
+    } finally { polling = false; }
+  }, 200);
   report({ ok: true, platform: host.platform, storeId: host.storeId, capabilities: hello.capabilities, pong: pong.type, read, exec });
 })().catch((error) => report({ ok: false, error: String(error && error.message || error) }));
 </script>`
@@ -71,7 +84,7 @@ func TestNativeAppEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reports := make(chan map[string]any, 1)
+	reports := make(chan map[string]any, 8)
 	var origin string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/apps/e2e/probe", func(w http.ResponseWriter, r *http.Request) {
@@ -79,8 +92,10 @@ func TestNativeAppEndToEnd(t *testing.T) {
 			"app":           map[string]any{"id": "e2e/probe", "name": "Native Probe"},
 			"hostedOrigins": []string{origin},
 			"latestRevision": map[string]any{"id": "rev_1", "manifest": map[string]any{
-				"name": "Native Probe",
+				"name":   "Native Probe",
+				"launch": map[string]any{"fileTypes": []any{map[string]any{"name": "Text", "extensions": []any{"txt"}, "role": "Editor"}}},
 				"backendPermissions": []any{
+					map[string]any{"permission": "externalOpen.files", "reason": "Open files from Finder."},
 					map[string]any{"permission": "fs.readText", "reason": "Reads the probe file to prove the bridge works end to end."},
 					map[string]any{"permission": "fs.exec", "reason": "Declared but not granted, to prove denials reach the page."},
 				},
@@ -117,7 +132,7 @@ func TestNativeAppEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	result, err := agent.installNativeApp(ctx, map[string]any{"storeId": "e2e/probe", "capabilities": []any{"fs.readText"}, "launch": true})
+	result, err := agent.installNativeApp(ctx, map[string]any{"storeId": "e2e/probe", "capabilities": []any{"fs.readText", "externalOpen.files"}, "launch": false})
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -127,6 +142,10 @@ func TestNativeAppEndToEnd(t *testing.T) {
 		_ = exec.Command(lsregisterPath, "-u", app.Path).Run()
 	}()
 	t.Logf("installed %v", result)
+	// Finder-style cold launch, including a file delivered before the bridge loads.
+	if output, err := exec.Command("/usr/bin/open", "-a", app.Path, secret).CombinedOutput(); err != nil {
+		t.Fatalf("open cold: %v %s", err, output)
+	}
 
 	select {
 	case report := <-reports:
@@ -137,7 +156,7 @@ func TestNativeAppEndToEnd(t *testing.T) {
 		if report["platform"] != "macos" || report["storeId"] != "e2e/probe" {
 			t.Fatalf("bridge identity = %v", report)
 		}
-		if fmt.Sprint(report["capabilities"]) != "[fs.readText]" || report["pong"] != "pong" {
+		if fmt.Sprint(report["capabilities"]) != "[externalOpen.files fs.readText]" || report["pong"] != "pong" {
 			t.Fatalf("capabilities or ping = %v", report)
 		}
 		read, _ := report["read"].(map[string]any)
@@ -150,6 +169,27 @@ func TestNativeAppEndToEnd(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("the installed app never reported back")
+	}
+
+	for _, path := range []string{secret, filepath.Join(stateDir, "לידור warm.txt")} {
+		if path != secret {
+			if err := os.WriteFile(path, []byte("warm file bytes"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if output, err := exec.Command("/usr/bin/open", "-a", app.Path, path).CombinedOutput(); err != nil {
+				t.Fatalf("open warm: %v %s", err, output)
+			}
+		}
+		select {
+		case report := <-reports:
+			record, _ := report["opened"].(map[string]any)
+			if actual, _ := record["path"].(string); !sameFile(actual, path) || record["base64"] == "" {
+				t.Fatalf("Finder open was not delivered: %v", report)
+			}
+			t.Logf("Finder open delivered: %s", path)
+		case <-ctx.Done():
+			t.Fatal("Finder file never reached the page")
+		}
 	}
 
 	// Only the installed host executable may use the app's channel.
@@ -190,7 +230,9 @@ func TestNativePermissionSheet(t *testing.T) {
 			}}},
 		})
 	})
-	mux.HandleFunc("/icon-512.png", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(testPNG(t, color.RGBA{120, 60, 200, 255})) })
+	mux.HandleFunc("/icon-512.png", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(testPNG(t, color.RGBA{120, 60, 200, 255}))
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `<!doctype html><body style="font:20px system-ui;padding:40px">Sheet probe<script>const s = window.__DYNAPP_NATIVE_HOST__.openAgentSocket();</script>`)
 	})
@@ -254,7 +296,9 @@ func TestNativeAppRunsThePWAShellRuntime(t *testing.T) {
 			"latestRevision": map[string]any{"manifest": map[string]any{"name": "Runtime Probe", "backendPermissions": declared}},
 		})
 	})
-	mux.HandleFunc("/icon-512.png", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(testPNG(t, color.RGBA{200, 140, 20, 255})) })
+	mux.HandleFunc("/icon-512.png", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(testPNG(t, color.RGBA{200, 140, 20, 255}))
+	})
 	mux.Handle("/runtime/", http.StripPrefix("/runtime/", http.FileServer(http.Dir(content))))
 	mux.HandleFunc("/report", func(w http.ResponseWriter, r *http.Request) {
 		var report map[string]any

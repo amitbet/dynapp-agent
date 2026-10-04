@@ -425,3 +425,31 @@ func TestUnreadableConfigIsSetAsideInsteadOfBlockingStartup(t *testing.T) {
 		t.Fatalf("a newer config was moved aside: %v", err)
 	}
 }
+
+func TestNativeOpenFilesBoundToGrantedApp(t *testing.T) {
+	server := &Server{StateDir: t.TempDir(), Config: Config{NativeApps: NativeAppList{
+		{StoreID: "owner/allowed", Declared: []string{"externalOpen.files"}, Capabilities: []string{"externalOpen.files"}},
+		{StoreID: "owner/denied", Declared: []string{"externalOpen.files"}},
+	}}}
+	path := filepath.Join(t.TempDir(), "Unicode-לידור.xlsx")
+	if err := os.WriteFile(path, []byte("xlsx bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.queueNativeOpenFiles("owner/denied", []string{path}); err == nil {
+		t.Fatal("ungranted app accepted a file")
+	}
+	if err := server.queueNativeOpenFiles("owner/allowed", []string{path, "relative.xlsx"}); err == nil {
+		t.Fatal("relative path accepted")
+	}
+	if err := server.queueNativeOpenFiles("owner/allowed", []string{path}); err != nil {
+		t.Fatal(err)
+	}
+	wrong, err := server.handleExternalOpenRPC(context.Background(), message{Method: "takeData", AppID: "owner/denied"})
+	if err != nil || len(wrong.([]map[string]any)) != 0 {
+		t.Fatalf("wrong app received files: %v %v", wrong, err)
+	}
+	records, err := server.handleExternalOpenRPC(context.Background(), message{Method: "takeData", AppID: "owner/allowed"})
+	if err != nil || len(records.([]map[string]any)) != 1 || records.([]map[string]any)[0]["path"] != path {
+		t.Fatalf("open records: %v %v", records, err)
+	}
+}

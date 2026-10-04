@@ -476,3 +476,11 @@ The reusable privileged providers used by current hosted apps are implemented:
 Browser-native outbound file drag cannot be reproduced by a headless process;
 `startDrag()` remains a feature probe returning `false`, and Commander uses its
 existing download fallback.
+
+On macOS, native installs register `launch.fileTypes` from the app manifest.
+Finder and **Open With** launches are delivered to the hosted app through
+`appShell.takeExternalOpenData` / `onExternalOpen`, including files received
+before the page loads. The authenticated host queues paths only for its own
+installed app and only when `externalOpen.files` is granted. After an agent
+update that changes the macOS host, reinstall the native app from Dyner to
+refresh its bundle and document declarations; its web data is retained.
