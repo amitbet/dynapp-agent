@@ -9,4 +9,5 @@ type appHostOptions struct {
 	Origin  string
 	Name    string
 	Icon    string
+	Files   []string
 }

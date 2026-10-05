@@ -149,6 +149,7 @@ func main() {
 		appFlags.StringVar(&options.Name, "name", "DynApp", "window title")
 		appFlags.StringVar(&options.Icon, "icon", "", "window icon (.ico)")
 		_ = appFlags.Parse(flag.Args()[1:])
+		options.Files = appFlags.Args()
 		if err := runAppHost(options); err != nil {
 			log.Fatal(err)
 		}

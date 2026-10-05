@@ -40,6 +40,7 @@ Open `https://dynapp.io` in Edge or Chrome, pick an app that uses the agent
 - [ ] The Install button appears (Dyner got `nativeSupport.supported`).
 - [ ] The permission dialog opens; after allowing, the app window opens.
 - [ ] `Start menu ▸ DynApp ▸ <Name>` exists and shows the app icon.
+- [ ] The desktop shortcut exists, including when Desktop is redirected to OneDrive.
 - [ ] `%LOCALAPPDATA%\DynApp\Apps\<owner>\<slug>\icon.ico` exists.
 
 ## 4. Window and taskbar identity
@@ -131,3 +132,24 @@ agent update.
       its recovery actions again at every start). It is covered by
       `go test -run TestBlockedUpdateHelperKeepsTheAgentRunning .`, which also
       runs on Windows.
+
+## 11. Native file associations
+
+- [ ] Install an app with declared `launch.fileTypes`: it appears by its own
+      name and icon in Explorer **Open with** and Windows **Default apps**.
+- [ ] Existing default applications stay selected until the user changes them.
+- [ ] Choose the DynApp as default and double-click a supported file, including
+      a Unicode filename with spaces: the native app receives the exact path.
+- [ ] Open another file while the app is running: it receives the file and its
+      existing window comes forward.
+- [ ] Deny `externalOpen.files`: opening a document reports the permission error.
+- [ ] Reinstall after changing declared file types: removed registrations are
+      cleaned up and other apps' registrations remain.
+- [ ] Reinstall after renaming the app: the desktop shortcut is renamed.
+- [ ] Uninstall removes both shortcuts and all its file-type registrations;
+      other handlers and WebView2 data remain.
+
+`go test ./shellagent ./shellagent/winhost -run 'NativeWindows|QueueOpenFiles'`
+executes the COM shortcut writer, registry registration/reinstall/uninstall,
+and file-open acknowledgement tests on Windows. Registry and desktop tests
+use a private subtree and temporary directory.

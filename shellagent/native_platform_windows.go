@@ -4,8 +4,11 @@ package shellagent
 
 import (
 	"bytes"
+	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -313,15 +316,19 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 	shortcut := filepath.Join(roaming, "Microsoft", "Windows", "Start Menu", "Programs", "DynApp", nativeShortcutName(spec.Name)+".lnk")
 	app := NativeApp{StoreID: spec.StoreID, Name: spec.Name, Origin: spec.Origin, URL: spec.URL}
 	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-	command := user.Command(nil, powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedPowerShell(shortcutScript))
+	command := user.Command(nil, powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedPowerShell(shortcutScript+nativeWindowsIntegrationScript))
 	command.Env = append(user.Environ(),
 		"DYNAPP_LNK_PATH="+shortcut, "DYNAPP_LNK_TARGET="+executable,
 		"DYNAPP_LNK_ARGS="+joinWindowsArgs(nativeHostArgs(app, spec.AgentEndpoint, icon)),
 		"DYNAPP_LNK_ICON="+icon, "DYNAPP_LNK_APPID="+nativeAppUserModelID(spec.StoreID),
 		"DYNAPP_LNK_DESCRIPTION="+spec.Name+" (DynApp)",
+		"DYNAPP_NATIVE_ID="+nativeWindowsRegistrationID(spec.StoreID),
+		"DYNAPP_NATIVE_NAME="+spec.Name,
+		"DYNAPP_NATIVE_EXTENSIONS="+nativeWindowsExtensionsJSON(spec.DocumentTypes),
+		"DYNAPP_NATIVE_MODE=install",
 	)
 	if output, err := command.CombinedOutput(); err != nil {
-		return nativeInstallResult{}, fmt.Errorf("create the Start menu shortcut: %w: %s", err, strings.TrimSpace(string(output)))
+		return nativeInstallResult{}, fmt.Errorf("install Windows app integration: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	// A renamed app leaves its previous shortcut behind; remove it.
 	programs := filepath.Dir(shortcut)
@@ -360,7 +367,7 @@ func utf16Bytes(value string) []byte {
 	return raw
 }
 
-// nativeUninstall removes the shortcut and icon. WebView2 data stays, like
+// nativeUninstall removes both shortcuts, file registrations, and the icon. WebView2 data stays, like
 // the browser path keeps site data.
 func nativeUninstall(app NativeApp) error {
 	user, local, roaming, err := nativeUserDirs()
@@ -372,6 +379,12 @@ func nativeUninstall(app NativeApp) error {
 	path := filepath.Clean(app.Path)
 	if !strings.EqualFold(filepath.Dir(path), programs) || !strings.HasSuffix(strings.ToLower(path), ".lnk") {
 		return errors.New("the installed app is outside the DynApp Start menu folder")
+	}
+	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	command := user.Command(nil, powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedPowerShell(nativeWindowsIntegrationScript))
+	command.Env = append(user.Environ(), "DYNAPP_NATIVE_MODE=uninstall", "DYNAPP_NATIVE_ID="+nativeWindowsRegistrationID(app.StoreID))
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("remove Windows app integration: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -394,3 +407,28 @@ func nativeLaunch(app NativeApp, endpoint string) error {
 	return user.StartGUI(executable, nativeHostArgs(app, endpoint, icon), filepath.Dir(executable))
 }
 
+//go:embed native_windows_integration.ps1
+var nativeWindowsIntegrationScript string
+
+// Stable, owner-scoped identity, independent of an app's display name.
+func nativeWindowsRegistrationID(storeID string) string {
+	return fmt.Sprintf("DynApp.Native.%x", sha256.Sum256([]byte(storeID)))
+}
+
+var nativeWindowsExtension = regexp.MustCompile(`^[a-z0-9][a-z0-9_+-]{0,63}$`)
+
+func nativeWindowsExtensionsJSON(types []nativeDocumentType) string {
+	extensions := []string{}
+	seen := map[string]bool{}
+	for _, kind := range types {
+		for _, raw := range kind.Extensions {
+			ext := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(raw), "."))
+			if nativeWindowsExtension.MatchString(ext) && !seen[ext] {
+				extensions = append(extensions, "."+ext)
+				seen[ext] = true
+			}
+		}
+	}
+	data, _ := json.Marshal(extensions)
+	return string(data)
+}

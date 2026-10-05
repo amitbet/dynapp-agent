@@ -32,8 +32,21 @@ jobs:
           go test -c -o /dev/null ./shellagent/
           go test -c -o /dev/null .
 
+  windows-native:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Native Windows integration
+        run: go test ./shellagent ./shellagent/winhost -run 'NativeWindows|QueueOpenFiles|NativeOpen|PNGToICO|WindowsApp|EncodedPowerShell' -count=1
+
   release:
-    needs: test
+    needs: [test, windows-native]
     if: github.event_name == 'push' && !github.event.repository.fork && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !contains(github.event.head_commit.message, '[skip release]')
     permissions:
       contents: write
