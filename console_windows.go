@@ -36,7 +36,11 @@ func prepareConsole(args []string) {
 			continue
 		}
 		if handle, err := windows.GetStdHandle(stream.kind); err == nil && handle != 0 && handle != windows.InvalidHandle {
-			*stream.file = os.NewFile(uintptr(handle), (*stream.file).Name())
+			name := "console"
+			if *stream.file != nil {
+				name = (*stream.file).Name()
+			}
+			*stream.file = os.NewFile(uintptr(handle), name)
 		}
 	}
 	log.SetOutput(os.Stderr)
