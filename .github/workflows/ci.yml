@@ -46,6 +46,8 @@ jobs:
           cache-dependency-path: go.sum
       - name: Native Windows integration
         run: go test ./shellagent ./shellagent/winhost ./shellagent/desktop -run 'NativeWindows|QueueOpenFiles|NativeOpen|PNGToICO|WindowsApp|EncodedPowerShell|UserCommand' -count=1
+      - name: Windows file associations
+        run: go test ./shellagent/assoc -count=1
 
   release:
     needs: [test, windows-native]

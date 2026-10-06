@@ -3,6 +3,7 @@
 package assoc
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -70,9 +71,20 @@ func installWindowsAssociations(options AssociationOptions) error {
 	return nil
 }
 func removeWindowsAssociations(appID string) error {
+	return removeWindowsAssociationsAt(associationRegistryRoot(), appID)
+}
+
+func removeWindowsAssociationsAt(registryRoot registry.Key, appID string) error {
 	appID = agentutil.SafeName(appID)
-	registryRoot := associationRegistryRoot()
-	extensions, _ := platformAssociationExtensions(appID)
+	var extensions []string
+	key, err := registry.OpenKey(registryRoot, `Software\Classes\DynApp.`+appID, registry.QUERY_VALUE)
+	if err == nil {
+		extensions, _, err = key.GetStringsValue("Extensions")
+		key.Close()
+	}
+	if err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return err
+	}
 	for _, extension := range extensions {
 		path := `Software\Classes\.` + extension
 		key, err := registry.OpenKey(registryRoot, path, registry.QUERY_VALUE)
@@ -88,5 +100,11 @@ func removeWindowsAssociations(appID string) error {
 	for _, child := range []string{`shell\open\command`, `shell\open`, `shell`} {
 		_ = registry.DeleteKey(registryRoot, base+`\`+child)
 	}
-	return registry.DeleteKey(registryRoot, base)
+	err = registry.DeleteKey(registryRoot, base)
+	// The shell removes the previous set even on first install. An absent
+	// registration already satisfies removal, including repeated requests.
+	if errors.Is(err, registry.ErrNotExist) {
+		return nil
+	}
+	return err
 }
