@@ -2,4 +2,5 @@
 
 package main
 
-func detachConsole() {}
+func detachConsole()          {}
+func prepareConsole([]string) {}

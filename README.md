@@ -302,6 +302,12 @@ development build.
 
 ## Windows updates without a helper copy
 
+Windows releases use the GUI executable subsystem. Opening an associated
+file, desktop shortcut, or `dynapp://` link never allocates a terminal window.
+Command-line invocations attach to the parent terminal and preserve redirected
+input/output. Development builds can use `go build -ldflags="-H=windowsgui"`
+to exercise the same startup behavior.
+
 Behavior-based antivirus (for example Bitdefender Advanced Threat Defense)
 blocks an unsigned service that starts an unsigned copy of itself, which is
 what the original update helper does. Windows agents now avoid that:

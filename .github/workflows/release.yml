@@ -178,10 +178,14 @@ jobs:
         run: |
           set -euo pipefail
           suffix=""
-          if [ "$GOOS" = windows ]; then suffix=".exe"; fi
+          subsystem=""
+          if [ "$GOOS" = windows ]; then
+            suffix=".exe"
+            subsystem="-H=windowsgui"
+          fi
           asset="dynapp-shell-agent-${VERSION}-${GOOS}-${GOARCH}${suffix}"
           GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 \
-            go build -trimpath -ldflags="-s -w -X github.com/amitbet/dynapp-agent/shellagent.AgentVersion=${VERSION} -X github.com/amitbet/dynapp-agent/shellagent.AgentRepository=${REPOSITORY}" \
+            go build -trimpath -ldflags="${subsystem} -s -w -X github.com/amitbet/dynapp-agent/shellagent.AgentVersion=${VERSION} -X github.com/amitbet/dynapp-agent/shellagent.AgentRepository=${REPOSITORY}" \
             -o "$asset" .
           sha256sum "$asset" > "$asset.sha256"
           echo "asset=$asset" >> "$GITHUB_ENV"

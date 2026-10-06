@@ -28,7 +28,7 @@ jobs:
           GOARCH: amd64
           CGO_ENABLED: "0"
         run: |
-          go build ./...
+          go build -ldflags="-H=windowsgui" ./...
           go test -c -o /dev/null ./shellagent/
           go test -c -o /dev/null .
 
@@ -46,6 +46,8 @@ jobs:
           cache-dependency-path: go.sum
       - name: Native Windows integration
         run: go test ./shellagent ./shellagent/winhost ./shellagent/desktop -run 'NativeWindows|QueueOpenFiles|NativeOpen|PNGToICO|WindowsApp|EncodedPowerShell|UserCommand' -count=1
+      - name: Windows desktop and CLI startup
+        run: go test . -run 'WindowsConsole|WindowsGUI' -count=1
       - name: Windows file associations
         run: go test ./shellagent/assoc -count=1
 

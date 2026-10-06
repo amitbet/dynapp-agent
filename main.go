@@ -113,6 +113,7 @@ func startupAddress(preferred string, explicit, enableLAN bool, config shellagen
 }
 
 func main() {
+	prepareConsole(os.Args[1:])
 	address := flag.String("address", shellagent.DefaultAddress, "loopback HTTP address for health, settings UI, and launcher control")
 	stateDir := flag.String("state-dir", "", "service-owned state directory")
 	dynerURL := flag.String("dyner-url", "", "Dyner base URL (defaults to DYNER_BASE_URL or the packaged local Dyner)")
