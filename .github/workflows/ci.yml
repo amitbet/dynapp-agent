@@ -45,7 +45,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Native Windows integration
-        run: go test ./shellagent ./shellagent/winhost -run 'NativeWindows|QueueOpenFiles|NativeOpen|PNGToICO|WindowsApp|EncodedPowerShell' -count=1
+        run: go test ./shellagent ./shellagent/winhost ./shellagent/desktop -run 'NativeWindows|QueueOpenFiles|NativeOpen|PNGToICO|WindowsApp|EncodedPowerShell|UserCommand' -count=1
 
   release:
     needs: [test, windows-native]

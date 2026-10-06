@@ -100,9 +100,12 @@ func (u *UserEnvironment) Command(ctx context.Context, path string, args ...stri
 	} else {
 		command = exec.CommandContext(ctx, path, args...)
 	}
+	// Background helpers must not allocate a console, including when the
+	// agent runs directly as the desktop user rather than as a service.
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 	if u.env != nil {
 		command.Env = u.Environ()
-		command.SysProcAttr = &syscall.SysProcAttr{Token: syscall.Token(u.token), HideWindow: true, CreationFlags: createNoWindow}
+		command.SysProcAttr.Token = syscall.Token(u.token)
 	}
 	return command
 }
