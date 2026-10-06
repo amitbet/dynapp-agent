@@ -75,4 +75,11 @@ func TestWindowsGUIExecutablePreservesCLIOutput(t *testing.T) {
 			t.Fatalf("redirected help output = %q", output)
 		}
 	}
+	// PowerShell only waits for GUI programs in a pipeline. Install scripts
+	// pipe to Out-Host, and callers capturing output can use Out-String.
+	script := "& '" + strings.ReplaceAll(path, "'", "''") + "' --version | Out-String"
+	output, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(output)) != "dev" {
+		t.Fatalf("PowerShell GUI pipeline: %v: %q", err, output)
+	}
 }

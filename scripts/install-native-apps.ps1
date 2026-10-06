@@ -41,7 +41,9 @@ if ($expected -ne $actual) { Remove-Item -Force $download; throw "checksum misma
 
 Write-Host "Installing DynApp agent $version..."
 $installArgs = @('install-user', '--native-apps')
-& $download @installArgs
+# A pipeline makes PowerShell wait for a GUI-subsystem executable and capture
+# its standard output instead of returning while installation is still running.
+& $download @installArgs | Out-Host
 $code = $LASTEXITCODE
 Remove-Item -Force $download -ErrorAction SilentlyContinue
 if ($code -ne 0) { throw "The DynApp agent installer failed (exit code $code)." }

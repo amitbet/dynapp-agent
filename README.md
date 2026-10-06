@@ -307,6 +307,9 @@ file, desktop shortcut, or `dynapp://` link never allocates a terminal window.
 Command-line invocations attach to the parent terminal and preserve redirected
 input/output. Development builds can use `go build -ldflags="-H=windowsgui"`
 to exercise the same startup behavior.
+PowerShell scripts should pipe GUI executable calls to `Out-Host` (display)
+or `Out-String` (capture) so PowerShell waits for completion; the installers
+already do this.
 
 Behavior-based antivirus (for example Bitdefender Advanced Threat Defense)
 blocks an unsigned service that starts an unsigned copy of itself, which is
