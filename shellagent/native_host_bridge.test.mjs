@@ -12,7 +12,9 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 function page({ platform = "macos", pageOrigin = origin, top = true } = {}) {
   const posted = [];
   const events = [];
+  const listeners = {};
   const window = {
+    addEventListener(type, listener) { (listeners[type] ??= []).push(listener); },
     location: { origin: pageOrigin },
     btoa, atob, setTimeout,
     CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
@@ -24,7 +26,8 @@ function page({ platform = "macos", pageOrigin = origin, top = true } = {}) {
   window.top = top ? window : {};
   const config = JSON.stringify({ version: 1, platform, storeId: "amit-bet/notes", origin });
   vm.runInNewContext(template.replace("__DYNAPP_NATIVE_HOST_CONFIG__", config), window);
-  return { window, posted, events, host: window.__DYNAPP_NATIVE_HOST__, deliver: window.__dynappNativeHostDeliver };
+  const fire = (type) => { for (const listener of listeners[type] ?? []) listener({ type }); };
+  return { window, posted, events, fire, host: window.__DYNAPP_NATIVE_HOST__, deliver: window.__dynappNativeHostDeliver };
 }
 
 test("the bridge installs only in the app's own top-level document", () => {
@@ -89,4 +92,22 @@ test("the Windows bridge posts JSON strings through chrome.webview", () => {
   const { host, posted } = page({ platform: "windows" });
   const socket = host.openAgentSocket();
   assert.deepEqual(plain(posted[0]), { dynappNativeHost: 1, op: "open", sid: socket.sid });
+});
+
+test("socket ids differ between page loads so a reload cannot reuse the old page's connection", () => {
+  const first = page().host.openAgentSocket();
+  const second = page().host.openAgentSocket();
+  assert.notEqual(first.sid, second.sid);
+});
+
+test("pagehide closes the page's open agent sockets", () => {
+  const { host, posted, deliver, fire } = page();
+  const open = host.openAgentSocket();
+  const pending = host.openAgentSocket();
+  const done = host.openAgentSocket();
+  deliver({ sid: open.sid, event: "open" });
+  deliver({ sid: done.sid, event: "close", code: 1000 });
+  fire("pagehide");
+  const closes = posted.filter((message) => message.op === "close").map((message) => message.sid);
+  assert.deepEqual(closes.sort(), [open.sid, pending.sid].sort());
 });

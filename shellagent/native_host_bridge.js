@@ -27,6 +27,15 @@
   const sockets = new Map();
   const reviews = new Map();
   let nextId = 0;
+  // The host keeps its socket table across reloads, so ids must not repeat
+  // between page loads: a reused id would be ignored (macOS) or would receive
+  // the previous page's agent frames (Windows).
+  const pageId = (() => {
+    const bytes = new Uint8Array(8);
+    if (window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  })();
 
   // WebSocket-shaped agent connection. The PWA Shell uses it as the "native"
   // carrier of the local environment.
@@ -39,7 +48,7 @@
       this.onerror = null;
       this.onclose = null;
       this.listeners = new Map();
-      this.sid = `s${++nextId}`;
+      this.sid = `s${pageId}-${++nextId}`;
       sockets.set(this.sid, this);
       post({ op: "open", sid: this.sid });
     }
@@ -129,6 +138,13 @@
     }
   };
 
+  // Release this page's agent connections when it goes away; otherwise they
+  // stay open in the host until the app quits.
+  window.addEventListener?.("pagehide", () => {
+    for (const socket of sockets.values()) socket.close(1001, "Page unloaded");
+    sockets.clear();
+  });
+
   Object.defineProperty(window, "__dynappNativeHostDeliver", { value: deliver });
   Object.defineProperty(window, "__DYNAPP_NATIVE_HOST__", {
     value: Object.freeze({
@@ -138,7 +154,7 @@
       origin: config.origin,
       openAgentSocket: () => new NativeAgentSocket(),
       reviewPermissions: () => new Promise((resolve, reject) => {
-        const rid = `r${++nextId}`;
+        const rid = `r${pageId}-${++nextId}`;
         reviews.set(rid, { resolve, reject });
         post({ op: "review", rid });
       }),

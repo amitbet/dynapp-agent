@@ -67,7 +67,14 @@ const report = (data) => fetch("/report", { method: "POST", body: JSON.stringify
       for (const record of result.result || []) report({ opened: record });
     } finally { polling = false; }
   }, 200);
-  report({ ok: true, platform: host.platform, storeId: host.storeId, capabilities: hello.capabilities, pong: pong.type, read, exec });
+  const reloaded = sessionStorage.getItem("reloaded") === "1";
+  await report({ ok: true, reloaded, platform: host.platform, storeId: host.storeId, capabilities: hello.capabilities, pong: pong.type, read, exec });
+  // The host keeps its socket table across page loads; the reloaded page
+  // must still get its own agent connection.
+  if (!reloaded) {
+    sessionStorage.setItem("reloaded", "1");
+    location.reload();
+  }
 })().catch((error) => report({ ok: false, error: String(error && error.message || error) }));
 </script>`
 
@@ -149,28 +156,33 @@ func TestNativeAppEndToEnd(t *testing.T) {
 		t.Fatalf("open cold: %v %s", err, output)
 	}
 
-	select {
-	case report := <-reports:
-		t.Logf("page report: %v", report)
-		if report["ok"] != true {
-			t.Fatalf("page failed: %v", report["error"])
+	for _, wantReloaded := range []bool{false, true} {
+		select {
+		case report := <-reports:
+			t.Logf("page report: %v", report)
+			if report["ok"] != true {
+				t.Fatalf("page failed: %v", report["error"])
+			}
+			if report["reloaded"] != wantReloaded {
+				t.Fatalf("report reloaded = %v, want %v", report["reloaded"], wantReloaded)
+			}
+			if report["platform"] != "macos" || report["storeId"] != "e2e/probe" {
+				t.Fatalf("bridge identity = %v", report)
+			}
+			if fmt.Sprint(report["capabilities"]) != "[externalOpen.files fs.readText]" || report["pong"] != "pong" {
+				t.Fatalf("capabilities or ping = %v", report)
+			}
+			read, _ := report["read"].(map[string]any)
+			if read["type"] != "fs-result" || !strings.Contains(fmt.Sprint(read["result"]), "hello from the agent") {
+				t.Fatalf("fs.readText through the bridge = %v", read)
+			}
+			denied, _ := report["exec"].(map[string]any)
+			if !strings.Contains(fmt.Sprint(denied["error"]), "fs.exec is not granted") {
+				t.Fatalf("ungranted exec = %v", denied)
+			}
+		case <-ctx.Done():
+			t.Fatalf("the installed app never reported back (reloaded=%v)", wantReloaded)
 		}
-		if report["platform"] != "macos" || report["storeId"] != "e2e/probe" {
-			t.Fatalf("bridge identity = %v", report)
-		}
-		if fmt.Sprint(report["capabilities"]) != "[externalOpen.files fs.readText]" || report["pong"] != "pong" {
-			t.Fatalf("capabilities or ping = %v", report)
-		}
-		read, _ := report["read"].(map[string]any)
-		if read["type"] != "fs-result" || !strings.Contains(fmt.Sprint(read["result"]), "hello from the agent") {
-			t.Fatalf("fs.readText through the bridge = %v", read)
-		}
-		denied, _ := report["exec"].(map[string]any)
-		if !strings.Contains(fmt.Sprint(denied["error"]), "fs.exec is not granted") {
-			t.Fatalf("ungranted exec = %v", denied)
-		}
-	case <-ctx.Done():
-		t.Fatal("the installed app never reported back")
 	}
 
 	for _, path := range []string{secret, filepath.Join(stateDir, "לידור warm.txt")} {
