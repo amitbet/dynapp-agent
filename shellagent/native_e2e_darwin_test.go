@@ -102,9 +102,11 @@ func TestNativeAppEndToEnd(t *testing.T) {
 			}},
 		})
 	})
-	mux.HandleFunc("/icon-512.png", func(w http.ResponseWriter, r *http.Request) {
+	icon := func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(testPNG(t, color.RGBA{30, 160, 90, 255}))
-	})
+	}
+	mux.HandleFunc("/icon-512.png", icon)
+	mux.HandleFunc("/icon-512-maskable.png", icon)
 	mux.HandleFunc("/manifest.webmanifest", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"start_url": "/?launch=pwa"})
 	})
@@ -191,6 +193,34 @@ func TestNativeAppEndToEnd(t *testing.T) {
 			t.Fatal("Finder file never reached the page")
 		}
 	}
+
+	// An agent restart (for example an update) drops the host's control
+	// channel; the running app must reconnect so later Finder opens still
+	// reach the agent.
+	agent.stopNativeHost()
+	agent.startNativeHost()
+	restarted := filepath.Join(stateDir, "after restart.txt")
+	if err := os.WriteFile(restarted, []byte("after restart"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("/usr/bin/open", "-a", app.Path, restarted).CombinedOutput(); err != nil {
+		t.Fatalf("open after restart: %v %s", err, output)
+	}
+	for delivered := false; !delivered; {
+		records, err := agent.handleExternalOpenRPC(ctx, message{Service: "externalOpen", Method: "takeData", AppID: "e2e/probe"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range records.([]map[string]any) {
+			delivered = delivered || sameFile(record["path"].(string), restarted)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("Finder open after an agent restart never reached the agent")
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	t.Logf("Finder open delivered after agent restart")
 
 	// Only the installed host executable may use the app's channel.
 	conn, err := net.Dial("unix", agent.nativeEndpoint())

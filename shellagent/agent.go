@@ -111,6 +111,7 @@ type Server struct {
 	presentationClosed   bool
 	chromiumRepairCancel context.CancelFunc
 	nativeListener       net.Listener
+	nativeConns          map[net.Conn]struct{}
 	nativeInstallMu      sync.Mutex
 	nativeAskMu          sync.Mutex
 	nativeAsks           map[string]*nativeAsk

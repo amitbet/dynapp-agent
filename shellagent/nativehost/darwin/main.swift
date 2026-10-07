@@ -252,6 +252,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   var webView: HostWebView!
   var pendingOpenFiles: [[String]] = []
   var control: AgentConnection?
+  var controlReconnectPending = false
   var agentOrigin = ""
   var sockets: [String: PageSocket] = [:]
   var popups: [NSWindow] = []
@@ -303,8 +304,16 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
 
   /// The control connection supplies the bridge script and start URL. Without
   /// an agent the app still loads as a plain web app.
-  func connectControl(attempt: Int) {
+  ///
+  /// A reconnect restores the channel after the agent restarts (for example on
+  /// an update) without reloading the page: its sockets reconnect on their own,
+  /// but Finder opens and reviews only travel over this channel.
+  func connectControl(attempt: Int, reconnect: Bool = false) {
     guard let connection = AgentConnection(path: settings.socketPath) else {
+      if reconnect {
+        scheduleControlReconnect(attempt: attempt + 1)
+        return
+      }
       if attempt == 0 { kickstartAgent() }
       if attempt < 12 {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.connectControl(attempt: attempt + 1) }
@@ -318,7 +327,11 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
       guard let self, !loaded else { return }
       loaded = true
       connection.close()
-      self.loadPage(bootstrap: nil, url: self.settings.startURL)
+      if reconnect {
+        self.scheduleControlReconnect(attempt: attempt + 1)
+      } else {
+        self.loadPage(bootstrap: nil, url: self.settings.startURL)
+      }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: timeout)
     connection.onFrame = { [weak self] kind, payload in
@@ -332,6 +345,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
           timeout.cancel()
           self.control = connection
           self.flushOpenFiles()
+          if reconnect { return }
           let url = (frame["url"] as? String).flatMap(URL.init(string:)) ?? self.settings.startURL
           self.agentOrigin = (frame["origin"] as? String) ?? ""
           self.loadPage(bootstrap: frame["bootstrapScript"] as? String, url: url)
@@ -356,6 +370,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
           loaded = true
           timeout.cancel()
           self.showError(frame["error"] as? String ?? "The DynApp agent refused this app.")
+          if reconnect { return }
           self.loadPage(bootstrap: nil, url: self.settings.startURL)
         default:
           break
@@ -365,7 +380,10 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     connection.onClose = { [weak self] in
       DispatchQueue.main.async {
         guard let self else { return }
-        if self.control === connection { self.control = nil }
+        if self.control === connection {
+          self.control = nil
+          self.scheduleControlReconnect(attempt: 0)
+        }
         for (rid, _) in self.pendingReviews {
           self.deliver(["rid": rid, "event": "review", "error": "The DynApp agent is not running"])
         }
@@ -374,6 +392,17 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     }
     connection.start()
     connection.sendJSON(["type": "native-host-hello", "version": 1, "storeId": settings.storeID, "purpose": "control"])
+  }
+
+  func scheduleControlReconnect(attempt: Int) {
+    guard control == nil, !controlReconnectPending else { return }
+    controlReconnectPending = true
+    let delay = min(0.5 * pow(2, Double(min(attempt, 4))), 5)
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+      self.controlReconnectPending = false
+      guard self.control == nil else { return }
+      self.connectControl(attempt: attempt, reconnect: true)
+    }
   }
 
   func kickstartAgent() {

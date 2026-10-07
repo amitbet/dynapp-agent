@@ -179,9 +179,15 @@ func (s *Server) stopNativeHost() {
 	s.mu.Lock()
 	listener := s.nativeListener
 	s.nativeListener = nil
+	conns := s.nativeConns
+	s.nativeConns = nil
 	s.mu.Unlock()
 	if listener != nil {
 		_ = listener.Close()
+	}
+	// Running app hosts see the same drop as an agent restart and reconnect.
+	for conn := range conns {
+		_ = conn.Close()
 	}
 }
 
@@ -191,6 +197,17 @@ func (s *Server) serveNativeConnection(conn net.Conn) {
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	defer conn.Close()
+	s.mu.Lock()
+	if s.nativeConns == nil {
+		s.nativeConns = map[net.Conn]struct{}{}
+	}
+	s.nativeConns[conn] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.nativeConns, conn)
+		s.mu.Unlock()
+	}()
 	socket := newNativeFrameSocket(conn)
 	_ = conn.SetReadDeadline(time.Now().Add(nativeHelloTimeout))
 	kind, data, err := socket.Read(ctx)
