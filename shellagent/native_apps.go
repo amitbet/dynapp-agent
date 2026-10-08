@@ -254,6 +254,7 @@ func nativeGrantPayload(app NativeApp) map[string]any {
 type nativeManifest struct {
 	app           resolvedApp
 	origin        string
+	revision      string
 	reasons       map[string]string
 	documentTypes []nativeDocumentType
 }
@@ -286,7 +287,8 @@ func (s *Server) resolveNativeManifest(ctx context.Context, config Config, store
 	if origin == "" {
 		return nativeManifest{}, errors.New("Dyner did not report a hosted origin for this app")
 	}
-	return nativeManifest{app: resolved, origin: origin, reasons: manifestPermissionReasons(detail), documentTypes: manifestDocumentTypes(detail)}, nil
+	revision, _ := detail["latestRevision"].(map[string]any)
+	return nativeManifest{app: resolved, origin: origin, revision: stringValue(revision["id"]), reasons: manifestPermissionReasons(detail), documentTypes: manifestDocumentTypes(detail)}, nil
 }
 
 // legacyHostedOrigin is the app host Dyner uses when hostedOrigins is absent:
@@ -437,7 +439,7 @@ func (s *Server) installNativeApp(ctx context.Context, args map[string]any) (any
 	}
 	client := s.dynerHTTPClient()
 	startURL := fetchNativeStartURL(resolveCtx, client, manifest.origin)
-	icon, err := fetchNativeIcon(resolveCtx, client, manifest.origin)
+	icon, err := fetchNativeIcon(resolveCtx, client, manifest.origin, manifest.revision)
 	if err != nil {
 		return nil, err
 	}
@@ -545,32 +547,42 @@ var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 // fetchNativeIcon prefers the full-bleed maskable image on macOS and Android,
 // where the bundle builder or launcher applies the platform mask without
 // shrinking the glyph.
-func fetchNativeIcon(ctx context.Context, client *http.Client, origin string) ([]byte, error) {
+func fetchNativeIcon(ctx context.Context, client *http.Client, origin string, revision ...string) ([]byte, error) {
 	iconURL := origin + "/icon-512.png"
 	maskable := runtime.GOOS == "darwin" || runtime.GOOS == "android"
 	if maskable {
 		iconURL = origin + "/icon-512-maskable.png"
 	}
+	revisionQuery := ""
+	if len(revision) > 0 && revision[0] != "" {
+		revisionQuery = "?revision=" + url.QueryEscape(revision[0])
+	}
+	iconURL += revisionQuery
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, iconURL, nil)
 	if err != nil {
 		return nil, err
 	}
+	request.Header.Set("Cache-Control", "no-cache")
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("could not download the app icon: %w", err)
 	}
 	if maskable && response.StatusCode == http.StatusNotFound {
 		response.Body.Close()
-		request, err = http.NewRequestWithContext(ctx, http.MethodGet, origin+"/icon-512.png", nil)
+		request, err = http.NewRequestWithContext(ctx, http.MethodGet, origin+"/icon-512.png"+revisionQuery, nil)
 		if err != nil {
 			return nil, err
 		}
+		request.Header.Set("Cache-Control", "no-cache")
 		response, err = client.Do(request)
 		if err != nil {
 			return nil, fmt.Errorf("could not download the app icon: %w", err)
 		}
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnprocessableEntity {
+		return nil, errors.New("this app revision needs a valid icon.svg; its publisher must update the artwork and republish the app")
+	}
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("the app icon returned HTTP %d", response.StatusCode)
 	}
