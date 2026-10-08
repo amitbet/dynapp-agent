@@ -164,6 +164,15 @@ func (auth socketAuthentication) allows(required string) bool {
 // Handler exposes the stable local remote-environment endpoint.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if loopbackSharedAcrossApps {
+		// Every app on the device can reach loopback, so the browser
+		// carrier, settings API, and external-open endpoint stay off; apps
+		// reach the agent through the app-private native socket instead.
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]any{"ok": true, "protocol": ProtocolVersion})
+		})
+		return mux
+	}
 	if s.testWebSocket {
 		mux.HandleFunc(RemotePath, s.handleTestWebSocket)
 	} else {
@@ -252,7 +261,9 @@ func (s *Server) ListenAndServe() error {
 	httpServer := s.http
 	config := s.Config
 	s.mu.Unlock()
-	if config.LANEnabled && config.ListenerMode != ListenerOff {
+	// The loopback-only WebTransport listener is a browser carrier, which a
+	// shared loopback cannot protect; an explicit LAN listener still runs.
+	if config.LANEnabled && config.ListenerMode != ListenerOff && !(loopbackSharedAcrossApps && config.ListenerMode == ListenerLocal) {
 		closeLAN, err := s.startLAN(config)
 		if err != nil {
 			return err
@@ -1132,6 +1143,8 @@ func (s *Server) handleExec(c protocolSocket, ctx context.Context, processes *pr
 	if strings.TrimSpace(request.Command) != "" {
 		if runtime.GOOS == "windows" {
 			request.File, request.Args = "cmd.exe", []any{"/d", "/s", "/c", request.Command}
+		} else if runtime.GOOS == "android" {
+			request.File, request.Args = "/system/bin/sh", []any{"-c", request.Command}
 		} else {
 			request.File, request.Args = "/bin/sh", []any{"-c", request.Command}
 		}

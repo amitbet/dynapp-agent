@@ -22,6 +22,21 @@ function page({ platform = "macos", pageOrigin = origin, top = true } = {}) {
     webkit: { messageHandlers: { dynappNativeHost: { postMessage: (message) => posted.push(message) } } },
     chrome: { webview: { postMessage: (message) => posted.push(JSON.parse(message)) } },
   };
+  if (platform === "android") {
+    const replyListeners = [];
+    window.dynappNativeHost = {
+      postMessage: (message) => posted.push(JSON.parse(message)),
+      addEventListener: (type, listener) => { if (type === "message") replyListeners.push(listener); },
+      reply: (message) => { for (const listener of replyListeners) listener({ data: JSON.stringify(message) }); },
+    };
+  }
+  if (platform === "android") {
+    window.DOMException = class DOMException extends Error { constructor(message, name) { super(message); this.name = name; } };
+    window.navigator = {
+      userActivation: { isActive: true },
+      clipboard: { readText: async () => "", writeText: async () => { throw new Error("Write permission denied."); } },
+    };
+  }
   window.window = window;
   window.top = top ? window : {};
   const config = JSON.stringify({ version: 1, platform, storeId: "amit-bet/notes", origin });
@@ -110,4 +125,69 @@ test("pagehide closes the page's open agent sockets", () => {
   fire("pagehide");
   const closes = posted.filter((message) => message.op === "close").map((message) => message.sid);
   assert.deepEqual(closes.sort(), [open.sid, pending.sid].sort());
+});
+
+test("android posts strings to the injected host object and takes replies from it", () => {
+  const { window, host, posted } = page({ platform: "android" });
+  assert.equal(host.platform, "android");
+  const socket = host.openAgentSocket();
+  assert.deepEqual(plain(posted.at(-1)), { dynappNativeHost: 1, op: "open", sid: socket.sid });
+  const received = [];
+  socket.addEventListener("message", (event) => received.push(event.data));
+  window.dynappNativeHost.reply({ sid: socket.sid, event: "open" });
+  window.dynappNativeHost.reply({ sid: socket.sid, event: "message", text: "hi" });
+  assert.equal(socket.readyState, 1);
+  assert.deepEqual(received, ["hi"]);
+});
+
+test("android does not install the bridge without the origin-scoped host object", () => {
+  const listeners = {};
+  const window = { addEventListener(type, listener) { (listeners[type] ??= []).push(listener); }, location: { origin } };
+  window.window = window;
+  window.top = window;
+  const config = JSON.stringify({ version: 1, platform: "android", storeId: "amit-bet/notes", origin });
+  vm.runInNewContext(template.replace("__DYNAPP_NATIVE_HOST_CONFIG__", config), window);
+  assert.equal(window.__DYNAPP_NATIVE_HOST__, undefined);
+});
+
+test("android provides Notification and clipboard reads through the host", async () => {
+  const { window, posted } = page({ platform: "android" });
+  const query = posted.find((message) => message.op === "notificationPermission");
+  assert.equal(query.query, true);
+  window.dynappNativeHost.reply({ rid: query.rid, event: "result", value: "default" });
+  const permission = window.Notification.requestPermission();
+  const ask = posted.at(-1);
+  assert.equal(ask.op, "notificationPermission");
+  assert.equal(ask.query, undefined);
+  window.dynappNativeHost.reply({ rid: ask.rid, event: "result", value: "granted" });
+  assert.equal(await permission, "granted");
+  assert.equal(window.Notification.permission, "granted");
+  new window.Notification("Done", { body: "Export finished", tag: "export" });
+  assert.deepEqual(plain(posted.at(-1)), { dynappNativeHost: 1, op: "notify", title: "Done", body: "Export finished", tag: "export", silent: false });
+
+  const text = window.navigator.clipboard.readText();
+  const read = posted.at(-1);
+  assert.equal(read.op, "clipboardReadText");
+  window.dynappNativeHost.reply({ rid: read.rid, event: "result", error: "Clipboard access was not allowed" });
+  await assert.rejects(text, /not allowed/);
+});
+
+test("android notifications stay silent until the host grants them", () => {
+  const { window, posted } = page({ platform: "android" });
+  new window.Notification("Early");
+  assert.equal(posted.some((message) => message.op === "notify"), false);
+});
+
+test("android clipboard writes fall back to the host only during a user gesture", async () => {
+  const { window, posted } = page({ platform: "android" });
+  const write = window.navigator.clipboard.writeText("copied");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const request = posted.at(-1);
+  assert.equal(request.op, "clipboardWriteText");
+  assert.equal(request.text, "copied");
+  window.dynappNativeHost.reply({ rid: request.rid, event: "result", value: true });
+  await write;
+  window.navigator.userActivation.isActive = false;
+  await assert.rejects(window.navigator.clipboard.writeText("sneaky"), /Write permission denied/);
+  assert.equal(posted.filter((message) => message.op === "clipboardWriteText").length, 1);
 });

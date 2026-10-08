@@ -84,6 +84,8 @@ func inheritLoginShellPath() error {
 	if shell == "" {
 		if runtime.GOOS == "darwin" {
 			shell = "/bin/zsh"
+		} else if runtime.GOOS == "android" {
+			shell = "/system/bin/sh"
 		} else {
 			shell = "/bin/sh"
 		}

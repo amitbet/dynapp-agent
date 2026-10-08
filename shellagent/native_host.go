@@ -36,6 +36,9 @@ var nativeBridgeTemplate string
 // verifyNativePeer is replaceable so tests can drive the channel over pipes.
 var verifyNativePeer = nativeVerifyPeer
 
+// verifyNativePlatformPeer authenticates a platform host connection.
+var verifyNativePlatformPeer = nativeVerifyPlatformPeer
+
 // nativeFrameSocket implements protocolSocket over one stream connection.
 type nativeFrameSocket struct {
 	conn      net.Conn
@@ -217,6 +220,20 @@ func (s *Server) serveNativeConnection(conn net.Conn) {
 	var hello nativeHello
 	if json.Unmarshal(data, &hello) != nil || hello.Type != "native-host-hello" || hello.Version != nativeProtocolVersion {
 		nativeReject(socket, "The native app handshake is invalid")
+		return
+	}
+	if hello.Purpose == "platform" {
+		if !nativePlatformChannelEnabled() {
+			nativeReject(socket, "This agent has no platform host channel")
+			return
+		}
+		if err := verifyNativePlatformPeer(conn); err != nil {
+			log.Printf("DynApp Shell agent: rejected native platform host: %v", err)
+			nativeReject(socket, "This process may not act as the DynApp platform host")
+			return
+		}
+		_ = conn.SetReadDeadline(time.Time{})
+		s.serveNativePlatform(ctx, socket)
 		return
 	}
 	app, ok := s.nativeApp(strings.TrimSpace(hello.StoreID))

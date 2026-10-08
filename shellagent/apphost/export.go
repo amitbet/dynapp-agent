@@ -16,6 +16,8 @@ func AuthoringCommand(command string) *exec.Cmd {
 	var child *exec.Cmd
 	if runtime.GOOS == "windows" {
 		child = exec.Command("cmd.exe", "/d", "/s", "/c", command)
+	} else if runtime.GOOS == "android" {
+		child = exec.Command("/system/bin/sh", "-c", command)
 	} else {
 		child = exec.Command("/bin/sh", "-c", command)
 	}

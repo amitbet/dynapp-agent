@@ -366,7 +366,7 @@ func main() {
 	}
 	p := &program{server: &shellagent.Server{Address: *address, StateDir: *stateDir, Config: config, AccountToken: accountToken}}
 	selfUpdate := shellagent.DefaultSelfUpdateConfig()
-	if *noSelfUpdate {
+	if *noSelfUpdate || !selfUpdateSupported {
 		selfUpdate.Enabled = false
 	}
 	if strings.TrimSpace(*updateRepository) != "" {

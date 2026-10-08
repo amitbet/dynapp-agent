@@ -6,9 +6,15 @@
   const config = __DYNAPP_NATIVE_HOST_CONFIG__;
   if (window.top !== window || location.origin !== config.origin || window.__DYNAPP_NATIVE_HOST__) return;
 
+  // Android's WebView injects `dynappNativeHost` only into frames of the
+  // installed origin; its replies arrive as message events on the same object.
+  const androidChannel = config.platform === "android" ? window.dynappNativeHost : null;
+  if (config.platform === "android" && !androidChannel) return;
   const post = config.platform === "windows"
     ? (message) => window.chrome.webview.postMessage(JSON.stringify({ dynappNativeHost: 1, ...message }))
-    : (message) => window.webkit.messageHandlers.dynappNativeHost.postMessage({ dynappNativeHost: 1, ...message });
+    : androidChannel
+      ? (message) => androidChannel.postMessage(JSON.stringify({ dynappNativeHost: 1, ...message }))
+      : (message) => window.webkit.messageHandlers.dynappNativeHost.postMessage({ dynappNativeHost: 1, ...message });
 
   const toBase64 = (bytes) => {
     let text = "";
@@ -96,8 +102,24 @@
     }
   }
 
+  // Host calls that answer with {rid, event: "result", value | error}.
+  const calls = new Map();
+  const callHost = (op, payload = {}) => new Promise((resolve, reject) => {
+    const rid = `c${pageId}-${++nextId}`;
+    calls.set(rid, { resolve, reject });
+    post({ op, rid, ...payload });
+  });
+
   const deliver = (message) => {
     if (!message || typeof message !== "object") return;
+    if (message.event === "result") {
+      const pending = calls.get(message.rid);
+      if (!pending) return;
+      calls.delete(message.rid);
+      if (message.error) pending.reject(new Error(String(message.error)));
+      else pending.resolve(message.value);
+      return;
+    }
     if (message.event === "review") {
       const pending = reviews.get(message.rid);
       if (!pending) return;
@@ -146,6 +168,69 @@
   });
 
   Object.defineProperty(window, "__dynappNativeHostDeliver", { value: deliver });
+  if (androidChannel) {
+    androidChannel.addEventListener("message", (event) => {
+      try { deliver(JSON.parse(String(event.data))); } catch { /* malformed host frame */ }
+    });
+    installAndroidWebApis();
+  }
+
+  // Android's WebView has no Notification API and denies clipboard reads.
+  // The host provides both with a per-app prompt, as a browser would.
+  function installAndroidWebApis() {
+    let notificationPermission = "default";
+    class HostNotification {
+      constructor(title, options = {}) {
+        this.title = String(title ?? "");
+        this.body = String(options?.body ?? "");
+        this.tag = String(options?.tag ?? "");
+        this.onclick = null;
+        this.onclose = null;
+        this.onerror = null;
+        this.onshow = null;
+        if (notificationPermission !== "granted") return;
+        post({ op: "notify", title: this.title, body: this.body, tag: this.tag, silent: Boolean(options?.silent) });
+      }
+      static get permission() { return notificationPermission; }
+      static requestPermission(callback) {
+        return callHost("notificationPermission").then((value) => {
+          notificationPermission = value === "granted" || value === "denied" ? value : "default";
+          if (typeof callback === "function") callback(notificationPermission);
+          return notificationPermission;
+        });
+      }
+      close() {}
+      addEventListener() {}
+      removeEventListener() {}
+    }
+    Object.defineProperty(window, "Notification", { value: HostNotification, configurable: true, writable: true });
+    void callHost("notificationPermission", { query: true }).then((value) => {
+      if (value === "granted" || value === "denied") notificationPermission = value;
+    }, () => {});
+    const clipboard = window.navigator?.clipboard;
+    if (clipboard) {
+      Object.defineProperty(clipboard, "readText", {
+        value: () => callHost("clipboardReadText").then((value) => String(value ?? "")),
+        configurable: true,
+      });
+      // WebView refuses writes; the host writes while the page still has a
+      // user gesture, the same rule browsers apply.
+      const nativeWrite = typeof clipboard.writeText === "function" ? clipboard.writeText.bind(clipboard) : null;
+      Object.defineProperty(clipboard, "writeText", {
+        value: async (text) => {
+          const active = window.navigator?.userActivation?.isActive !== false;
+          try {
+            if (nativeWrite) return await nativeWrite(text);
+          } catch (error) {
+            if (!active) throw error;
+          }
+          if (!active) throw new DOMException("Clipboard writes need a user gesture", "NotAllowedError");
+          await callHost("clipboardWriteText", { text: String(text ?? "") });
+        },
+        configurable: true,
+      });
+    }
+  }
   Object.defineProperty(window, "__DYNAPP_NATIVE_HOST__", {
     value: Object.freeze({
       version: config.version,

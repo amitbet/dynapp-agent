@@ -27,7 +27,14 @@ func detached(command string, args []string, cwd string) error {
 	return cmd.Start()
 }
 
+// PlatformOpen opens a file or folder through the platform host where there is
+// no desktop opener (Android). Nil on desktops.
+var PlatformOpen func(path string) error
+
 func openDesktopPath(path string) error {
+	if PlatformOpen != nil {
+		return PlatformOpen(path)
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return detached("open", []string{path}, "")
@@ -54,11 +61,18 @@ func trashPath(path string) error {
 				return exec.Command(candidate[0], candidate[1:]...).Run()
 			}
 		}
+		if runtime.GOOS == "android" {
+			return errors.New("Android has no trash for app files; delete the item instead")
+		}
 		return errors.New("no freedesktop trash implementation is installed (gio or trash-put)")
 	}
 }
 
 func desktopOpenWithOptions() []map[string]any {
+	if PlatformOpen != nil {
+		// The platform shows its own app chooser.
+		return []map[string]any{{"id": "file-manager", "label": "Other apps", "icon": "folder"}}
+	}
 	rows := []map[string]any{}
 	editors := []struct{ id, label, icon, command, mac string }{{"cursor", "Cursor", "cursor", "cursor", "Cursor"}, {"vscode", "VS Code", "vscode", "code", "Visual Studio Code"}}
 	for _, editor := range editors {
@@ -83,7 +97,7 @@ func desktopOpenWithOptions() []map[string]any {
 }
 
 func openDesktopPathWith(path, opener string) error {
-	if opener == "file-manager" || opener == "" {
+	if opener == "file-manager" || opener == "" || PlatformOpen != nil {
 		return openDesktopPath(path)
 	}
 	command, app := "", ""

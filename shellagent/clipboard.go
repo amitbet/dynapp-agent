@@ -602,6 +602,12 @@ func publishNativeClipboardFiles(paths []string) error {
 
 func (s *Server) writeClipboardText(request message) (any, error) {
 	text := stringArg(request.Args, 0)
+	if platformWriteClipboardText != nil {
+		if err := platformWriteClipboardText(text); err != nil {
+			return nil, err
+		}
+		return map[string]any{"bytes": len(text)}, nil
+	}
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

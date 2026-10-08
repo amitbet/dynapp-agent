@@ -13,8 +13,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/zalando/go-keyring"
 )
 
 func (s *Server) serviceDir(name string) (string, error) {
@@ -137,6 +135,11 @@ func defaultFileSearchRoots() []string {
 }
 
 func defaultFileSearchRootsFrom(platform, home string, roots []map[string]string) []string {
+	// Outside home, Android's root is system and other apps' storage the
+	// sandbox cannot read; walking it only costs time.
+	if platform == "android" {
+		return []string{home}
+	}
 	paths := make([]string, 0, len(roots))
 	seen := map[string]bool{}
 	for _, root := range roots {
@@ -600,6 +603,9 @@ func (s *Server) handleFileSearchRPC(ctx context.Context, request message) (any,
 	}
 }
 func openLocalPath(ctx context.Context, path string, reveal bool) error {
+	if platformOpenPath != nil {
+		return platformOpenPath(ctx, path, reveal)
+	}
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -689,7 +695,7 @@ func (s *Server) handleSecretsRPC(ctx context.Context, request message) (any, er
 		if !validSecretName(name) || value == "" || len(value) > 64*1024 {
 			return nil, errors.New("secret is invalid")
 		}
-		if err := keyring.Set("DynApp/"+appID, name, value); err != nil {
+		if err := secretStoreSet("DynApp/"+appID, name, value); err != nil {
 			return nil, err
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -707,7 +713,7 @@ func (s *Server) handleSecretsRPC(ctx context.Context, request message) (any, er
 		return map[string]any{"name": name, "updatedAt": now}, s.saveSecretMetadata(appID, metadata)
 	case "remove":
 		name := stringValue(request.Args[0])
-		_ = keyring.Delete("DynApp/"+appID, name)
+		_ = secretStoreDelete("DynApp/"+appID, name)
 		filtered := metadata[:0]
 		removed := false
 		for _, item := range metadata {

@@ -252,6 +252,16 @@ func TestWindowsFileSearchDefaultsUseEveryMountedDrive(t *testing.T) {
 	}
 }
 
+func TestAndroidFileSearchDefaultsStayInHome(t *testing.T) {
+	roots := defaultFileSearchRootsFrom("android", "/storage/emulated/0", []map[string]string{
+		{"path": "/storage/emulated/0", "label": "~"},
+		{"path": "/", "label": "/"},
+	})
+	if len(roots) != 1 || roots[0] != "/storage/emulated/0" {
+		t.Fatalf("Android defaults = %#v", roots)
+	}
+}
+
 func TestExternalOpenQueueReturnsBoundedFileData(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "open.txt")
 	_ = os.WriteFile(file, []byte("opened"), 0o600)
