@@ -5,6 +5,7 @@ package shellagent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -39,6 +40,17 @@ func init() {
 	platformWriteClipboardText = func(text string) error {
 		_, err := callNativePlatform(context.Background(), "clipboardWriteText", map[string]any{"text": text})
 		return err
+	}
+	platformCalendar = func(ctx context.Context, args map[string]any) (any, error) {
+		raw, err := callNativePlatform(ctx, "calendar", args)
+		if err != nil {
+			return nil, err
+		}
+		var result any
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 	secretStoreSet = func(service, name, value string) error {
 		_, err := callNativePlatform(context.Background(), "secretSet", map[string]any{"service": service, "name": name, "value": value})

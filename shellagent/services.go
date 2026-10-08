@@ -29,6 +29,21 @@ func (s *Server) serviceDir(name string) (string, error) {
 }
 
 func (s *Server) handleCalendarRPC(ctx context.Context, request message) (any, error) {
+	if platformCalendar != nil {
+		args := map[string]any{"method": request.Method}
+		switch request.Method {
+		case "authorizationStatus", "requestAccess", "listCalendars":
+		case "listEvents":
+			begin, finish, err := calendarRange(objectArg(request.Args, 0))
+			if err != nil {
+				return nil, err
+			}
+			args["startMs"], args["endMs"] = begin.UnixMilli(), finish.UnixMilli()
+		default:
+			return nil, errors.New("unsupported calendar method")
+		}
+		return platformCalendar(ctx, args)
+	}
 	if runtime.GOOS != "darwin" {
 		if request.Method == "authorizationStatus" {
 			return map[string]any{"status": "unsupported", "canRequest": false}, nil
@@ -53,12 +68,9 @@ func (s *Server) handleCalendarRPC(ctx context.Context, request message) (any, e
 		command = "list-calendars"
 	case "listEvents":
 		command = "list-events"
-		options := objectArg(request.Args, 0)
-		start, end := stringValue(options["start"]), stringValue(options["end"])
-		begin, beginErr := time.Parse(time.RFC3339, start)
-		finish, finishErr := time.Parse(time.RFC3339, end)
-		if beginErr != nil || finishErr != nil || !finish.After(begin) || finish.Sub(begin) > 366*24*time.Hour {
-			return nil, errors.New("calendar range must be positive and no longer than 366 days")
+		begin, finish, err := calendarRange(objectArg(request.Args, 0))
+		if err != nil {
+			return nil, err
 		}
 		arguments = []string{begin.UTC().Format(time.RFC3339), finish.UTC().Format(time.RFC3339)}
 	default:
@@ -76,6 +88,18 @@ func (s *Server) handleCalendarRPC(ctx context.Context, request message) (any, e
 	}
 	return result, nil
 }
+
+// calendarRange validates a listEvents window: RFC 3339 bounds, positive, at
+// most 366 days.
+func calendarRange(options map[string]any) (time.Time, time.Time, error) {
+	begin, beginErr := time.Parse(time.RFC3339, stringValue(options["start"]))
+	finish, finishErr := time.Parse(time.RFC3339, stringValue(options["end"]))
+	if beginErr != nil || finishErr != nil || !finish.After(begin) || finish.Sub(begin) > 366*24*time.Hour {
+		return time.Time{}, time.Time{}, errors.New("calendar range must be positive and no longer than 366 days")
+	}
+	return begin, finish, nil
+}
+
 func findCalendarHelper() (string, error) {
 	executable, _ := os.Executable()
 	candidates := []string{filepath.Join(filepath.Dir(executable), "native", "calendar-helper"), filepath.Join(filepath.Dir(executable), "calendar-helper"), filepath.Join("shell", "native", "bin", "calendar-helper")}

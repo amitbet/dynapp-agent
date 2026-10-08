@@ -11,6 +11,9 @@ import (
 var (
 	platformOpenPath           func(ctx context.Context, path string, reveal bool) error
 	platformWriteClipboardText func(text string) error
+	// platformCalendar answers calendar RPCs ({method, startMs?, endMs?})
+	// with the same result shapes as the macOS helper.
+	platformCalendar func(ctx context.Context, args map[string]any) (any, error)
 )
 
 // Secret values are written to the OS credential store; the agent never reads

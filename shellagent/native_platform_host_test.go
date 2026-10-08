@@ -110,3 +110,31 @@ func TestNativePlatformPurposeIsRejectedOnDesktop(t *testing.T) {
 		t.Fatalf("frame = %v", frame)
 	}
 }
+
+func TestCalendarRPCDelegatesToThePlatformWithAValidatedRange(t *testing.T) {
+	previous := platformCalendar
+	t.Cleanup(func() { platformCalendar = previous })
+	var got map[string]any
+	platformCalendar = func(_ context.Context, args map[string]any) (any, error) {
+		got = args
+		return []any{}, nil
+	}
+	agent := &Server{}
+	if _, err := agent.handleCalendarRPC(context.Background(), message{Method: "listEvents", Args: []any{map[string]any{
+		"start": "2026-10-01T00:00:00Z", "end": "2026-10-08T00:00:00Z",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got["method"] != "listEvents" || got["startMs"] != int64(1790812800000) || got["endMs"] != int64(1791417600000) {
+		t.Fatalf("platform args = %#v", got)
+	}
+	got = nil
+	if _, err := agent.handleCalendarRPC(context.Background(), message{Method: "listEvents", Args: []any{map[string]any{
+		"start": "2026-10-08T00:00:00Z", "end": "2026-10-01T00:00:00Z",
+	}}}); err == nil || got != nil {
+		t.Fatalf("reversed range reached the platform: %v %#v", err, got)
+	}
+	if _, err := agent.handleCalendarRPC(context.Background(), message{Method: "deleteEverything"}); err == nil || got != nil {
+		t.Fatalf("unknown method reached the platform: %v", err)
+	}
+}
