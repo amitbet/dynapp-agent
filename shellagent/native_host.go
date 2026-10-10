@@ -279,6 +279,9 @@ func nativeReady(app NativeApp, capabilities []string, bootstrap string) map[str
 		"storeId": app.StoreID, "appName": app.Name, "origin": app.Origin, "url": app.URL,
 		"capabilities": capabilities,
 	}
+	if orientation := validOrientation(app.Orientation); orientation != "" {
+		ready["orientation"] = orientation
+	}
 	if bootstrap != "" {
 		ready["bootstrapScript"] = bootstrap
 	}
@@ -477,6 +480,15 @@ func (s *Server) serveNativeControl(ctx context.Context, socket *nativeFrameSock
 	if !send(socket, ctx, nativeReady(app, authForNative(config, app, nil).capabilities, nativeBootstrapScript(app))) {
 		return
 	}
+	// The ready frame carries the stored orientation; check Dyner for a newer
+	// one without holding up the launch.
+	go func() {
+		refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if orientation, changed := s.refreshNativeOrientation(refreshCtx, app.StoreID); changed {
+			send(socket, ctx, map[string]any{"type": "native-host-display", "orientation": orientation})
+		}
+	}()
 	for {
 		messageType, data, err := socket.Read(ctx)
 		if err != nil {

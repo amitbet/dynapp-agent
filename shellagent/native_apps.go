@@ -47,6 +47,9 @@ type NativeApp struct {
 	ApprovedAt int64 `json:"approvedAt,omitempty"`
 	// Authority marks a native install of the Dyner catalog.
 	Authority bool `json:"authority,omitempty"`
+	// Orientation is the app manifest's display.orientation ("landscape" or
+	// "portrait"); hosts that can lock the screen apply it. Empty means any.
+	Orientation string `json:"orientation,omitempty"`
 }
 
 // NativeAppList decodes leniently: an entry that does not parse or validate
@@ -257,6 +260,7 @@ type nativeManifest struct {
 	revision      string
 	reasons       map[string]string
 	documentTypes []nativeDocumentType
+	orientation   string
 }
 
 func (s *Server) resolveNativeManifest(ctx context.Context, config Config, storeID string) (nativeManifest, error) {
@@ -288,7 +292,7 @@ func (s *Server) resolveNativeManifest(ctx context.Context, config Config, store
 		return nativeManifest{}, errors.New("Dyner did not report a hosted origin for this app")
 	}
 	revision, _ := detail["latestRevision"].(map[string]any)
-	return nativeManifest{app: resolved, origin: origin, revision: stringValue(revision["id"]), reasons: manifestPermissionReasons(detail), documentTypes: manifestDocumentTypes(detail)}, nil
+	return nativeManifest{app: resolved, origin: origin, revision: stringValue(revision["id"]), reasons: manifestPermissionReasons(detail), documentTypes: manifestDocumentTypes(detail), orientation: manifestOrientation(detail)}, nil
 }
 
 // legacyHostedOrigin is the app host Dyner uses when hostedOrigins is absent:
@@ -457,6 +461,7 @@ func (s *Server) installNativeApp(ctx context.Context, args map[string]any) (any
 		InstalledAt: time.Now().UnixMilli(), Connect: manifest.app.Connect, ApprovedAt: time.Now().UnixMilli(),
 		Capabilities: normalizePermissionSet(intersectStrings(requested, declared)),
 		Declared:     normalizePermissionSet(declared),
+		Orientation:  manifest.orientation,
 	}
 	if previous, ok := s.nativeApp(storeID); ok && previous.InstalledAt != 0 {
 		app.InstalledAt = previous.InstalledAt
@@ -625,6 +630,50 @@ func fetchNativeStartURL(ctx context.Context, client *http.Client, origin string
 	}
 	resolved.Fragment = ""
 	return resolved.String()
+}
+
+// manifestOrientation reads display.orientation from the published app
+// manifest. Anything but "landscape" or "portrait" means no preference.
+func manifestOrientation(detail map[string]any) string {
+	revision, _ := detail["latestRevision"].(map[string]any)
+	if revision == nil {
+		if revisions, _ := detail["revisions"].([]any); len(revisions) > 0 {
+			revision, _ = revisions[0].(map[string]any)
+		}
+	}
+	manifest, _ := revision["manifest"].(map[string]any)
+	display, _ := manifest["display"].(map[string]any)
+	orientation, _ := display["orientation"].(string)
+	return validOrientation(orientation)
+}
+
+func validOrientation(value string) string {
+	switch value {
+	case "landscape", "portrait":
+		return value
+	}
+	return ""
+}
+
+// refreshNativeOrientation re-reads display.orientation from Dyner, so apps
+// installed before they declared one (or that changed it) pick it up on their
+// next launch without a reinstall. It reports the new value when it changed.
+func (s *Server) refreshNativeOrientation(ctx context.Context, storeID string) (string, bool) {
+	s.mu.Lock()
+	config := s.Config
+	s.mu.Unlock()
+	detail, err := s.fetchDynerAppDetail(ctx, config, storeID)
+	if err != nil {
+		return "", false
+	}
+	orientation := manifestOrientation(detail)
+	app, ok := s.nativeApp(storeID)
+	if !ok || app.Orientation == orientation {
+		return "", false
+	}
+	app.Orientation = orientation
+	s.upsertNativeApp(app)
+	return orientation, true
 }
 
 // Document declarations come from the same app manifest as permissions.

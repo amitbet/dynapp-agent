@@ -453,3 +453,36 @@ func TestNativeOpenFilesBoundToGrantedApp(t *testing.T) {
 		t.Fatalf("open records: %v %v", records, err)
 	}
 }
+
+func TestManifestOrientation(t *testing.T) {
+	detail := func(display any) map[string]any {
+		return map[string]any{"latestRevision": map[string]any{"manifest": map[string]any{"display": display}}}
+	}
+	cases := []struct {
+		detail map[string]any
+		want   string
+	}{
+		{detail(map[string]any{"orientation": "landscape"}), "landscape"},
+		{detail(map[string]any{"orientation": "portrait"}), "portrait"},
+		{detail(map[string]any{"orientation": "upside-down"}), ""},
+		{detail("landscape"), ""},
+		{map[string]any{}, ""},
+		{map[string]any{"revisions": []any{map[string]any{"manifest": map[string]any{"display": map[string]any{"orientation": "portrait"}}}}}, "portrait"},
+	}
+	for index, test := range cases {
+		if got := manifestOrientation(test.detail); got != test.want {
+			t.Fatalf("case %d: orientation = %q, want %q", index, got, test.want)
+		}
+	}
+}
+
+func TestNativeReadyCarriesOrientation(t *testing.T) {
+	app := NativeApp{StoreID: "amit-bet/fastlane", Name: "Fastlane", Origin: "https://amitbet-fastlane.dynapp.io", Orientation: "landscape"}
+	if got := nativeReady(app, nil, "")["orientation"]; got != "landscape" {
+		t.Fatalf("ready orientation = %v", got)
+	}
+	app.Orientation = "sideways"
+	if _, present := nativeReady(app, nil, "")["orientation"]; present {
+		t.Fatal("an invalid orientation must not reach the host")
+	}
+}
