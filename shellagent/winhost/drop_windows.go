@@ -23,6 +23,10 @@ var (
 	iidMessageHandler = windows.GUID{Data1: 0x57213f19, Data2: 0x00e6, Data3: 0x49fa, Data4: [8]byte{0x8e, 0x07, 0x89, 0x8e, 0xa0, 0x1e, 0xcb, 0xd2}}
 )
 
+// Keep pointers converted to uintptr by callers alive and off moving Go
+// stacks across the wrapper and the native call, just like LazyProc.Call.
+//
+//go:uintptrescapes
 func comCall(object uintptr, slot uintptr, args ...uintptr) uintptr {
 	table := *(*uintptr)(unsafe.Pointer(object))
 	method := *(*uintptr)(unsafe.Pointer(table + slot*unsafe.Sizeof(uintptr(0))))
@@ -135,6 +139,7 @@ func (h *host) receiveFileDrop(args uintptr) {
 	h.deliver(reply)
 }
 
+//go:uintptrescapes
 func webViewDropPaths(args uintptr) ([]string, error) {
 	extended := comQuery(args, &iidMessageArgs2)
 	if extended == 0 {
