@@ -1169,6 +1169,7 @@ func (s *Server) handleExec(c protocolSocket, ctx context.Context, processes *pr
 	execContext, cancel := context.WithTimeout(ctx, proc.MaxDuration)
 	defer cancel()
 	command := exec.CommandContext(execContext, request.File, args...)
+	proc.ConfigureBackground(command)
 	if request.Cwd != "" {
 		command.Dir = request.Cwd
 	}

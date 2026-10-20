@@ -175,19 +175,20 @@ func (c *frameConn) writeJSON(value any) error {
 }
 
 type host struct {
-	options   Options
-	view      webview2.WebView
-	core      *edge.ICoreWebView2
-	hwnd      uintptr
-	startURL  string
-	origin    string
-	control   *frameConn
-	mu        sync.Mutex
-	sockets   map[string]*frameConn
-	prompts   map[string]bool
-	reviews   map[string]string
-	oldProc   uintptr
-	promptsMu sync.Mutex
+	options     Options
+	view        webview2.WebView
+	core        *edge.ICoreWebView2
+	hwnd        uintptr
+	startURL    string
+	origin      string
+	control     *frameConn
+	mu          sync.Mutex
+	sockets     map[string]*frameConn
+	prompts     map[string]bool
+	reviews     map[string]string
+	oldProc     uintptr
+	promptsMu   sync.Mutex
+	dropHandler *webMessageHandler
 }
 
 // Run shows the app and returns when its window closes.
@@ -243,6 +244,11 @@ func Run(options Options) error {
 	}
 	h.addPermissionsMenu()
 	if bootstrap != "" {
+		if err := h.installFileDropReceiver(); err != nil {
+			log.Printf("native file drops unavailable: %v", err)
+		} else {
+			h.view.Init(`Object.defineProperty(window, "__DYNAPP_WINDOWS_FILE_DROP__", {value: true});`)
+		}
 		h.view.Init(bootstrap)
 	}
 	h.view.Navigate(h.startURL)
@@ -345,6 +351,12 @@ func (h *host) readControl(conn *frameConn) {
 		switch frame["type"] {
 		case "native-host-permission-request":
 			h.prompt(frame, conn)
+		case "native-host-drop-files-result":
+			reply := map[string]any{"event": "result", "rid": frame["id"], "value": frame["paths"]}
+			if message, _ := frame["error"].(string); message != "" {
+				reply["error"] = message
+			}
+			h.deliver(reply)
 		case "native-host-review-result":
 			id, _ := frame["id"].(string)
 			h.mu.Lock()

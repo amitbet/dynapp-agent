@@ -46,6 +46,10 @@ jobs:
           cache-dependency-path: go.sum
       - name: Native Windows integration
         run: go test ./shellagent ./shellagent/winhost ./shellagent/desktop -run 'NativeWindows|QueueOpenFiles|NativeOpen|PNGToICO|WindowsApp|EncodedPowerShell|UserCommand' -count=1
+      - name: Background helpers do not allocate consoles
+        run: go test ./shellagent/proc -count=1
+      - name: WebView2 native file drop paths
+        run: go test ./shellagent/winhost -run NativeWindowsDrop -count=1
       - name: Windows desktop and CLI startup
         run: go test . -run 'WindowsConsole|WindowsGUI' -count=1
       - name: Windows file associations

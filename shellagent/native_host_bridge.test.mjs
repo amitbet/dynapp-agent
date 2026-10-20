@@ -9,18 +9,22 @@ const origin = "https://amitbet-notes.dynapp.io";
 // Objects made inside the vm context have that context's prototypes.
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-function page({ platform = "macos", pageOrigin = origin, top = true } = {}) {
+function page({ platform = "macos", pageOrigin = origin, top = true, nativeFileDrop = false, additionalObjects = true } = {}) {
   const posted = [];
   const events = [];
   const listeners = {};
   const window = {
     addEventListener(type, listener) { (listeners[type] ??= []).push(listener); },
     location: { origin: pageOrigin },
-    btoa, atob, setTimeout,
+    btoa, atob, setTimeout, clearTimeout,
+    __DYNAPP_WINDOWS_FILE_DROP__: nativeFileDrop,
     CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
     dispatchEvent(event) { events.push(event); },
     webkit: { messageHandlers: { dynappNativeHost: { postMessage: (message) => posted.push(message) } } },
     chrome: { webview: { postMessage: (message) => posted.push(JSON.parse(message)) } },
+  };
+  if (additionalObjects) window.chrome.webview.postMessageWithAdditionalObjects = (message, files) => {
+    posted.push({ ...JSON.parse(message), files });
   };
   if (platform === "android") {
     const replyListeners = [];
@@ -190,4 +194,25 @@ test("android clipboard writes fall back to the host only during a user gesture"
   window.navigator.userActivation.isActive = false;
   await assert.rejects(window.navigator.clipboard.writeText("sneaky"), /Write permission denied/);
   assert.equal(posted.filter((message) => message.op === "clipboardWriteText").length, 1);
+});
+
+
+test("Windows forwards dropped File objects to the host and resolves exact paths", async () => {
+  const { host, posted, deliver } = page({ platform: "windows", nativeFileDrop: true });
+  const files = [{ name: "same.mkv" }, { name: "same.mkv" }];
+  const pending = host.resolveDroppedFiles(files);
+  const request = posted.at(-1);
+  assert.equal(request.op, "dropFiles");
+  assert.equal(request.files, files);
+  deliver({ rid: request.rid, event: "result", value: ["C:\\one\\same.mkv", "C:\\two\\same.mkv"] });
+  assert.deepEqual(await pending, ["C:\\one\\same.mkv", "C:\\two\\same.mkv"]);
+  const denied = host.resolveDroppedFiles(files);
+  deliver({ rid: posted.at(-1).rid, event: "result", error: "drop.files permission is required" });
+  await assert.rejects(denied, /permission is required/);
+});
+
+test("Windows file resolution requires both the updated host and WebView2 API", () => {
+  assert.equal(page({ platform: "windows" }).host.resolveDroppedFiles, undefined);
+  assert.equal(page({ platform: "windows", nativeFileDrop: true, additionalObjects: false }).host.resolveDroppedFiles, undefined);
+  assert.equal(page().host.resolveDroppedFiles, undefined);
 });

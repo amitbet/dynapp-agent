@@ -486,3 +486,26 @@ func TestNativeReadyCarriesOrientation(t *testing.T) {
 		t.Fatal("an invalid orientation must not reach the host")
 	}
 }
+
+func TestNativeDropFilesChecksCurrentGrant(t *testing.T) {
+	server := &Server{StateDir: t.TempDir(), Config: Config{NativeApps: NativeAppList{
+		{StoreID: "owner/allowed", Declared: []string{"drop.files"}, Capabilities: []string{"drop.files"}},
+		{StoreID: "owner/denied", Declared: []string{"drop.files"}},
+	}}}
+	path := filepath.Join(t.TempDir(), "same.mkv")
+	for _, id := range []string{"owner/denied", "owner/missing"} {
+		if _, err := server.validateNativeDropFiles(id, []string{path}); err == nil {
+			t.Fatal("ungranted app received drop paths")
+		}
+	}
+	if got, err := server.validateNativeDropFiles("owner/allowed", []string{path}); err != nil || len(got) != 1 || got[0] != path {
+		t.Fatalf("drop: %v %v", got, err)
+	}
+	if _, err := server.validateNativeDropFiles("owner/allowed", []string{"relative.mkv"}); err == nil {
+		t.Fatal("relative path accepted")
+	}
+	server.Config.NativeApps[0].Capabilities = nil
+	if _, err := server.validateNativeDropFiles("owner/allowed", []string{path}); err == nil {
+		t.Fatal("revoked grant still received paths")
+	}
+}

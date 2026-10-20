@@ -507,3 +507,10 @@ before the page loads. The authenticated host queues paths only for its own
 installed app and only when `externalOpen.files` is granted. After an agent
 update that changes the macOS host, reinstall the native app from Dyner to
 refresh its bundle and document declarations; its web data is retained.
+
+Windows native app hosts resolve dropped files through WebView2's native File
+objects, gated by the app's `drop.files` grant. This avoids the browser drop
+overlay and filename lookup. Restart native app windows after an agent update
+to use the updated host. Pipe-based command helpers (including FFmpeg) run
+without allocating console windows; PTY and explicit terminal launches retain
+their existing behavior.

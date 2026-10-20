@@ -199,6 +199,7 @@ func (p *Set) Start(request Request, args []string) {
 		}{"stdout", terminal})
 	} else {
 		command := exec.CommandContext(execContext, request.File, args...)
+		ConfigureBackground(command)
 		command.Dir = request.Cwd
 		if err = applyExecEnv(command, request.Env); err == nil {
 			var stdout, stderr io.ReadCloser

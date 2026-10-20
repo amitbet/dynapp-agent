@@ -237,6 +237,29 @@
       platform: config.platform,
       storeId: config.storeId,
       origin: config.origin,
+      // Only updated Windows hosts register the additional-objects receiver.
+      ...(config.platform === "windows" && window.__DYNAPP_WINDOWS_FILE_DROP__ === true
+        && typeof window.chrome?.webview?.postMessageWithAdditionalObjects === "function" ? {
+        resolveDroppedFiles: (files) => new Promise((resolve, reject) => {
+          const rid = `d${pageId}-${++nextId}`;
+          const timer = setTimeout(() => {
+            calls.delete(rid);
+            reject(new Error("Native file drop timed out"));
+          }, 5000);
+          calls.set(rid, {
+            resolve: (value) => { clearTimeout(timer); resolve(value); },
+            reject: (error) => { clearTimeout(timer); reject(error); },
+          });
+          try {
+            window.chrome.webview.postMessageWithAdditionalObjects(
+              JSON.stringify({ dynappNativeHost: 1, op: "dropFiles", rid }), files);
+          } catch (error) {
+            calls.delete(rid);
+            clearTimeout(timer);
+            reject(error);
+          }
+        }),
+      } : {}),
       openAgentSocket: () => new NativeAgentSocket(),
       reviewPermissions: () => new Promise((resolve, reject) => {
         const rid = `r${pageId}-${++nextId}`;

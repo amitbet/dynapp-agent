@@ -501,6 +501,17 @@ func (s *Server) serveNativeControl(ctx context.Context, socket *nativeFrameSock
 		if json.Unmarshal(data, &frame) != nil {
 			continue
 		}
+		if frame.Type == "native-host-drop-files" {
+			paths, err := s.validateNativeDropFiles(app.StoreID, frame.Paths)
+			result := map[string]any{"type": "native-host-drop-files-result", "id": frame.ID, "paths": paths}
+			if err != nil {
+				result["error"] = err.Error()
+			}
+			if !send(socket, ctx, result) {
+				return
+			}
+			continue
+		}
 		if frame.Type == "native-host-open-files" {
 			err := s.queueNativeOpenFiles(app.StoreID, frame.Paths)
 			result := map[string]any{"type": "native-host-open-files-result", "id": frame.ID}
@@ -644,4 +655,34 @@ func (s *Server) queueNativeOpenFiles(storeID string, paths []string) error {
 	}
 	s.externalOpens[storeID] = append(s.externalOpens[storeID], valid...)
 	return nil
+}
+
+// Only an authenticated host submits OS-derived drop paths. Re-evaluate the
+// stored grant for every drop; launch-time capabilities may have been revoked.
+func (s *Server) validateNativeDropFiles(storeID string, paths []string) ([]string, error) {
+	app, ok := s.nativeApp(storeID)
+	if !ok {
+		return nil, errors.New("native app is no longer installed")
+	}
+	s.mu.Lock()
+	capabilities := authForNative(s.Config, app, nil).capabilities
+	s.mu.Unlock()
+	allowed := false
+	for _, capability := range capabilities {
+		if capability == "drop.files" {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return nil, errors.New("drop.files permission is required")
+	}
+	if len(paths) == 0 || len(paths) > 128 {
+		return nil, errors.New("invalid dropped file count (maximum 128)")
+	}
+	for _, path := range paths {
+		if !filepath.IsAbs(path) {
+			return nil, errors.New("dropped file path must be absolute")
+		}
+	}
+	return paths, nil
 }
