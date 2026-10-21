@@ -427,6 +427,14 @@ Development builds do not poll because they carry the `dev` version. Use
 `--no-self-update` to disable checks for a release build, or
 `--update-repository owner/repository` to point at another GitHub repository.
 
+On Windows, the per-user process stays alive after the HTTP listener closes
+until the updater has replaced the executable and started its replacement.
+Service installations with recovery configured replace the file before exiting
+so Windows can restart them. The macOS helper/exec update path is unchanged.
+Older Windows agents affected by the shutdown race may need a one-time manual
+upgrade: the broken updater can exit before it installs its own fix. Update
+failures and retry backoff are recorded in `logs/agent.log` in the state directory.
+
 `enroll` and `configure-lan` remain available for scripted setups. They are not
 required for the default path above.
 

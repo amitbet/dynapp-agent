@@ -59,11 +59,26 @@ jobs:
         run: ./scripts/trace-windows-consoles.ps1 -DurationSeconds 1
       - name: Windows desktop and CLI startup
         run: go test . -run 'WindowsConsole|WindowsGUI' -count=1
+      - name: Windows self-update lifecycle
+        run: go test . -run 'WindowsSelfUpdate' -count=1 -timeout 3m
       - name: Windows file associations
         run: go test ./shellagent/assoc -count=1
 
+  macos-update:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: macOS update and rollback
+        run: go test . ./shellagent -run 'SelfUpdate|UnixSelfUpdate|UpdateHelper|ReplaceExecutable|ResolveInstallPath|CleanupStaleUpdate|ReleaseSigning|UnfinishedUpdate|CompletedUpdate|StagedUpdate|BeginUpdate' -count=1 -timeout 3m
+
   release:
-    needs: [test, windows-native]
+    needs: [test, windows-native, macos-update]
     if: github.event_name == 'push' && !github.event.repository.fork && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !contains(github.event.head_commit.message, '[skip release]')
     permissions:
       contents: write

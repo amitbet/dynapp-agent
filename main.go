@@ -3,15 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/amitbet/dynapp-agent/shellagent"
@@ -22,12 +25,30 @@ type program struct {
 	server      *shellagent.Server
 	started     chan error
 	serviceMode bool
+	updateMu    sync.Mutex
+	updateDone  chan struct{}
+}
+
+// Windows replaces itself after closing the listener. Keep the main routine
+// alive until that handoff finishes, or process exit kills the updater too.
+// Unix updaters do not set updateDone and retain their existing lifecycle.
+func (p *program) listenAndServe() error {
+	err := p.server.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		p.updateMu.Lock()
+		done := p.updateDone
+		p.updateMu.Unlock()
+		if done != nil {
+			<-done
+		}
+	}
+	return err
 }
 
 func (p *program) Start(service.Service) error {
 	p.started = make(chan error, 1)
 	go func() {
-		err := p.server.ListenAndServe()
+		err := p.listenAndServe()
 		p.started <- err
 		if err != nil && err.Error() != "http: Server closed" {
 			log.Printf("DynApp Shell agent stopped: %v", err)
@@ -445,7 +466,7 @@ func main() {
 	}
 	log.Printf("DynApp Shell agent listening on %s · WebTransport %s (%s) · settings http://%s/", *address, config.LANAddress, config.ListenerMode, *address)
 	if service.Interactive() || os.Getenv("DYNAPP_AGENT_FOREGROUND") == "1" {
-		if err := p.server.ListenAndServe(); err != nil {
+		if err := p.listenAndServe(); err != nil {
 			log.Fatal(err)
 		}
 		return

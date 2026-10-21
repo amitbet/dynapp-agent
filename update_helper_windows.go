@@ -36,6 +36,14 @@ func wrapHelperCommand(helperPath string, args []string) *exec.Cmd {
 //   - Per-user agent: replace in place and start the installed .exe itself.
 //   - Service without recovery actions: the original helper route.
 func (p *program) scheduleSelfUpdate(_ context.Context, downloadedPath, version string) error {
+	// Publish the handoff before Shutdown can wake the main routine. The
+	// updater owns process exit once it has replaced/restarted the executable.
+	done := make(chan struct{})
+	p.updateMu.Lock()
+	p.updateDone = done
+	p.updateMu.Unlock()
+	defer close(done)
+
 	executable, err := installedExecutable()
 	if err != nil {
 		return err
