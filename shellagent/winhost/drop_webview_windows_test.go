@@ -98,28 +98,34 @@ func TestNativeWindowsDropWebView2(t *testing.T) {
 			finish(fmt.Errorf("%s: HRESULT %#x", method, code))
 		}
 	}
-	chromium.NavigationCompletedCallback = func(_ *edge.ICoreWebView2, _ *edge.ICoreWebView2NavigationCompletedEventArgs) {
-		call("DOM.getDocument", map[string]any{}, func(data json.RawMessage) {
-			var doc struct {
-				Root struct {
-					NodeID int `json:"nodeId"`
-				}
-			}
-			if err := json.Unmarshal(data, &doc); err != nil {
+	navigating := false
+	chromium.NavigationCompletedCallback = func(sender *edge.ICoreWebView2, _ *edge.ICoreWebView2NavigationCompletedEventArgs) {
+		if navigating || originKey(documentSource(sender)) != server.URL {
+			return
+		}
+		navigating = true
+		call("Runtime.evaluate", map[string]any{"expression": `document.getElementById("files")`, "objectGroup": "dynapp-file-test"}, func(data json.RawMessage) {
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(data, &object); err != nil {
 				finish(err)
 				return
 			}
-			call("DOM.querySelector", map[string]any{"nodeId": doc.Root.NodeID, "selector": "#files"}, func(data json.RawMessage) {
-				var node struct {
-					NodeID int `json:"nodeId"`
+			var objectID string
+			for depth := 0; depth < 4; depth++ {
+				_ = json.Unmarshal(object["objectId"], &objectID)
+				if objectID != "" {
+					break
 				}
-				if err := json.Unmarshal(data, &node); err != nil {
-					finish(err)
-					return
+				if err := json.Unmarshal(object["result"], &object); err != nil {
+					break
 				}
-				call("DOM.setFileInputFiles", map[string]any{"nodeId": node.NodeID, "files": paths}, func(json.RawMessage) {
-					view.Eval(`chrome.webview.postMessageWithAdditionalObjects("file-test",document.getElementById("files").files)`)
-				})
+			}
+			if objectID == "" {
+				finish(fmt.Errorf("file input was not found: %s", data))
+				return
+			}
+			call("DOM.setFileInputFiles", map[string]any{"objectId": objectID, "files": paths}, func(json.RawMessage) {
+				view.Eval(`chrome.webview.postMessageWithAdditionalObjects("file-test",document.getElementById("files").files)`)
 			})
 		})
 	}
