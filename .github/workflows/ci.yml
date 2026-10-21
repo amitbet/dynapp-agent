@@ -55,6 +55,7 @@ jobs:
           DYNAPP_TEST_WEBVIEW2: "1"
         run: go test ./shellagent/winhost -run '^TestNativeWindowsDropWebView2$' -count=1 -timeout 90s
       - name: Console trace script smoke test
+        if: always()
         run: ./scripts/trace-windows-consoles.ps1 -DurationSeconds 1
       - name: Windows desktop and CLI startup
         run: go test . -run 'WindowsConsole|WindowsGUI' -count=1
