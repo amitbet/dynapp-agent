@@ -16,9 +16,10 @@ import (
 
 // WebView2 reflects the actual DOM File objects as ICoreWebView2File. Paths
 // come from the runtime, never from filenames or page-supplied path strings.
+// Interface IDs are from the released WebView2.h, not the proposal IDL.
 // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2webmessagereceivedeventargs2
 var (
-	iidMessageArgs2   = windows.GUID{Data1: 0x50a798ac, Data2: 0x40fa, Data3: 0x4634, Data4: [8]byte{0x8f, 0xb7, 0x94, 0x19, 0xe5, 0xe8, 0xa3, 0xf8}}
+	iidMessageArgs2   = windows.GUID{Data1: 0x06fc7ab7, Data2: 0xc90c, Data3: 0x4297, Data4: [8]byte{0x93, 0x89, 0x33, 0xca, 0x01, 0xcf, 0x6d, 0x5e}}
 	iidWebViewFile    = windows.GUID{Data1: 0xf2c19559, Data2: 0x6bc1, Data3: 0x4583, Data4: [8]byte{0xa7, 0x57, 0x90, 0x02, 0x1b, 0xe9, 0xaf, 0xec}}
 	iidMessageHandler = windows.GUID{Data1: 0x57213f19, Data2: 0x00e6, Data3: 0x49fa, Data4: [8]byte{0x8e, 0x07, 0x89, 0x8e, 0xa0, 0x1e, 0xcb, 0xd2}}
 )
@@ -55,9 +56,9 @@ func comString(object, slot uintptr) string {
 }
 
 type webMessageHandler struct {
-	vtable *[4]uintptr
-	refs   int32
-	host   *host
+	vtable  *[4]uintptr
+	refs    int32
+	receive func(uintptr)
 }
 
 var dropMessageVTable = [4]uintptr{
@@ -82,13 +83,13 @@ var dropMessageVTable = [4]uintptr{
 		return uintptr(atomic.AddInt32(&(*webMessageHandler)(unsafe.Pointer(this)).refs, -1))
 	}),
 	syscall.NewCallback(func(this, sender, args uintptr) uintptr {
-		(*webMessageHandler)(unsafe.Pointer(this)).host.receiveFileDrop(args)
+		(*webMessageHandler)(unsafe.Pointer(this)).receive(args)
 		return 0
 	}),
 }
 
 func (h *host) installFileDropReceiver() error {
-	handler := &webMessageHandler{vtable: &dropMessageVTable, refs: 1, host: h}
+	handler := &webMessageHandler{vtable: &dropMessageVTable, refs: 1, receive: h.receiveFileDrop}
 	var token int64
 	// ICoreWebView2::add_WebMessageReceived is slot 34 (including IUnknown).
 	result := comCall(uintptr(unsafe.Pointer(h.core)), 34, uintptr(unsafe.Pointer(handler)), uintptr(unsafe.Pointer(&token)))
