@@ -26,7 +26,7 @@ func wrapHelperCommand(helperPath string, args []string) *exec.Cmd {
 	return exec.Command(helperPath, args...)
 }
 
-// scheduleSelfUpdate never launches a copy of the agent when it can avoid it:
+// applySelfUpdate never launches a copy of the agent when it can avoid it:
 // behavior-based antivirus (Bitdefender Advanced Threat Defense, for example)
 // blocks an unsigned service that starts an unsigned copy of itself.
 //
@@ -35,15 +35,7 @@ func wrapHelperCommand(helperPath string, args []string) *exec.Cmd {
 //     Service Control Manager restarts the service from the new file.
 //   - Per-user agent: replace in place and start the installed .exe itself.
 //   - Service without recovery actions: the original helper route.
-func (p *program) scheduleSelfUpdate(_ context.Context, downloadedPath, version string) error {
-	// Publish the handoff before Shutdown can wake the main routine. The
-	// updater owns process exit once it has replaced/restarted the executable.
-	done := make(chan struct{})
-	p.updateMu.Lock()
-	p.updateDone = done
-	p.updateMu.Unlock()
-	defer close(done)
-
+func (p *program) applySelfUpdate(_ context.Context, downloadedPath, version string) error {
 	executable, err := installedExecutable()
 	if err != nil {
 		return err

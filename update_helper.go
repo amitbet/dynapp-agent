@@ -30,6 +30,17 @@ var stopUpdated = stopUpdatedService
 var osExit = os.Exit
 var waitAfterHelperStart = waitForHelperToTakeOver
 
+func (p *program) scheduleSelfUpdate(ctx context.Context, downloadedPath, version string) error {
+	// Publish the handoff before Shutdown can wake the main routine. Both
+	// Windows replacement and Unix exec need the current process to stay alive.
+	done := make(chan struct{})
+	p.updateMu.Lock()
+	p.updateDone = done
+	p.updateMu.Unlock()
+	defer close(done)
+	return p.applySelfUpdate(ctx, downloadedPath, version)
+}
+
 func installedExecutable() (string, error) {
 	path, err := os.Executable()
 	if err != nil {

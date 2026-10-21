@@ -29,9 +29,9 @@ type program struct {
 	updateDone  chan struct{}
 }
 
-// Windows replaces itself after closing the listener. Keep the main routine
-// alive until that handoff finishes, or process exit kills the updater too.
-// Unix updaters do not set updateDone and retain their existing lifecycle.
+// In-process updates close the listener before replacing/restarting the agent.
+// Keep the main routine alive until the handoff finishes, or process exit kills
+// the updater too. Service helpers retain ownership of their existing handoff.
 func (p *program) listenAndServe() error {
 	err := p.server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {

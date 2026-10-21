@@ -30,7 +30,7 @@ func wrapHelperCommand(helperPath string, args []string) *exec.Cmd {
 	return exec.Command(helperPath, args...)
 }
 
-func (p *program) scheduleSelfUpdate(_ context.Context, downloadedPath, version string) error {
+func (p *program) applySelfUpdate(_ context.Context, downloadedPath, version string) error {
 	executable, err := installedExecutable()
 	if err != nil {
 		return err
