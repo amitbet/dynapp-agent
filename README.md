@@ -281,7 +281,9 @@ The page bridge (`shellagent/native_host_bridge.js`) is served by the agent,
 so bridge changes ship with agent releases and never rewrite app bundles.
 Permissions an installed app has not been granted are asked in its own window
 and can be reviewed from its **Permissions…** menu item; Dyner → Permissions
-lists the same grants.
+lists the same grants. On Windows, new requests and permission reviews use
+one native checklist with risk levels and descriptions. Reviews preserve
+existing selections; very-high-risk groups start unchecked in new requests.
 
 `go test -tags nativee2e -run 'TestNativeApp|TestNativePermissionSheet' ./shellagent/`
 installs real bundles under a temporary home on macOS and drives them end to

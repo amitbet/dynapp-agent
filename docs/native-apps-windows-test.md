@@ -61,9 +61,9 @@ Open `https://dynapp.io` in Edge or Chrome, pick an app that uses the agent
       handles Windows drops).
 - [ ] An ungranted capability fails with "Review it under Permissions… in the
       window menu."
-- [ ] Right-click the title bar: **Permissions…** shows one message box per
-      group, defaulting to No. Changing a group reloads the page with the new
-      grant.
+- [ ] Right-click the title bar: **Permissions…** shows one checklist with
+      existing grants checked. Save a changed selection: the page reloads
+      with the new grant. Cancel or close it: grants stay unchanged.
 - [ ] A link to another site opens in the default browser and the app stays
       on its own page.
 
@@ -77,10 +77,18 @@ shortcut writer. If bridge messages are ignored, log `documentSource` first.
 In Dyner → Permissions, revoke the app's grant (`native:<owner/slug>`), then
 start the app.
 
-- [ ] A message box lists the ordinary groups with reasons; **No** is the
-      default button.
-- [ ] Each very-high group (for example Secrets) gets its own message box,
-      also defaulting to No.
+- [ ] One native dialog lists all groups as checkboxes with risk levels.
+      Select a row to read its summary and app-provided reasons below the list.
+- [ ] Suggested ordinary groups start checked; very-high groups (for example
+      Secrets) start unchecked and can be selected individually.
+- [ ] The list scrolls when there are many groups. Long descriptions scroll
+      in the details area. Check readability at 100%, 150%, and 200% scaling.
+- [ ] Tab and arrow keys navigate; Space toggles the selected checkbox.
+      Return defaults to **Don't Allow**; Escape and the close button cancel.
+- [ ] **Allow selected** is disabled for the first second. After that it saves
+      exactly the checked groups, including an explicitly empty selection.
+- [ ] Update the app to request additional permissions: one checklist appears
+      with the new groups, and previously granted access remains intact.
 - [ ] The decision shows up in Dyner → Permissions.
 
 ## 7. Without the agent, and uninstall

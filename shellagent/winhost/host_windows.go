@@ -88,26 +88,20 @@ var (
 )
 
 const (
-	mbYesNo              = 0x00000004
-	mbYesNoCancel        = 0x00000003
-	mbIconWarning        = 0x00000030
-	mbDefButton2         = 0x00000100
-	mbSetForeground      = 0x00010000
-	idYes                = 6
-	idNo                 = 7
-	wmSetIcon            = 0x0080
-	wmSysCommand         = 0x0112
-	imageIcon            = 1
-	lrLoadFromFile       = 0x00000010
-	smCXIcon             = 11
-	smCXSmIcon           = 49
-	gwlpWndProc          = ^uintptr(3) // -4
-	mfString             = 0x00000000
-	mfSeparator          = 0x00000800
-	swRestore            = 9
-	swShowNormal         = 1
-	frameText       byte = 1
-	frameBinary     byte = 2
+	mbIconWarning       = 0x00000030
+	wmSetIcon           = 0x0080
+	wmSysCommand        = 0x0112
+	imageIcon           = 1
+	lrLoadFromFile      = 0x00000010
+	smCXIcon            = 11
+	smCXSmIcon          = 49
+	gwlpWndProc         = ^uintptr(3) // -4
+	mfString            = 0x00000000
+	mfSeparator         = 0x00000800
+	swRestore           = 9
+	swShowNormal        = 1
+	frameText      byte = 1
+	frameBinary    byte = 2
 )
 
 func utf16(value string) *uint16 {
@@ -672,19 +666,7 @@ func (h *host) requestReview(rid string) {
 	_ = control.writeJSON(map[string]any{"type": "native-host-review", "id": id})
 }
 
-type permissionGroup struct {
-	Title       string   `json:"title"`
-	Summary     string   `json:"summary"`
-	Danger      string   `json:"danger"`
-	Permissions []string `json:"permissions"`
-	Reasons     []string `json:"reasons"`
-	Granted     bool     `json:"granted"`
-	Suggested   bool     `json:"suggested"`
-}
-
-// prompt asks with system message boxes, which page script cannot draw or
-// click. "No" is the default button. Very-high-risk groups are asked one by
-// one and start unanswered.
+// prompt serializes trusted native permission dialogs outside the app WebView.
 func (h *host) prompt(frame map[string]any, conn *frameConn) {
 	requestID, _ := frame["requestId"].(string)
 	h.promptsMu.Lock()
@@ -695,7 +677,7 @@ func (h *host) prompt(frame map[string]any, conn *frameConn) {
 	h.prompts[requestID] = true
 	h.promptsMu.Unlock()
 	go func() {
-		// One prompt at a time; the lock also serializes the message boxes.
+		// One prompt at a time; the lock also serializes the dialogs.
 		h.promptsMu.Lock()
 		defer h.promptsMu.Unlock()
 		runtime.LockOSThread()
@@ -716,70 +698,6 @@ func (h *host) prompt(frame map[string]any, conn *frameConn) {
 		}
 		_ = conn.writeJSON(reply)
 	}()
-}
-
-func describeGroup(group permissionGroup) string {
-	lines := []string{fmt.Sprintf("• %s (%s risk)", group.Title, group.Danger)}
-	if group.Summary != "" {
-		lines = append(lines, "   "+group.Summary)
-	}
-	for _, reason := range group.Reasons {
-		lines = append(lines, "   “"+reason+"”")
-	}
-	return strings.Join(lines, "\n")
-}
-
-func askPermissions(owner uintptr, kind, appName, origin string, groups []permissionGroup) ([]string, bool) {
-	capabilities := []string{}
-	if kind == "review" {
-		for _, group := range groups {
-			state := "not allowed"
-			if group.Granted {
-				state = "allowed"
-			}
-			text := fmt.Sprintf("Allow %s to use this?\n\n%s\n\nCurrently %s.\n%s", appName, describeGroup(group), state, origin)
-			switch messageBox(owner, text, appName+" permissions", mbYesNoCancel|mbIconWarning|mbDefButton2|mbSetForeground) {
-			case idYes:
-				capabilities = append(capabilities, group.Permissions...)
-			case idNo:
-			default:
-				return nil, false
-			}
-		}
-		return capabilities, true
-	}
-	var ordinary, risky []permissionGroup
-	for _, group := range groups {
-		if group.Danger == "very-high" {
-			risky = append(risky, group)
-		} else {
-			ordinary = append(ordinary, group)
-		}
-	}
-	question := "wants to use this computer"
-	if kind == "delta" {
-		question = "is asking for more access"
-	}
-	if len(ordinary) > 0 {
-		descriptions := make([]string, len(ordinary))
-		for index, group := range ordinary {
-			descriptions[index] = describeGroup(group)
-		}
-		text := fmt.Sprintf("%s %s:\n\n%s\n\nAllow these? You can change this later from the window menu → Permissions….\n%s", appName, question, strings.Join(descriptions, "\n\n"), origin)
-		if messageBox(owner, text, appName, mbYesNo|mbIconWarning|mbDefButton2|mbSetForeground) != idYes {
-			return nil, true
-		}
-		for _, group := range ordinary {
-			capabilities = append(capabilities, group.Permissions...)
-		}
-	}
-	for _, group := range risky {
-		text := fmt.Sprintf("%s also asks for a very-high-risk permission:\n\n%s\n\nAllow it?\n%s", appName, describeGroup(group), origin)
-		if messageBox(owner, text, appName, mbYesNo|mbIconWarning|mbDefButton2|mbSetForeground) == idYes {
-			capabilities = append(capabilities, group.Permissions...)
-		}
-	}
-	return capabilities, true
 }
 
 func messageBox(owner uintptr, text, title string, flags uintptr) int {
