@@ -122,22 +122,25 @@ func (h *host) receiveFileDrop(args uintptr) {
 	reply := map[string]any{"event": "result", "rid": message.RID}
 	paths, err := webViewDropPaths(args)
 	if err == nil {
-		h.mu.Lock()
-		control := h.control
-		h.mu.Unlock()
-		if control == nil {
-			err = errAgentNotAvailable
-		} else {
-			// The agent checks the current grant for this authenticated host's
-			// store ID on every drop, including after revocation or uninstall.
-			err = control.writeJSON(map[string]any{"type": "native-host-drop-files", "id": message.RID, "paths": paths})
-			if err == nil {
-				return
-			}
-		}
+		// Read COM objects on the UI thread, then reconnect off-thread so an
+		// agent restart cannot freeze the window or permanently disable drops.
+		go h.sendDropFiles(message.RID, paths)
+		return
 	}
 	reply["error"] = err.Error()
 	h.deliver(reply)
+}
+
+func (h *host) sendDropFiles(rid string, paths []string) {
+	control, _, err := h.acquireControl(false)
+	// The agent checks the current grant for this authenticated host's store
+	// ID on every drop, including after revocation or uninstall.
+	if err == nil {
+		err = control.writeJSON(map[string]any{"type": "native-host-drop-files", "id": rid, "paths": paths})
+	}
+	if err != nil {
+		h.deliver(map[string]any{"event": "result", "rid": rid, "error": err.Error()})
+	}
 }
 
 //go:uintptrescapes

@@ -176,6 +176,8 @@ type host struct {
 	startURL    string
 	origin      string
 	control     *frameConn
+	controlMu   sync.Mutex // serialize startup and on-demand reconnections
+	closed      bool
 	mu          sync.Mutex
 	sockets     map[string]*frameConn
 	prompts     map[string]bool
@@ -200,17 +202,17 @@ func Run(options Options) error {
 	var bootstrap string
 	if len(options.Files) > 0 {
 		bootstrap = h.connectControl()
-		if h.control == nil {
+		if h.currentControl() == nil {
 			return errors.New("cannot open files without the DynApp agent")
 		}
 	}
 	if focusExistingInstance(appID, options.Name) {
-		if h.control != nil {
-			_ = h.control.conn.Close()
+		if control := h.currentControl(); control != nil {
+			_ = control.conn.Close()
 		}
 		return nil
 	}
-	if h.control == nil {
+	if h.currentControl() == nil {
 		bootstrap = h.connectControl()
 	}
 	dataPath := filepath.Join(filepath.Dir(options.Icon), "WebView2")
@@ -266,6 +268,35 @@ func focusExistingInstance(appID, title string) bool {
 // starting a per-user agent if none answers. It returns "" when the app must
 // run as a plain web app.
 func (h *host) connectControl() string {
+	_, script, err := h.acquireControl(true)
+	if err != nil {
+		log.Printf("control: %v; loading without the bridge", err)
+		return ""
+	}
+	return script
+}
+
+func (h *host) currentControl() *frameConn {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.control
+}
+
+// acquireControl reconnects the native host's control channel independently
+// of the page's sockets. Reauthentication preserves the agent's current grants;
+// only initial startup may change the launch URL or queue command-line files.
+func (h *host) acquireControl(initial bool) (*frameConn, string, error) {
+	h.controlMu.Lock()
+	defer h.controlMu.Unlock()
+	h.mu.Lock()
+	control, closed := h.control, h.closed
+	h.mu.Unlock()
+	if closed {
+		return nil, "", errors.New("the app window is closed")
+	}
+	if control != nil {
+		return control, "", nil
+	}
 	conn, err := dialAgent(h.options.Pipe)
 	if err != nil {
 		if executable, exeErr := os.Executable(); exeErr == nil {
@@ -275,55 +306,74 @@ func (h *host) connectControl() string {
 			command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.DETACHED_PROCESS}
 			_ = command.Start()
 		}
-		for attempt := 0; attempt < 20 && err != nil; attempt++ {
+		retryDeadline := time.Now().Add(8 * time.Second)
+		for attempt := 0; attempt < 20 && err != nil && time.Now().Before(retryDeadline); attempt++ {
 			time.Sleep(250 * time.Millisecond)
 			conn, err = dialAgent(h.options.Pipe)
 		}
 		if err != nil {
-			log.Printf("control: cannot reach the agent on %s: %v; loading without the bridge", h.options.Pipe, err)
-			return ""
+			return nil, "", fmt.Errorf("cannot reach the agent on %s: %w", h.options.Pipe, err)
 		}
 	}
-	_ = conn.writeJSON(map[string]any{"type": "native-host-hello", "version": 1, "storeId": h.options.StoreID, "purpose": "control"})
-	_ = conn.conn.SetReadDeadline(time.Now().Add(6 * time.Second))
-	kind, payload, err := conn.read()
-	_ = conn.conn.SetReadDeadline(time.Time{})
-	if err != nil || kind != frameText {
-		log.Printf("control: no ready frame: %v", err)
+	// Bound both writes and reads while the peer authenticates this host.
+	_ = conn.conn.SetDeadline(time.Now().Add(6 * time.Second))
+	if err := conn.writeJSON(map[string]any{"type": "native-host-hello", "version": 1, "storeId": h.options.StoreID, "purpose": "control"}); err != nil {
 		_ = conn.conn.Close()
-		return ""
+		return nil, "", err
+	}
+	kind, payload, err := conn.read()
+	_ = conn.conn.SetDeadline(time.Time{})
+	if err != nil || kind != frameText {
+		_ = conn.conn.Close()
+		return nil, "", fmt.Errorf("no agent ready frame (kind %d): %v", kind, err)
 	}
 	var ready map[string]any
 	if json.Unmarshal(payload, &ready) != nil || ready["type"] != "native-host-ready" {
 		log.Printf("control: agent refused the app: %s", truncate(string(payload), 300))
-		if message, _ := ready["error"].(string); message != "" {
+		_ = conn.conn.Close()
+		message, _ := ready["error"].(string)
+		if message == "" {
+			message = "the agent refused the app connection"
+		}
+		if initial {
 			messageBox(0, message, h.options.Name, mbIconWarning)
 		}
-		_ = conn.conn.Close()
-		return ""
+		return nil, "", errors.New(message)
 	}
-	if value, _ := ready["url"].(string); originKey(value) == h.origin && value != "" {
+	if value, _ := ready["url"].(string); initial && originKey(value) == h.origin && value != "" {
 		h.startURL = value
 	}
-	if len(h.options.Files) > 0 {
+	if initial && len(h.options.Files) > 0 {
 		if err := queueOpenFiles(conn, h.options.Files); err != nil {
 			_ = conn.conn.Close()
 			messageBox(0, err.Error(), h.options.Name, mbIconWarning)
-			return ""
+			return nil, "", err
 		}
 	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		_ = conn.conn.Close()
+		return nil, "", errors.New("the app window is closed")
+	}
 	h.control = conn
+	h.mu.Unlock()
 	go h.readControl(conn)
 	script, _ := ready["bootstrapScript"].(string)
 	log.Printf("control: ready; bridge script %d bytes, start %s, capabilities %v", len(script), h.startURL, ready["capabilities"])
-	return script
+	return conn, script, nil
 }
 
 func (h *host) readControl(conn *frameConn) {
+	defer conn.conn.Close()
 	for {
 		kind, payload, err := conn.read()
 		if err != nil {
 			h.mu.Lock()
+			if h.control != conn {
+				h.mu.Unlock()
+				return
+			}
 			h.control = nil
 			pending := h.reviews
 			h.reviews = map[string]string{}
@@ -624,6 +674,7 @@ func (h *host) endSocket(sid string, code int, reason string) {
 
 func (h *host) closeAll() {
 	h.mu.Lock()
+	h.closed = true
 	sockets := h.sockets
 	h.sockets = map[string]*frameConn{}
 	control := h.control
@@ -646,14 +697,12 @@ func (h *host) deliver(message map[string]any) {
 }
 
 func (h *host) requestReview(rid string) {
-	h.mu.Lock()
-	control := h.control
-	h.mu.Unlock()
-	if control == nil {
+	control, _, err := h.acquireControl(false)
+	if err != nil {
 		if rid != "" {
-			h.deliver(map[string]any{"rid": rid, "event": "review", "error": errAgentNotAvailable.Error()})
+			h.deliver(map[string]any{"rid": rid, "event": "review", "error": err.Error()})
 		}
-		messageBox(h.hwnd, "The DynApp agent is not running, so permissions cannot be changed right now.", h.options.Name, mbIconWarning)
+		messageBox(h.hwnd, err.Error(), h.options.Name, mbIconWarning)
 		return
 	}
 	id := rid

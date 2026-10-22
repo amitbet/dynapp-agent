@@ -245,7 +245,7 @@
           const timer = setTimeout(() => {
             calls.delete(rid);
             reject(new Error("Native file drop timed out"));
-          }, 5000);
+          }, 20000); // Allow the native host to reconnect after an agent restart.
           calls.set(rid, {
             resolve: (value) => { clearTimeout(timer); resolve(value); },
             reject: (error) => { clearTimeout(timer); reject(error); },
