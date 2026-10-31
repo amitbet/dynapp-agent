@@ -532,3 +532,8 @@ overlay and filename lookup. Restart native app windows after an agent update
 to use the updated host. Pipe-based command helpers (including FFmpeg) run
 without allocating console windows; PTY and explicit terminal launches retain
 their existing behavior.
+
+HTTP proxy request bodies are capped at 10 MiB. The `httpBinaryBody` hello feature
+advertises raw HTTP uploads through binary RPC frames: pass the bytes as the
+frame body and omit the HTTP options `body` field. Text bodies remain supported.
+The request timeout remains capped at 60 seconds; destination allowlists are enforced on every redirect hop.

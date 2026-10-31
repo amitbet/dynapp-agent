@@ -1,6 +1,7 @@
 package shellagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -115,6 +116,10 @@ func safeHTTPTransport(patterns []string) *http.Transport {
 }
 
 func (s *Server) handleHTTPRPC(ctx context.Context, request message) (any, error) {
+	return s.handleHTTPRPCBody(ctx, request, nil)
+}
+
+func (s *Server) handleHTTPRPCBody(ctx context.Context, request message, binaryBody []byte) (any, error) {
 	options := objectArg(request.Args, 0)
 	parsed, err := url.Parse(stringValue(options["url"]))
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -143,9 +148,18 @@ func (s *Server) handleHTTPRPC(ctx context.Context, request message) (any, error
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	body := strings.NewReader(stringValue(options["body"]))
-	if body.Size() > 1024*1024 {
-		return nil, errors.New("HTTP request body is limited to 1 MiB")
+	var payload []byte
+	if binaryBody != nil {
+		if options["body"] != nil {
+			return nil, errors.New("HTTP request cannot combine text and binary bodies")
+		}
+		payload = binaryBody
+	} else {
+		payload = []byte(stringValue(options["body"]))
+	}
+	body := bytes.NewReader(payload)
+	if body.Size() > 10*1024*1024 {
+		return nil, errors.New("HTTP request body is limited to 10 MiB")
 	}
 	httpRequest, err := http.NewRequestWithContext(requestCtx, strings.ToUpper(stringValue(options["method"])), parsed.String(), body)
 	if err != nil {

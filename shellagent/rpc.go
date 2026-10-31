@@ -42,7 +42,7 @@ func (s *Server) handleRPC(socket protocolSocket, ctx context.Context, agents *a
 	case "system":
 		result, err = s.handleSystemRPC(ctx, request)
 	case "http":
-		result, err = s.handleHTTPRPC(ctx, request)
+		result, err = s.handleHTTPRPCBody(ctx, request, body)
 	case "apps":
 		result, err = s.handleAppsRPC(ctx, request)
 	case "permissions":

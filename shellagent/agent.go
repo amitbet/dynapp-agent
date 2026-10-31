@@ -1045,6 +1045,7 @@ func protocolFeatures(version int, carriers ...carrierCapabilities) map[string]b
 		carrier = carriers[0]
 	}
 	return map[string]bool{
+		"httpBinaryBody":      true,
 		"multiplexedChannels": true,
 		"reliableStreams":     carrier.reliableStreams,
 		"datagrams":           carrier.datagrams,

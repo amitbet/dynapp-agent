@@ -147,7 +147,7 @@ const webRTCFragmentThreshold = 60000
 
 // webRTCMaxReceiveMessageSize is what this agent advertises it can receive, so
 // the browser is not held to pion's much smaller default in its direction.
-const webRTCMaxReceiveMessageSize = 1 << 20
+const webRTCMaxReceiveMessageSize = maxReadBytes + 512*1024
 
 // webRTCFragmentMagic marks a fragment of a larger message. A whole message is
 // either JSON text or a DFB1 binary frame, so neither can collide with it.
