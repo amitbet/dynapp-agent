@@ -709,26 +709,56 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     download.delegate = self
   }
 
+  // Page saves (blob/data downloads) are explicit user actions such as "Save as",
+  // so ask where to put them like a browser with "Ask where to save" enabled.
   func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String,
                 completionHandler: @escaping (URL?) -> Void) {
-    let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-      ?? URL(fileURLWithPath: NSHomeDirectory())
-    let name = suggestedFilename.isEmpty ? "download" : suggestedFilename
-    var candidate = folder.appendingPathComponent(name)
-    let base = candidate.deletingPathExtension().lastPathComponent
-    let ext = candidate.pathExtension
-    var counter = 2
-    while FileManager.default.fileExists(atPath: candidate.path) {
-      candidate = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)")
-      counter += 1
+    let panel = NSSavePanel()
+    panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+    panel.nameFieldStringValue = suggestedFilename.isEmpty ? "download" : suggestedFilename
+    panel.canCreateDirectories = true
+    panel.isExtensionHidden = false
+    let finish: (NSApplication.ModalResponse) -> Void = { response in
+      guard response == .OK, let url = panel.url else { return completionHandler(nil) }
+      // NSSavePanel already confirmed the overwrite; WKDownload refuses existing files.
+      if FileManager.default.fileExists(atPath: url.path) { try? FileManager.default.removeItem(at: url) }
+      completionHandler(url)
     }
-    completionHandler(candidate)
+    if let window, window.isVisible { panel.beginSheetModal(for: window, completionHandler: finish) }
+    else { finish(panel.runModal()) }
   }
 
   func downloadDidFinish(_ download: WKDownload) {}
 
   func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
     showError("The download failed: \(error.localizedDescription)")
+  }
+
+  // MARK: Printing
+
+  // WebKit has no public WKUIDelegate hook for window.print(); this private
+  // selector is what Safari-style hosts implement. Without it the call is a no-op.
+  @objc(_webView:printFrame:)
+  func webViewPrintFrame(_ webView: WKWebView, printFrame frame: AnyObject?) {
+    // Run after WebKit returns from the request so the page can lay out for print.
+    DispatchQueue.main.async { [weak self] in self?.printPage(webView) }
+  }
+
+  func printPage(_ webView: WKWebView) {
+    let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo()
+    info.horizontalPagination = .automatic
+    info.verticalPagination = .automatic
+    info.isHorizontallyCentered = false
+    info.isVerticallyCentered = false
+    let operation = webView.printOperation(with: info)
+    operation.showsPrintPanel = true
+    operation.showsProgressPanel = true
+    operation.printPanel.options.formUnion([.showsOrientation, .showsPaperSize, .showsScaling, .showsPreview])
+    // printOperation's view has a zero frame and prints blank pages otherwise.
+    operation.view?.frame = webView.bounds
+    let host = webView.window ?? window
+    if let host { operation.runModal(for: host, delegate: nil, didRun: nil, contextInfo: nil) }
+    else { operation.run() }
   }
 
   // MARK: Page UI
