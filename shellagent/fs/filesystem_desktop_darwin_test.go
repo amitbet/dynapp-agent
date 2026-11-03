@@ -35,3 +35,19 @@ func TestMacTrashReportsScriptError(t *testing.T) {
 		t.Fatalf("test file was changed: %v", err)
 	}
 }
+
+func TestMacTrashMovesDisposableFile(t *testing.T) {
+	if os.Getenv("DYNAPP_TEST_FINDER_TRASH") != "1" {
+		t.Skip("set DYNAPP_TEST_FINDER_TRASH=1 to move a disposable file to Finder Trash")
+	}
+	path := filepath.Join(t.TempDir(), "trash check 'quotes'.txt")
+	if err := os.WriteFile(path, []byte("disposable trash test"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := trashPath(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("source still exists after trash: %v", err)
+	}
+}

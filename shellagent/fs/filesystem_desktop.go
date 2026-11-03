@@ -46,7 +46,8 @@ func openDesktopPath(path string) error {
 }
 
 const macTrashScript = `on run argv
- tell application "Finder" to delete POSIX file (item 1 of argv)
+ set targetFile to POSIX file (item 1 of argv) as alias
+ tell application "Finder" to delete targetFile
 end run`
 
 func trashPath(path string) error {
