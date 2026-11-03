@@ -45,13 +45,21 @@ func openDesktopPath(path string) error {
 	}
 }
 
+const macTrashScript = `on run argv
+ tell application "Finder" to delete POSIX file (item 1 of argv)
+end run`
+
 func trashPath(path string) error {
 	if _, err := os.Stat(path); err != nil {
 		return err
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		return exec.Command("osascript", "-e", `on run argv`, "-e", `tell application \"Finder\" to delete POSIX file (item 1 of argv)`, "-e", `end run`, path).Run()
+		output, err := exec.Command("osascript", "-e", macTrashScript, "--", path).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("move to Trash: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
 	case "windows":
 		script := `Add-Type -AssemblyName Microsoft.VisualBasic; if ((Get-Item -LiteralPath $args[0]).PSIsContainer) {[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($args[0],'OnlyErrorDialogs','SendToRecycleBin')} else {[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($args[0],'OnlyErrorDialogs','SendToRecycleBin')}`
 		return exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script, path).Run()

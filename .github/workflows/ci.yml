@@ -76,6 +76,8 @@ jobs:
           cache-dependency-path: go.sum
       - name: macOS update and rollback
         run: go test . ./shellagent -run 'SelfUpdate|UnixSelfUpdate|UpdateHelper|ReplaceExecutable|ResolveInstallPath|CleanupStaleUpdate|ReleaseSigning|UnfinishedUpdate|CompletedUpdate|StagedUpdate|BeginUpdate' -count=1 -timeout 3m
+      - name: macOS trash AppleScript
+        run: go test ./shellagent/fs -count=1
 
   release:
     needs: [test, windows-native, macos-update]
