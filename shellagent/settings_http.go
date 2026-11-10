@@ -225,6 +225,7 @@ func (s *Server) handleSettingsStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"ok": true, "signedIn": signedIn, "dynerBaseUrl": config.DynerBaseURL,
 		"redacted": config.Redacted(), "settings": "/settings",
+		"portMapping": s.portMappingStatus(),
 	})
 }
 
@@ -291,7 +292,7 @@ func (s *Server) settingsRemotePayload(ctx context.Context) (map[string]any, err
 	}
 	return map[string]any{
 		"environments": environments, "server": server,
-		"relay":                map[string]any{"supported": true, "enabled": config.RelayEnabled, "connected": false, "state": relayState},
+		"relay":                map[string]any{"supported": true, "enabled": config.RelayEnabled, "connected": false, "state": relayState, "portMapping": s.portMappingStatus()},
 		"listenerRegistration": listenerRegistration, "hostedRegistration": hostedRegistration,
 		"pairingLinks": []any{},
 	}, nil

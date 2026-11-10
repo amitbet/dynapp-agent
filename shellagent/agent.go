@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/amitbet/dynapp-agent/shellagent/fs"
+	"github.com/amitbet/dynapp-agent/shellagent/portmap"
 	"github.com/amitbet/dynapp-agent/shellagent/proc"
 	"nhooyr.io/websocket"
 )
@@ -115,6 +116,25 @@ type Server struct {
 	nativeInstallMu      sync.Mutex
 	nativeAskMu          sync.Mutex
 	nativeAsks           map[string]*nativeAsk
+
+	// Mesh plumbing (docs/mesh-network.md): the inbox socket and the router
+	// port mapping run only inside a started agent (meshActive) that is
+	// enrolled with remote access enabled.
+	meshActive          bool
+	meshMu              sync.Mutex
+	meshTimingOverride  *meshTiming
+	remoteSyncWake      chan struct{}
+	inboxCancel         context.CancelFunc
+	inboxKey            string
+	inboxRevoked        bool
+	inboxConnected      atomic.Bool
+	portmapCancel       context.CancelFunc
+	portmapDone         chan struct{}
+	portmapClient       *portmap.Client
+	portmapOptions      *portmap.Options
+	portmapLocalPort    int // 0: meshICEPort; negative: any free port (tests)
+	portmapBindFailedAt time.Time
+	iceTransport        atomic.Pointer[iceMuxTransport]
 }
 
 type protocolSocket interface {
@@ -132,6 +152,9 @@ type carrierCapabilities struct {
 	// DFRG frames, so a chunked file transfer can stay on the control channel
 	// instead of opening a stream per chunk.
 	fragments bool
+	// portMapping is the advertised router mapping ({protocol, external}) a
+	// WebRTC hello reply reports under transport.portMapping.
+	portMapping map[string]any
 }
 
 var connectionWriters sync.Map // map[protocolSocket]*sync.Mutex
@@ -260,6 +283,7 @@ func (s *Server) ListenAndServe() error {
 	s.http = &http.Server{Addr: address, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	httpServer := s.http
 	config := s.Config
+	s.meshActive = true
 	s.mu.Unlock()
 	// The loopback-only WebTransport listener is a browser carrier, which a
 	// shared loopback cannot protect; an explicit LAN listener still runs.
@@ -333,6 +357,7 @@ func (s *Server) stopICE() {
 }
 
 func (s *Server) startIdentitySync() {
+	s.reconcileMesh()
 	s.mu.Lock()
 	config := s.Config.relayTicketConfig()
 	if s.identitySyncCancel != nil || config.DeviceCredential == "" {
@@ -373,7 +398,9 @@ func (s *Server) syncBrowserIdentities(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(remoteStateSyncInterval):
+		case <-time.After(s.remoteSyncInterval()):
+			s.syncBrowserIdentitiesOnce(ctx)
+		case <-s.syncWake():
 			s.syncBrowserIdentitiesOnce(ctx)
 		}
 	}
@@ -400,6 +427,10 @@ func (s *Server) syncBrowserIdentitiesOnce(ctx context.Context) {
 		s.startPendingICESessions(ctx, config, state.PendingICESessions)
 		s.applyRelayRequest(state.RelayRequested)
 	}
+	if err == nil {
+		s.noteRemoteSyncSucceeded()
+	}
+	s.reconcileMesh()
 }
 
 // relayIdleGrace keeps an activated relay socket alive a little past the
@@ -469,6 +500,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if lanClose != nil {
 		_ = lanClose()
 	}
+	s.stopMesh()
 	s.stopNativeHost()
 	s.closeLivePreviews()
 	s.closePresentations()
@@ -635,13 +667,17 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 	}); ok && carrier.datagrams {
 		go s.handleBridgeDatagrams(ctx, datagrams, bridges)
 	}
-	if !send(connection, ctx, map[string]any{
+	helloReply := map[string]any{
 		"type": "hello", "ok": true, "protocol": negotiatedProtocol,
 		"serverId":     "go-shell-agent",
 		"environment":  authentication.environment,
 		"capabilities": authentication.capabilities,
 		"features":     protocolFeatures(negotiatedProtocol, carrier),
-	}) {
+	}
+	if carrier.portMapping != nil {
+		helloReply["transport"] = map[string]any{"portMapping": carrier.portMapping}
+	}
+	if !send(connection, ctx, helloReply) {
 		return
 	}
 	for {

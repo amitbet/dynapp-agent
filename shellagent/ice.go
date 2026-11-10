@@ -60,6 +60,26 @@ func newICECandidateTrickler(post func(list []json.RawMessage) error) *iceCandid
 	return &iceCandidateTrickler{post: post}
 }
 
+// addRaw queues an already encoded candidate the agent adds itself (the
+// router port mapping), ahead of gathered ones.
+func (t *iceCandidateTrickler) addRaw(encoded json.RawMessage) {
+	if len(encoded) == 0 {
+		return
+	}
+	t.mu.Lock()
+	if t.ended {
+		t.mu.Unlock()
+		return
+	}
+	t.gathered = append(t.gathered, encoded)
+	start := !t.posting
+	t.posting = true
+	t.mu.Unlock()
+	if start {
+		go t.drain()
+	}
+}
+
 func (t *iceCandidateTrickler) add(candidate *webrtc.ICECandidate) {
 	t.mu.Lock()
 	if t.ended {
@@ -408,6 +428,11 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 	// sends are capped by what the browser advertises, and are fragmented.
 	settings := webrtc.SettingEngine{}
 	settings.SetSCTPMaxMessageSize(webRTCMaxReceiveMessageSize)
+	// While the router maps a port, host candidates share its socket and the
+	// mapped public address is added as a server-reflexive candidate. With
+	// no mapping (transport nil) nothing here changes.
+	transport := s.currentICETransport()
+	transport.apply(&settings)
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
 	peer, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.cloudflare.com:3478"}}}})
 	if err != nil {
@@ -452,6 +477,7 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 					return s.authenticateICEHello(connectionCtx, config, hello)
 				}, carrierCapabilities{
 					reliableStreams: true, datagrams: datagrams, rawBridgeStreams: true, filesystemStreams: true, fragments: true,
+					portMapping: transport.helloPortMapping(),
 				}, channels)
 			}()
 		})
@@ -510,6 +536,9 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 	trickler := newICECandidateTrickler(func(list []json.RawMessage) error {
 		return postICE(connectionCtx, nil, config, session.ID+"/shell-candidates", list)
 	})
+	if transport != nil {
+		trickler.addRaw(marshalCandidate(transport.mappedCandidate(sdpFirstMid(answer.SDP))))
+	}
 	peer.OnICECandidate(trickler.add)
 	gather := webrtc.GatheringCompletePromise(peer)
 	if err := peer.SetLocalDescription(answer); err != nil {
@@ -531,7 +560,11 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 		_ = peer.Close()
 		return errors.New("WebRTC answer is unavailable")
 	}
-	if err := postICE(ctx, nil, config, session.ID+"/answer", iceDescription{Type: "answer", SDP: local.SDP}); err != nil {
+	answerSDP := local.SDP
+	if transport != nil {
+		answerSDP = sdpWithCandidate(answerSDP, transport.mappedCandidate(sdpFirstMid(answerSDP)).Candidate)
+	}
+	if err := postICE(ctx, nil, config, session.ID+"/answer", iceDescription{Type: "answer", SDP: answerSDP}); err != nil {
 		cancel()
 		_ = peer.Close()
 		return err
