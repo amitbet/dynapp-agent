@@ -245,12 +245,10 @@ const meshTestHello = `{"type":"hello","protocol":2,"keyId":"browser-test"}`
 // answer is cut down to it and the agent never sees the browser's own
 // addresses) connects through the shared mux. Two sessions run at once.
 func TestPortMappedAnswerConnectsThroughSharedMux(t *testing.T) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
+	mux, localPort, err := newICEUDPMux(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	localPort := conn.LocalAddr().(*net.UDPAddr).Port
-	mux := noLoopbackUDPMux{newICEUDPMux(conn)}
 	t.Cleanup(func() { _ = mux.Close() })
 	for _, address := range mux.GetListenAddresses() {
 		if address.(*net.UDPAddr).IP.IsLoopback() {
@@ -367,4 +365,80 @@ func TestPortMappingHelloShape(t *testing.T) {
 	if string(wire) != `{"transport":{"portMapping":{"external":"198.51.100.4:9012","protocol":"natpmp"}}}` {
 		t.Fatalf("unexpected hello transport: %s", wire)
 	}
+}
+
+// hostIPv6 reports whether the machine has a non-loopback IPv6 address, and
+// whether one of them is publishable as an ICE host candidate (pion never
+// gathers link-local IPv6, RFC 8445 section 5.1.1.1).
+func hostIPv6(t *testing.T) (any, publishable bool) {
+	t.Helper()
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, _ := iface.Addrs()
+		for _, address := range addresses {
+			prefix, ok := address.(*net.IPNet)
+			if !ok || prefix.IP.To4() != nil || prefix.IP.IsLoopback() {
+				continue
+			}
+			any = true
+			if !prefix.IP.IsLinkLocalUnicast() && !(prefix.IP[0] == 0xfe && prefix.IP[1]&0xc0 == 0xc0) {
+				publishable = true
+			}
+		}
+	}
+	return any, publishable
+}
+
+// With a mapping active the shared port covers IPv6 too: the mux listens on
+// the host's IPv6 addresses and the answer carries IPv6 host candidates on
+// the mapped port.
+func TestPortMappedMuxKeepsIPv6HostCandidates(t *testing.T) {
+	mux, localPort, err := newICEUDPMux(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mux.Close() })
+	families := map[bool]int{}
+	for _, address := range mux.GetListenAddresses() {
+		udp := address.(*net.UDPAddr)
+		if udp.IP.IsLoopback() || udp.Port != localPort {
+			t.Fatalf("unexpected mux address %v", address)
+		}
+		families[udp.IP.To4() == nil]++
+	}
+	if families[false] == 0 {
+		t.Fatal("mux lost its IPv4 addresses")
+	}
+	anyV6, publishable := hostIPv6(t)
+	if !anyV6 {
+		t.Skip("no non-loopback IPv6 address on this machine")
+	}
+	if families[true] == 0 {
+		t.Fatalf("mux does not listen on IPv6: %v", mux.GetListenAddresses())
+	}
+	agent := meshTestAgent()
+	agent.iceTransport.Store(&iceMuxTransport{mux: mux, localPort: localPort, protocol: "pcp", external: netip.MustParseAddrPort("203.0.113.7:9012")})
+	browser, err := startMeshBrowser(t, agent, "ice_portmappedipv600000", meshTestHello, meshBrowserOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply := receiveICEMessage(t, browser.messages, "hello reply"); reply["ok"] != true {
+		t.Fatalf("unexpected hello reply %#v", reply)
+	}
+	if !publishable {
+		t.Skip("only link-local IPv6 here; pion never publishes those as host candidates")
+	}
+	for _, line := range strings.Split(browser.answerSDP, "\r\n") {
+		fields := strings.Fields(line)
+		if strings.HasPrefix(line, "a=candidate:") && len(fields) >= 8 && strings.Contains(fields[4], ":") && fields[5] == fmt.Sprint(localPort) && fields[7] == "host" {
+			return
+		}
+	}
+	t.Fatalf("no IPv6 host candidate on port %d:\n%s", localPort, browser.answerSDP)
 }

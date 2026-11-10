@@ -116,26 +116,53 @@ type iceMuxTransport struct {
 	external  netip.AddrPort
 }
 
-// newICEUDPMux wraps the mapped port's socket in a plain UDPMuxDefault.
-// The contract names a UniversalUDPMux, but its only addition, STUN
-// server-reflexive discovery through the shared socket, is unreachable from
-// webrtc v4 (the SettingEngine sets ice.AgentConfig.UDPMux, never
-// UDPMuxSrflx), and NewUniversalUDPMuxDefault starts its read loop before it
-// assigns the embedded mux, a data race that can dereference nil if a
-// datagram arrives during construction.
-func newICEUDPMux(conn net.PacketConn) ice.UDPMux {
-	return ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn})
+// newICEUDPMux binds the shared ICE port for IPv4 (0.0.0.0) and, when the
+// host allows it, IPv6 ([::], v6-only) on the same port, and joins them
+// with pion's MultiUDPMuxDefault, which routes each host candidate to the
+// socket that owns its address. IPv6 host candidates are a direct path of
+// their own (mobile networks especially), so they must survive the switch
+// to the shared port; when IPv6 cannot be bound the mux stays IPv4-only and
+// the mapping is still advertised. port 0 picks a free port (tests).
+//
+// The parts are plain UDPMuxDefaults. The contract names a UniversalUDPMux,
+// but its only addition, STUN server-reflexive discovery through the shared
+// socket, is unreachable from webrtc v4 (the SettingEngine sets
+// ice.AgentConfig.UDPMux, never UDPMuxSrflx), and NewUniversalUDPMuxDefault
+// starts its read loop before it assigns the embedded mux, a data race that
+// can dereference nil if a datagram arrives during construction.
+// NewMultiUDPMuxFromPort is not used either: it binds one socket per
+// interface address and fails as a whole when any one bind fails.
+func newICEUDPMux(port int) (ice.UDPMux, int, error) {
+	conn4, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+	if err != nil {
+		return nil, 0, err
+	}
+	localPort := conn4.LocalAddr().(*net.UDPAddr).Port
+	muxes := []ice.UDPMux{familyUDPMux{ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn4}), false}}
+	// Go sets IPV6_V6ONLY for "udp6", so this does not collide with the
+	// IPv4 socket on the same port.
+	if conn6, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6unspecified, Port: localPort}); err == nil {
+		muxes = append(muxes, familyUDPMux{ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn6}), true})
+	} else {
+		log.Printf("DynApp Shell agent: ICE port %d is IPv4-only: %v", localPort, err)
+	}
+	return ice.NewMultiUDPMuxDefault(muxes...), localPort, nil
 }
 
-// noLoopbackUDPMux hides loopback from the host candidates. pion only skips
-// loopback for a plain *ice.UDPMuxDefault, and a mux bound to 0.0.0.0 lists
-// every interface address including 127.0.0.1.
-type noLoopbackUDPMux struct{ ice.UDPMux }
+// familyUDPMux limits one socket's host addresses to its own family and
+// hides loopback. A mux on an unspecified address lists every interface
+// address (pion enumerates IPv4 and IPv6 for [::]), and pion only skips
+// loopback for a bare *ice.UDPMuxDefault.
+type familyUDPMux struct {
+	ice.UDPMux
+	ipv6 bool
+}
 
-func (m noLoopbackUDPMux) GetListenAddresses() []net.Addr {
+func (m familyUDPMux) GetListenAddresses() []net.Addr {
 	var addresses []net.Addr
 	for _, address := range m.UDPMux.GetListenAddresses() {
-		if udp, ok := address.(*net.UDPAddr); ok && udp.IP.IsLoopback() {
+		udp, ok := address.(*net.UDPAddr)
+		if !ok || udp.IP.IsLoopback() || (udp.IP.To4() == nil) != m.ipv6 {
 			continue
 		}
 		addresses = append(addresses, address)
@@ -249,15 +276,13 @@ func (s *Server) reconcilePortMapping() {
 	} else if port < 0 {
 		port = 0 // tests: any free port
 	}
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+	mux, localPort, err := newICEUDPMux(port)
 	if err != nil {
 		s.portmapBindFailedAt = time.Now()
 		s.meshMu.Unlock()
 		log.Printf("DynApp Shell agent: cannot bind ICE port %d for router port mapping: %v", port, err)
 		return
 	}
-	localPort := conn.LocalAddr().(*net.UDPAddr).Port
-	mux := noLoopbackUDPMux{newICEUDPMux(conn)}
 	options := portmap.Options{}
 	if s.portmapOptions != nil {
 		options = *s.portmapOptions
