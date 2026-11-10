@@ -206,7 +206,7 @@ jobs:
   macos:
     needs: [version, create-release]
     if: needs.version.outputs.ready == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
