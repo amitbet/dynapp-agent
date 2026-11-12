@@ -39,7 +39,15 @@ function page({ platform = "macos", pageOrigin = origin, top = true, nativeFileD
     window.navigator = {
       userActivation: { isActive: true },
       clipboard: { readText: async () => "", writeText: async () => { throw new Error("Write permission denied."); } },
+      mediaDevices: {
+        enumerateDevices: async () => [
+          { deviceId: "mic1", kind: "audioinput", label: "Bottom" },
+          { deviceId: "default", kind: "audiooutput", label: "" },
+        ],
+      },
     };
+    window.AudioContext = class AudioContext {};
+    window.HTMLMediaElement = class HTMLMediaElement {};
   }
   window.window = window;
   window.top = top ? window : {};
@@ -196,6 +204,33 @@ test("android clipboard writes fall back to the host only during a user gesture"
   assert.equal(posted.filter((message) => message.op === "clipboardWriteText").length, 1);
 });
 
+
+test("android lists the host's speaker routes as audio outputs and switches them with setSinkId", async () => {
+  const { window, posted } = page({ platform: "android" });
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const listing = window.navigator.mediaDevices.enumerateDevices();
+  await tick();
+  const ask = posted.at(-1);
+  assert.equal(ask.op, "audioOutputs");
+  window.dynappNativeHost.reply({ rid: ask.rid, event: "result", value: [{ id: "speaker", label: "Speaker" }, { id: "earpiece", label: "Earpiece" }] });
+  const devices = plain(await listing);
+  assert.deepEqual(devices.map((device) => `${device.kind}:${device.deviceId}`), ["audioinput:mic1", "audiooutput:dynapp-speaker", "audiooutput:dynapp-earpiece"]);
+
+  const switched = new window.AudioContext().setSinkId("dynapp-earpiece");
+  const pick = posted.at(-1);
+  assert.deepEqual({ op: pick.op, id: pick.id }, { op: "audioOutput", id: "earpiece" });
+  window.dynappNativeHost.reply({ rid: pick.rid, event: "result", value: true });
+  assert.equal(await switched, undefined);
+  await assert.rejects(new window.HTMLMediaElement().setSinkId("someone-else"), /not found/);
+});
+
+test("android hosts without speaker routes leave the device list alone", async () => {
+  const { window, posted } = page({ platform: "android" });
+  const listing = window.navigator.mediaDevices.enumerateDevices();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  window.dynappNativeHost.reply({ rid: posted.at(-1).rid, event: "result", value: [] });
+  assert.equal((await listing).filter((device) => device.kind === "audiooutput").length, 1);
+});
 
 test("Windows forwards dropped File objects to the host and resolves exact paths", async () => {
   const { host, posted, deliver } = page({ platform: "windows", nativeFileDrop: true });

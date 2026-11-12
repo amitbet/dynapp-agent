@@ -207,6 +207,7 @@
     void callHost("notificationPermission", { query: true }).then((value) => {
       if (value === "granted" || value === "denied") notificationPermission = value;
     }, () => {});
+    installAudioOutputs();
     const clipboard = window.navigator?.clipboard;
     if (clipboard) {
       Object.defineProperty(clipboard, "readText", {
@@ -231,6 +232,56 @@
       });
     }
   }
+  // Android picks the earpiece for calls inside a WebView; Chrome picks the
+  // loudspeaker. The host does what Chrome does and lists both routes as
+  // audio outputs, so a page switches with the standard setSinkId().
+  function installAudioOutputs() {
+    const media = window.navigator?.mediaDevices;
+    if (!media || typeof media.enumerateDevices !== "function") return;
+    const hostIds = new Set();
+    const listDevices = media.enumerateDevices.bind(media);
+    Object.defineProperty(media, "enumerateDevices", {
+      value: async () => {
+        const devices = await listDevices();
+        let outputs = [];
+        try {
+          // A host without routes never answers this op.
+          outputs = await Promise.race([
+            callHost("audioOutputs"),
+            new Promise((resolve) => setTimeout(() => resolve([]), 1000)),
+          ]);
+        } catch { /* no routes to offer */ }
+        if (!Array.isArray(outputs) || !outputs.length) return devices;
+        const routes = outputs.map((output) => {
+          const deviceId = `dynapp-${String(output.id)}`;
+          hostIds.add(deviceId);
+          const info = { deviceId, groupId: "dynapp-host", kind: "audiooutput", label: String(output.label || output.id) };
+          return { ...info, toJSON: () => info };
+        });
+        // The host's routes replace the WebView's single "default" output.
+        return [...devices.filter((device) => device.kind !== "audiooutput"), ...routes];
+      },
+      configurable: true,
+    });
+    const route = (owner) => {
+      const nativeSet = owner?.prototype?.setSinkId;
+      if (!owner?.prototype) return;
+      Object.defineProperty(owner.prototype, "setSinkId", {
+        value: function setSinkId(sinkId) {
+          const id = typeof sinkId === "string" ? sinkId : "";
+          if (hostIds.has(id)) return callHost("audioOutput", { id: id.slice("dynapp-".length) }).then(() => undefined);
+          if (id === "") return callHost("audioOutput", { id: "" }).then(() => undefined);
+          if (typeof nativeSet === "function") return nativeSet.call(this, sinkId);
+          return Promise.reject(new DOMException("The requested audio output was not found", "NotFoundError"));
+        },
+        configurable: true,
+        writable: true,
+      });
+    };
+    route(window.AudioContext);
+    route(window.HTMLMediaElement);
+  }
+
   Object.defineProperty(window, "__DYNAPP_NATIVE_HOST__", {
     value: Object.freeze({
       version: config.version,
