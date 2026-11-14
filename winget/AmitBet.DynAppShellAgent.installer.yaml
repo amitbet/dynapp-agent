@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: AmitBet.DynAppShellAgent
+PackageVersion: 0.1.64
+InstallerType: portable
+Commands:
+  - dynapp-shell-agent
+UpgradeBehavior: install
+Installers:
+  - Architecture: x64
+    Scope: user
+    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.64/dynapp-shell-agent-0.1.64-windows-amd64.exe
+    InstallerSha256: 710FA44B14F1906062D5AF8B82CA800507A3A4CE414DED86CB0780A0A8D9C68E
+  - Architecture: x64
+    Scope: machine
+    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.64/dynapp-shell-agent-0.1.64-windows-amd64.exe
+    InstallerSha256: 710FA44B14F1906062D5AF8B82CA800507A3A4CE414DED86CB0780A0A8D9C68E
+  - Architecture: arm64
+    Scope: user
+    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.64/dynapp-shell-agent-0.1.64-windows-arm64.exe
+    InstallerSha256: 334CCEE7168D552BBD20529DF883B620F18C30CF40C7DEDFD7321A02C5D74622
+  - Architecture: arm64
+    Scope: machine
+    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.64/dynapp-shell-agent-0.1.64-windows-arm64.exe
+    InstallerSha256: 334CCEE7168D552BBD20529DF883B620F18C30CF40C7DEDFD7321A02C5D74622
+ManifestType: installer
+ManifestVersion: 1.6.0
