@@ -5,10 +5,7 @@ package shellagent
 import (
 	"bytes"
 	"crypto/sha256"
-	_ "embed"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -211,77 +208,6 @@ func pngToICO(png []byte) []byte {
 	return buffer.Bytes()
 }
 
-// shortcutScript creates a .lnk whose System.AppUserModel.ID matches the
-// running host, so pinning and taskbar grouping work per app. Values arrive
-// through environment variables to avoid quoting.
-const shortcutScript = `$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
-using System.Text;
-[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IShellLinkW {
-  void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int max, IntPtr data, uint flags);
-  void GetIDList(out IntPtr list); void SetIDList(IntPtr list);
-  void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int max);
-  void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string name);
-  void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder dir, int max);
-  void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string dir);
-  void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int max);
-  void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
-  void GetHotkey(out short key); void SetHotkey(short key);
-  void GetShowCmd(out int cmd); void SetShowCmd(int cmd);
-  void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int max, out int index);
-  void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
-  void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
-  void Resolve(IntPtr hwnd, uint flags);
-  void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
-}
-[ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IPropertyStore {
-  void GetCount(out uint count); void GetAt(uint index, out PropertyKey key);
-  void GetValue(ref PropertyKey key, out PropVariant value); void SetValue(ref PropertyKey key, ref PropVariant value);
-  void Commit();
-}
-[StructLayout(LayoutKind.Sequential, Pack = 4)] public struct PropertyKey { public Guid fmtid; public uint pid; }
-[StructLayout(LayoutKind.Explicit)] public struct PropVariant { [FieldOffset(0)] public ushort vt; [FieldOffset(8)] public IntPtr value; }
-[ComImport, Guid("00021401-0000-0000-C000-000000000046")] class CShellLink {}
-public static class DynAppShortcut {
-  public static void Create(string path, string target, string args, string icon, string appId, string description) {
-    var link = (IShellLinkW)new CShellLink();
-    link.SetPath(target);
-    link.SetArguments(args);
-    link.SetIconLocation(icon, 0);
-    link.SetDescription(description);
-    link.SetWorkingDirectory(System.IO.Path.GetDirectoryName(target));
-    link.SetShowCmd(7);
-    var key = new PropertyKey { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
-    var value = new PropVariant { vt = 31, value = Marshal.StringToCoTaskMemUni(appId) };
-    try {
-      var store = (IPropertyStore)link;
-      store.SetValue(ref key, ref value);
-      store.Commit();
-    } finally {
-      Marshal.FreeCoTaskMem(value.value);
-    }
-    ((IPersistFile)link).Save(path, true);
-  }
-}
-'@
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:DYNAPP_LNK_PATH) | Out-Null
-[DynAppShortcut]::Create($env:DYNAPP_LNK_PATH, $env:DYNAPP_LNK_TARGET, $env:DYNAPP_LNK_ARGS, $env:DYNAPP_LNK_ICON, $env:DYNAPP_LNK_APPID, $env:DYNAPP_LNK_DESCRIPTION)
-`
-
-func encodedPowerShell(script string) string {
-	encoded := utf16.Encode([]rune(script))
-	raw := make([]byte, len(encoded)*2)
-	for index, unit := range encoded {
-		binary.LittleEndian.PutUint16(raw[index*2:], unit)
-	}
-	return base64.StdEncoding.EncodeToString(raw)
-}
-
 // nativeHostArgs is the command line a shortcut or launch uses.
 func nativeHostArgs(app NativeApp, endpoint, icon string) []string {
 	return []string{"app", "--id", app.StoreID, "--pipe", endpoint, "--url", app.URL, "--origin", app.Origin, "--name", app.Name, "--icon", icon}
@@ -318,20 +244,16 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 	}
 	shortcut := filepath.Join(roaming, "Microsoft", "Windows", "Start Menu", "Programs", "DynApp", nativeShortcutName(spec.Name)+".lnk")
 	app := NativeApp{StoreID: spec.StoreID, Name: spec.Name, Origin: spec.Origin, URL: spec.URL}
-	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-	command := user.Command(nil, powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedPowerShell(shortcutScript+nativeWindowsIntegrationScript))
-	command.Env = append(user.Environ(),
-		"DYNAPP_LNK_PATH="+shortcut, "DYNAPP_LNK_TARGET="+executable,
-		"DYNAPP_LNK_ARGS="+joinWindowsArgs(nativeHostArgs(app, spec.AgentEndpoint, icon)),
-		"DYNAPP_LNK_ICON="+icon, "DYNAPP_LNK_APPID="+nativeAppUserModelID(spec.StoreID),
-		"DYNAPP_LNK_DESCRIPTION="+nativeShortcutDescription(spec),
-		"DYNAPP_NATIVE_ID="+nativeWindowsRegistrationID(spec.StoreID),
-		"DYNAPP_NATIVE_NAME="+spec.Name,
-		"DYNAPP_NATIVE_EXTENSIONS="+nativeWindowsExtensionsJSON(spec.DocumentTypes),
-		"DYNAPP_NATIVE_MODE=install",
-	)
-	if output, err := command.CombinedOutput(); err != nil {
-		return nativeInstallResult{}, fmt.Errorf("install Windows app integration: %w: %s", err, strings.TrimSpace(string(output)))
+	integration := nativeWindowsIntegration{
+		Base: "Software", ID: nativeWindowsRegistrationID(spec.StoreID), Name: spec.Name,
+		Extensions: nativeWindowsExtensions(spec.DocumentTypes),
+		Shortcut: windowsShortcut{
+			Path: shortcut, Target: executable, Args: joinWindowsArgs(nativeHostArgs(app, spec.AgentEndpoint, icon)),
+			Icon: icon, AppID: nativeAppUserModelID(spec.StoreID), Description: nativeShortcutDescription(spec),
+		},
+	}
+	if err := applyNativeWindowsIntegration(user, integration); err != nil {
+		return nativeInstallResult{}, fmt.Errorf("install Windows app integration: %w", err)
 	}
 	// A renamed app leaves its previous shortcut behind; remove it.
 	programs := filepath.Dir(shortcut)
@@ -383,11 +305,9 @@ func nativeUninstall(app NativeApp) error {
 	if !strings.EqualFold(filepath.Dir(path), programs) || !strings.HasSuffix(strings.ToLower(path), ".lnk") {
 		return errors.New("the installed app is outside the DynApp Start menu folder")
 	}
-	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-	command := user.Command(nil, powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedPowerShell(nativeWindowsIntegrationScript))
-	command.Env = append(user.Environ(), "DYNAPP_NATIVE_MODE=uninstall", "DYNAPP_NATIVE_ID="+nativeWindowsRegistrationID(app.StoreID))
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("remove Windows app integration: %w: %s", err, strings.TrimSpace(string(output)))
+	integration := nativeWindowsIntegration{Base: "Software", ID: nativeWindowsRegistrationID(app.StoreID), Uninstall: true}
+	if err := applyNativeWindowsIntegration(user, integration); err != nil {
+		return fmt.Errorf("remove Windows app integration: %w", err)
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -411,8 +331,24 @@ func nativeLaunch(app NativeApp, endpoint string) error {
 	return user.StartGUI(executable, nativeHostArgs(app, endpoint, icon), filepath.Dir(executable))
 }
 
-//go:embed native_windows_integration.ps1
-var nativeWindowsIntegrationScript string
+// applyNativeWindowsIntegration runs the integration as the signed-in user:
+// their registry hive, their desktop folder, files owned by them.
+func applyNativeWindowsIntegration(user *desktop.UserEnvironment, integration nativeWindowsIntegration) error {
+	desktopDir, err := user.KnownFolderPath(windows.FOLDERID_Desktop)
+	if err != nil {
+		return fmt.Errorf("find the user desktop folder: %w", err)
+	}
+	integration.Desktop = desktopDir
+	return user.AsUser(func() error {
+		root, err := currentUserRegistry()
+		if err != nil {
+			return err
+		}
+		defer root.Close()
+		integration.Root = root
+		return integration.apply()
+	})
+}
 
 // Stable, owner-scoped identity, independent of an app's display name.
 func nativeWindowsRegistrationID(storeID string) string {
@@ -421,7 +357,7 @@ func nativeWindowsRegistrationID(storeID string) string {
 
 var nativeWindowsExtension = regexp.MustCompile(`^[a-z0-9][a-z0-9_+-]{0,63}$`)
 
-func nativeWindowsExtensionsJSON(types []nativeDocumentType) string {
+func nativeWindowsExtensions(types []nativeDocumentType) []string {
 	extensions := []string{}
 	seen := map[string]bool{}
 	for _, kind := range types {
@@ -433,8 +369,7 @@ func nativeWindowsExtensionsJSON(types []nativeDocumentType) string {
 			}
 		}
 	}
-	data, _ := json.Marshal(extensions)
-	return string(data)
+	return extensions
 }
 
 // codingAgentsDir holds installed-apps.md and the local skill copy, in the

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -155,4 +156,42 @@ func (u *UserEnvironment) StartGUI(path string, args []string, dir string) error
 	windows.CloseHandle(process.Thread)
 	windows.CloseHandle(process.Process)
 	return nil
+}
+
+var procImpersonateLoggedOnUser = windows.NewLazySystemDLL("advapi32.dll").NewProc("ImpersonateLoggedOnUser")
+
+// AsUser runs fn on an OS thread that impersonates the user, so registry
+// writes through RegOpenCurrentUser land in the user's hive and files are
+// created with the user as owner. Without a separate user it just runs fn.
+func (u *UserEnvironment) AsUser(fn func() error) error {
+	done := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		if u.env != nil {
+			if result, _, callErr := procImpersonateLoggedOnUser.Call(uintptr(u.token)); result == 0 {
+				runtime.UnlockOSThread()
+				done <- fmt.Errorf("impersonate the desktop user: %w", callErr)
+				return
+			}
+		}
+		err := fn()
+		if u.env != nil && windows.RevertToSelf() != nil {
+			// The thread keeps the user's identity; leaving it locked makes
+			// the runtime discard it when this goroutine exits.
+			done <- err
+			return
+		}
+		runtime.UnlockOSThread()
+		done <- err
+	}()
+	return <-done
+}
+
+// KnownFolderPath resolves a shell known folder (Desktop may live in
+// OneDrive) for the user rather than the service account.
+func (u *UserEnvironment) KnownFolderPath(id *windows.KNOWNFOLDERID) (string, error) {
+	if u.env == nil {
+		return windows.KnownFolderPath(id, 0)
+	}
+	return u.token.KnownFolderPath(id, 0)
 }

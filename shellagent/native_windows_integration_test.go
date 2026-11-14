@@ -3,8 +3,8 @@
 package shellagent
 
 import (
+	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,16 +14,16 @@ import (
 )
 
 func TestNativeWindowsExtensionsAndIdentity(t *testing.T) {
-	got := nativeWindowsExtensionsJSON([]nativeDocumentType{{Extensions: []string{".TXT", "txt", "md", "../bad", "*", "x\\y", ""}}})
-	if got != `[".txt",".md"]` {
-		t.Fatalf("extensions = %s", got)
+	got := nativeWindowsExtensions([]nativeDocumentType{{Extensions: []string{".TXT", "txt", "md", "../bad", "*", "x\\y", ""}}})
+	if strings.Join(got, ",") != ".txt,.md" {
+		t.Fatalf("extensions = %v", got)
 	}
 	if nativeWindowsRegistrationID("a/notes") == nativeWindowsRegistrationID("b/notes") {
 		t.Fatal("owners share an identity")
 	}
 }
 
-// Execute the real PowerShell/COM installer against a private registry subtree
+// Run the real COM/registry integration against a private registry subtree
 // and temporary desktop, without changing the user's registrations or shortcuts.
 func TestNativeWindowsIntegrationLifecycle(t *testing.T) {
 	dir := t.TempDir()
@@ -32,25 +32,26 @@ func TestNativeWindowsIntegrationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := `Software\DynAppIntegrationTest` + time.Now().Format("20060102150405.000000000")
-	defer registry.DeleteKey(registry.CURRENT_USER, base)
 	t.Cleanup(func() {
-		script := `$ErrorActionPreference='Stop'; [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree('` + base + `', $false)`
-		if output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedPowerShell(script)).CombinedOutput(); err != nil {
-			t.Errorf("cleanup: %v %s", err, output)
+		if err := deleteRegistryTree(registry.CURRENT_USER, base); err != nil {
+			t.Errorf("cleanup: %v", err)
 		}
 	})
-	script := strings.Replace(nativeWindowsIntegrationScript, "$base = 'Software'", "$base = '"+base+"'", 1)
-	script = strings.Replace(script, "[Environment]::GetFolderPath('DesktopDirectory')", "'"+strings.ReplaceAll(desktop, "'", "''")+"'", 1)
 	id := nativeWindowsRegistrationID("owner/notes")
 	other := nativeWindowsRegistrationID("other/notes")
-	run := func(mode, appID, name, extensions string) {
+	run := func(mode, appID, name string, extensions []string) {
 		t.Helper()
-		link := filepath.Join(dir, name+".lnk")
-		cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedPowerShell(shortcutScript+script))
-		cmd.Env = append(os.Environ(), "DYNAPP_NATIVE_MODE="+mode, "DYNAPP_NATIVE_ID="+appID, "DYNAPP_NATIVE_NAME="+name, "DYNAPP_NATIVE_EXTENSIONS="+extensions,
-			"DYNAPP_LNK_PATH="+link, "DYNAPP_LNK_TARGET="+filepath.Join(dir, "agent.exe"), "DYNAPP_LNK_ARGS="+joinWindowsArgs(nativeHostArgs(NativeApp{StoreID: "owner/notes", Name: name, Origin: "https://example.com", URL: "https://example.com/"}, `\\.\pipe\test`, filepath.Join(dir, "icon.ico"))), "DYNAPP_LNK_ICON="+filepath.Join(dir, "icon.ico"), "DYNAPP_LNK_APPID=DynApp.owner.notes", "DYNAPP_LNK_DESCRIPTION="+name)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%s: %v\n%s", mode, err, output)
+		integration := nativeWindowsIntegration{
+			Root: registry.CURRENT_USER, Base: base, Desktop: desktop, Uninstall: mode == "uninstall",
+			ID: appID, Name: name, Extensions: extensions,
+			Shortcut: windowsShortcut{
+				Path: filepath.Join(dir, name+".lnk"), Target: filepath.Join(dir, "agent.exe"),
+				Args: joinWindowsArgs(nativeHostArgs(NativeApp{StoreID: "owner/notes", Name: name, Origin: "https://example.com", URL: "https://example.com/"}, `\\.\pipe\test`, filepath.Join(dir, "icon.ico"))),
+				Icon: filepath.Join(dir, "icon.ico"), AppID: "DynApp.owner.notes", Description: name,
+			},
+		}
+		if err := integration.apply(); err != nil {
+			t.Fatalf("%s: %v", mode, err)
 		}
 	}
 	get := func(path, name string) string {
@@ -89,9 +90,13 @@ func TestNativeWindowsIntegrationLifecycle(t *testing.T) {
 	}
 	_ = key.SetStringValue("", "Existing.Editor")
 	key.Close()
-	run("install", id, "Notes", `[".txt",".md"]`)
-	if _, err := os.Stat(filepath.Join(desktop, "Notes.lnk")); err != nil {
+	run("install", id, "Notes", []string{".txt", ".md"})
+	link, err := os.ReadFile(filepath.Join(desktop, "Notes.lnk"))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !bytes.Contains(link, utf16Bytes("DynApp.owner.notes")) {
+		t.Fatal("shortcut has no AppUserModelID")
 	}
 	command := get(`Classes\`+id+`\shell\open\command`, "")
 	if !strings.Contains(command, ` app --id owner/notes `) || !strings.HasSuffix(command, ` -- "%1"`) {
@@ -103,15 +108,15 @@ func TestNativeWindowsIntegrationLifecycle(t *testing.T) {
 	if !has(`Classes\.txt\OpenWithProgids`, id) || get(`RegisteredApplications`, id) == "" {
 		t.Fatalf("missing registration: openWith=%v registered=%q id=%s", has(`Classes\.txt\OpenWithProgids`, id), get(`RegisteredApplications`, id), id)
 	}
-	run("install", other, "Other Notes", `[".txt"]`)
-	run("install", id, "Renamed Notes", `[".md"]`)
+	run("install", other, "Other Notes", []string{".txt"})
+	run("install", id, "Renamed Notes", []string{".md"})
 	if has(`Classes\.txt\OpenWithProgids`, id) || !has(`Classes\.txt\OpenWithProgids`, other) {
 		t.Fatal("reinstall failed to preserve other apps")
 	}
 	if _, err := os.Stat(filepath.Join(desktop, "Notes.lnk")); !os.IsNotExist(err) {
 		t.Fatal("old desktop shortcut remains")
 	}
-	run("uninstall", id, "Renamed Notes", `[]`)
+	run("uninstall", id, "Renamed Notes", nil)
 	if has(`RegisteredApplications`, id) || has(`Classes\.md\OpenWithProgids`, id) {
 		t.Fatal("uninstall left registrations")
 	}
@@ -121,7 +126,7 @@ func TestNativeWindowsIntegrationLifecycle(t *testing.T) {
 	if !has(`Classes\.txt\OpenWithProgids`, other) || get(`Classes\.txt`, "") != "Existing.Editor" {
 		t.Fatal("uninstall changed another app")
 	}
-	run("install", id, "No Types", `[]`)
+	run("install", id, "No Types", nil)
 	if has(`RegisteredApplications`, id) {
 		t.Fatal("app without file types claims formats")
 	}

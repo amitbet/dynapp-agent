@@ -4,11 +4,9 @@ package shellagent
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/binary"
 	"strings"
 	"testing"
-	"unicode/utf16"
 )
 
 func TestPNGToICOWrapsTheImage(t *testing.T) {
@@ -39,20 +37,6 @@ func TestWindowsAppIdentityAndNames(t *testing.T) {
 	}
 	if !strings.HasPrefix(nativeEndpoint(""), `\\.\pipe\dynapp-native-host`) {
 		t.Fatalf("pipe = %q", nativeEndpoint(""))
-	}
-}
-
-func TestEncodedPowerShellIsUTF16LittleEndian(t *testing.T) {
-	raw, err := base64.StdEncoding.DecodeString(encodedPowerShell("Write-Output 'é'"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	units := make([]uint16, len(raw)/2)
-	for index := range units {
-		units[index] = binary.LittleEndian.Uint16(raw[index*2:])
-	}
-	if string(utf16.Decode(units)) != "Write-Output 'é'" {
-		t.Fatalf("decoded = %q", string(utf16.Decode(units)))
 	}
 }
 
