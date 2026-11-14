@@ -474,3 +474,18 @@ func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
+
+// codingAgentHomes is the signed-in user's profile and CODEX_HOME, also when
+// the agent runs as the LocalSystem service.
+func codingAgentHomes() (string, string, error) {
+	user, err := desktop.CurrentUser()
+	if err != nil {
+		return "", "", err
+	}
+	defer user.Close()
+	home := user.Getenv("USERPROFILE")
+	if home == "" {
+		return "", "", errors.New("could not find the signed-in user's profile folder")
+	}
+	return home, user.Getenv("CODEX_HOME"), nil
+}

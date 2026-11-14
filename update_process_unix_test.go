@@ -30,6 +30,11 @@ func TestUnixSelfUpdateProcess(t *testing.T) {
 	for _, baseline := range []bool{true, false} {
 		t.Run(fmt.Sprintf("releasedMain=%t", baseline), func(t *testing.T) {
 			dir := t.TempDir()
+			// The child agents run the startup backfill; keep them out of the
+			// real home folder (app notes, coding-agent instructions).
+			t.Setenv("HOME", filepath.Join(dir, "home"))
+			t.Setenv("XDG_DATA_HOME", "")
+			t.Setenv("CODEX_HOME", "")
 			executable, err := os.Executable()
 			if err != nil {
 				t.Fatal(err)

@@ -449,6 +449,9 @@ func (s *Server) installNativeApp(ctx context.Context, args map[string]any) (any
 	if err != nil {
 		return nil, err
 	}
+	// Fetch the local skill copy first, so the note inside a signed macOS
+	// bundle names it from the start.
+	s.prepareCodingAgents(resolveCtx, true)
 	result, err := nativeInstall(nativeInstallSpec{
 		StoreID: storeID, Name: manifest.app.Name, Origin: manifest.origin, URL: startURL, Icon: icon,
 		AgentEndpoint: s.nativeEndpoint(), StateDir: stateDir, DocumentTypes: manifest.documentTypes,
@@ -696,5 +699,5 @@ func manifestDocumentTypes(detail map[string]any) []nativeDocumentType {
 }
 
 func (spec nativeInstallSpec) note() appNote {
-	return appNote{StoreID: spec.StoreID, Name: spec.Name, Origin: spec.Origin, Kind: appNoteKindNative, DynerURL: spec.DynerURL}
+	return appNote{StoreID: spec.StoreID, Name: spec.Name, Origin: spec.Origin, Kind: appNoteKindNative, DynerURL: spec.DynerURL, SkillPath: localSkillPath()}
 }

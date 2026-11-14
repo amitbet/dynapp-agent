@@ -48,3 +48,9 @@ func appNotesDir() (string, error) {
 
 // writeNativeAppNotes: no native installs exist here.
 func writeNativeAppNotes(NativeApp, appNote) {}
+
+// codingAgentHomes is the user's home folder and CODEX_HOME, if set.
+func codingAgentHomes() (string, string, error) {
+	home, err := os.UserHomeDir()
+	return home, os.Getenv("CODEX_HOME"), err
+}

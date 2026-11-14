@@ -172,3 +172,7 @@ func nativeLaunch(app NativeApp, _ string) error {
 func appNotesDir() (string, error) { return "", errors.New("app notes are not written on Android") }
 
 func writeNativeAppNotes(NativeApp, appNote) {}
+
+func codingAgentHomes() (string, string, error) {
+	return "", "", errors.New("coding agents are not configured on Android")
+}

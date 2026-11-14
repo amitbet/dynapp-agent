@@ -482,3 +482,9 @@ func writeNativeAppNotes(_ NativeApp, note appNote) {
 		_ = writeAppNote(root, note)
 	}
 }
+
+// codingAgentHomes is the user's home folder and CODEX_HOME, if set.
+func codingAgentHomes() (string, string, error) {
+	home, err := os.UserHomeDir()
+	return home, os.Getenv("CODEX_HOME"), err
+}

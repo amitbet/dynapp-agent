@@ -153,13 +153,18 @@ func TestBackfillWritesNotesBesideExistingBundlesWithoutTouchingThem(t *testing.
 	if err := os.MkdirAll(filepath.Join(bundle, "Contents"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{Config: Config{NativeApps: []NativeApp{
+	resetLocalSkillRefresh(t)
+	dyner := skillServer(t, skillZip(t, map[string]string{"dynapp-developer/SKILL.md": "skill"}))
+	server := &Server{DynerHTTPClient: dyner.Client(), Config: Config{DynerBaseURL: dyner.URL, NativeApps: []NativeApp{
 		{StoreID: "amit-bet/formfuel", Name: "Form & Fuel", Origin: "https://amitbet-formfuel.dynapp.io", Path: bundle},
 		{StoreID: "amit-bet/gone", Name: "Gone", Origin: "https://amitbet-gone.dynapp.io", Path: filepath.Join(root, "Gone.app")},
 	}}}
 	server.backfillAppNotes()
 	if data, err := os.ReadFile(filepath.Join(root, "Form & Fuel.dynapp.md")); err != nil || noteStoreID(data) != "amit-bet/formfuel" {
 		t.Fatalf("backfilled note = %q %v", data, err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "Form & Fuel.dynapp.md")); !strings.Contains(string(data), filepath.Join(root, ".skill", "dynapp-developer", "SKILL.md")) {
+		t.Fatalf("backfilled note does not name the local skill copy:\n%s", data)
 	}
 	if _, err := os.Stat(filepath.Join(root, "Gone.dynapp.md")); !os.IsNotExist(err) {
 		t.Fatal("a note was written for a missing bundle")

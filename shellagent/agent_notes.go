@@ -2,6 +2,7 @@ package shellagent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -32,6 +33,9 @@ type appNote struct {
 	Origin   string
 	Kind     string
 	DynerURL string
+	// SkillPath is the agent's local copy of the dynapp-developer skill
+	// (SKILL.md), so a sandboxed coding agent can read it offline.
+	SkillPath string
 }
 
 func (note appNote) dynerURL() string {
@@ -56,28 +60,41 @@ func appAgentNote(note appNote) []byte {
 	fmt.Fprintf(&buffer, "- App: `%s`\n", note.StoreID)
 	fmt.Fprintf(&buffer, "- Address: %s/\n", strings.TrimRight(note.Origin, "/"))
 	fmt.Fprintf(&buffer, "- Details and source: %s/api/v1/apps/%s\n\n", base, note.StoreID)
-	buffer.WriteString("To change, fix or customize this app, use the dynapp-developer skill. If it\n")
-	fmt.Fprintf(&buffer, "is not installed, read %s/skill/SKILL.md before changing anything.\n", base)
+	buffer.Write(skillPointer(base, note.SkillPath, "this app"))
+	buffer.WriteString("\nThe DynApp agent wrote this note and replaces it on every install.\n")
+	return buffer.Bytes()
+}
+
+// skillPointer tells a coding agent where the workflow is and that changing
+// an app needs the network, which sandboxes often block.
+func skillPointer(base, skillPath, subject string) []byte {
+	host := strings.TrimPrefix(strings.TrimPrefix(base, "https://"), "http://")
+	var buffer bytes.Buffer
+	fmt.Fprintf(&buffer, "To change, fix or customize %s, follow the dynapp-developer skill. Read it\n", subject)
+	if skillPath != "" {
+		fmt.Fprintf(&buffer, "before changing anything: a copy is at %s\n(the latest is %s/skill/SKILL.md).\n", skillPath, base)
+	} else {
+		fmt.Fprintf(&buffer, "before changing anything: %s/skill/SKILL.md.\n", base)
+	}
 	buffer.WriteString("Every DynApp is open source: the skill explains when the change is a new\n")
-	buffer.WriteString("version of this app and when it is the user's own copy (a fork).\n\n")
-	buffer.WriteString("The DynApp agent wrote this note and replaces it on every install.\n")
+	buffer.WriteString("version of the app and when it is the user's own copy (a fork).\n\n")
+	fmt.Fprintf(&buffer, "Changing an app downloads its source from %s and publishes it there, so it\n", host)
+	fmt.Fprintf(&buffer, "needs network access to %s. If your sandbox blocks it, ask the user to allow it.\n", host)
 	return buffer.Bytes()
 }
 
 // appNotesFolderReadme explains a folder of notes to an agent that lists it.
-func appNotesFolderReadme(base string) []byte {
+func appNotesFolderReadme(base, skillPath string) []byte {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if base == "" {
 		base = defaultNoteDynerURL
 	}
-	return []byte(fmt.Sprintf(`# DynApps installed on this computer
-
-Each *%s file here describes one app installed from %s, named after the
-app. To change, fix or customize one of them, use the dynapp-developer skill.
-If it is not installed, read %s/skill/SKILL.md before changing anything.
-
-The DynApp agent maintains this folder.
-`, appNoteSuffix, base, base))
+	var buffer bytes.Buffer
+	buffer.WriteString("# DynApps installed on this computer\n\n")
+	fmt.Fprintf(&buffer, "Each *%s file here describes one app installed from %s, named after\nthe app.\n\n", appNoteSuffix, base)
+	buffer.Write(skillPointer(base, skillPath, "one of them"))
+	buffer.WriteString("\nThe DynApp agent maintains this folder.\n")
+	return buffer.Bytes()
 }
 
 func noteLine(value string) string {
@@ -123,7 +140,7 @@ func writeAppNote(dir string, note appNote) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := writeFileIfChanged(filepath.Join(dir, "AGENTS.md"), appNotesFolderReadme(note.DynerURL)); err != nil {
+	if err := writeFileIfChanged(filepath.Join(dir, "AGENTS.md"), appNotesFolderReadme(note.DynerURL, note.SkillPath)); err != nil {
 		return err
 	}
 	base := appNoteFileName(note.Name)
@@ -200,7 +217,10 @@ func (s *Server) noteBrowserInstall(auth socketAuthentication) {
 	if err != nil {
 		return
 	}
-	_ = writeAppNote(dir, appNote{StoreID: auth.storeID, Name: auth.appName, Origin: auth.origin, Kind: appNoteKindBrowser, DynerURL: base})
+	note := appNote{StoreID: auth.storeID, Name: auth.appName, Origin: auth.origin, Kind: appNoteKindBrowser, DynerURL: base}
+	s.prepareCodingAgents(context.Background(), true)
+	note.SkillPath = localSkillPath()
+	_ = writeAppNote(dir, note)
 }
 
 // backfillAppNotes writes notes for native apps installed before the agent
@@ -211,6 +231,7 @@ func (s *Server) backfillAppNotes() {
 	apps := append([]NativeApp(nil), s.Config.NativeApps...)
 	base := s.Config.dynerBaseOrigin()
 	s.mu.Unlock()
+	prepared := false
 	for _, app := range apps {
 		if !validStoreID(app.StoreID) || app.Path == "" {
 			continue
@@ -218,7 +239,17 @@ func (s *Server) backfillAppNotes() {
 		if _, err := os.Stat(app.Path); err != nil {
 			continue
 		}
-		writeNativeAppNotes(app, appNote{StoreID: app.StoreID, Name: app.Name, Origin: app.Origin, Kind: appNoteKindNative, DynerURL: base})
+		if !prepared {
+			// Only machines with installed apps get the skill copy and the
+			// coding-agent lines.
+			s.prepareCodingAgents(context.Background(), true)
+			prepared = true
+		}
+		writeNativeAppNotes(app, appNote{StoreID: app.StoreID, Name: app.Name, Origin: app.Origin, Kind: appNoteKindNative, DynerURL: base, SkillPath: localSkillPath()})
+	}
+	// Browser installs left notes too; keep their skill copy current.
+	if !prepared {
+		s.prepareCodingAgents(context.Background(), false)
 	}
 }
 

@@ -113,7 +113,9 @@ func TestNoteBrowserInstallWritesOnlyVerifiedHostedInstalls(t *testing.T) {
 	if err != nil || !strings.HasPrefix(dir, home) {
 		t.Fatalf("appNotesDir() = %q, %v", dir, err)
 	}
-	server := &Server{}
+	resetLocalSkillRefresh(t)
+	dyner := skillServer(t, skillZip(t, map[string]string{"dynapp-developer/SKILL.md": "skill"}))
+	server := &Server{DynerHTTPClient: dyner.Client(), Config: Config{DynerBaseURL: dyner.URL}}
 	auth := socketAuthentication{storeID: "amit-bet/gridbook", appName: "Gridbook", origin: "https://amitbet-gridbook.dynapp.io", ok: true}
 
 	server.noteBrowserInstall(socketAuthentication{storeID: "amit-bet/dev", appName: "Dev", origin: "http://localhost:5173", development: true})
