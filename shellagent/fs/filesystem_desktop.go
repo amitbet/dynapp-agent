@@ -45,29 +45,42 @@ func openDesktopPath(path string) error {
 	}
 }
 
+// Finder deletes the whole list in one command, so a batch makes one
+// "move to Trash" sound instead of one per item.
 const macTrashScript = `on run argv
- set targetFile to POSIX file (item 1 of argv) as alias
- tell application "Finder" to delete targetFile
+ set targetFiles to {}
+ repeat with targetPath in argv
+  set end of targetFiles to (POSIX file (contents of targetPath) as alias)
+ end repeat
+ tell application "Finder" to delete targetFiles
 end run`
 
 func trashPath(path string) error {
-	if _, err := os.Stat(path); err != nil {
-		return err
+	return trashPaths([]string{path})
+}
+
+func trashPaths(paths []string) error {
+	for _, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			return err
+		}
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		output, err := exec.Command("osascript", "-e", macTrashScript, "--", path).CombinedOutput()
+		args := append([]string{"-e", macTrashScript, "--"}, paths...)
+		output, err := exec.Command("osascript", args...).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("move to Trash: %w: %s", err, strings.TrimSpace(string(output)))
 		}
 		return nil
 	case "windows":
-		script := `Add-Type -AssemblyName Microsoft.VisualBasic; if ((Get-Item -LiteralPath $args[0]).PSIsContainer) {[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($args[0],'OnlyErrorDialogs','SendToRecycleBin')} else {[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($args[0],'OnlyErrorDialogs','SendToRecycleBin')}`
-		return exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script, path).Run()
+		script := `Add-Type -AssemblyName Microsoft.VisualBasic; foreach ($target in $args) { if ((Get-Item -LiteralPath $target).PSIsContainer) {[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($target,'OnlyErrorDialogs','SendToRecycleBin')} else {[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($target,'OnlyErrorDialogs','SendToRecycleBin')} }`
+		args := append([]string{"-NoProfile", "-NonInteractive", "-Command", script}, paths...)
+		return exec.Command("powershell.exe", args...).Run()
 	default:
-		for _, candidate := range [][]string{{"gio", "trash", path}, {"trash-put", path}} {
+		for _, candidate := range [][]string{{"gio", "trash"}, {"trash-put"}} {
 			if _, err := exec.LookPath(candidate[0]); err == nil {
-				return exec.Command(candidate[0], candidate[1:]...).Run()
+				return exec.Command(candidate[0], append(candidate[1:], paths...)...).Run()
 			}
 		}
 		if runtime.GOOS == "android" {

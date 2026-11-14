@@ -159,6 +159,24 @@ func Call(method string, args []any, body []byte) (any, error) {
 		}
 		return map[string]any{"path": value, "offset": offset, "bytesWritten": len(raw)}, nil
 	case "trash":
+		// args[0] is one path or a list of paths. A list is trashed in one
+		// operation so macOS Finder plays a single sound for the batch.
+		if len(args) > 0 {
+			if list, ok := args[0].([]any); ok {
+				paths := make([]string, 0, len(list))
+				for _, item := range list {
+					value, ok := item.(string)
+					if !ok || strings.TrimSpace(value) == "" || strings.Contains(value, "\x00") {
+						return nil, errors.New("Target path is invalid")
+					}
+					paths = append(paths, value)
+				}
+				if len(paths) == 0 {
+					return nil, errors.New("Target path is invalid")
+				}
+				return nil, trashPaths(paths)
+			}
+		}
 		value, err := pathArg(0, "Target path")
 		if err != nil {
 			return nil, err
