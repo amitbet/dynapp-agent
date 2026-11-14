@@ -24,7 +24,21 @@ var (
 	procReleaseCapture   = user32.NewProc("ReleaseCapture")
 	procIsZoomed         = user32.NewProc("IsZoomed")
 	procGetDpiForWindow  = user32.NewProc("GetDpiForWindow")
+	procBeginPaint       = user32.NewProc("BeginPaint")
+	procEndPaint         = user32.NewProc("EndPaint")
+	procFillRect         = user32.NewProc("FillRect")
+	procInvalidateRect   = user32.NewProc("InvalidateRect")
+	procGetStockObject   = gdi.NewProc("GetStockObject")
 )
+
+type titlebarPaint struct {
+	HDC       uintptr
+	Erase     int32
+	Paint     titlebarRect
+	Restore   int32
+	IncUpdate int32
+	Reserved  [32]byte
+}
 
 type titlebarRect struct{ Left, Top, Right, Bottom int32 }
 
@@ -49,9 +63,32 @@ func (h *host) setTitlebar(enabled bool) {
 	procDwmExtendFrame.Call(h.hwnd, uintptr(unsafe.Pointer(&margins)))
 	procSetWindowPos.Call(h.hwnd, 0, 0, 0, 0, 0, 0x0037) // FRAMECHANGED | NOMOVE | NOSIZE | NOZORDER | NOACTIVATE
 	h.clipTitlebarButtons()
+	procInvalidateRect.Call(h.hwnd, 0, 1)
+}
+
+// captionButtonsRect is the client-area rectangle the DWM caption buttons
+// occupy once the frame extends into the client area.
+func (h *host) captionButtonsRect() titlebarRect {
+	var bounds titlebarRect
+	procGetClientRect.Call(h.hwnd, uintptr(unsafe.Pointer(&bounds)))
+	dpi := h.titlebarScale()
+	return titlebarRect{Left: max(0, bounds.Right-148*dpi/96), Top: 0, Right: bounds.Right, Bottom: 36 * dpi / 96}
+}
+
+// paintCaptionButtons fills the caption-button rectangle with black. DWM only
+// shows its buttons over extended-frame pixels the window leaves black
+// (transparent); the window class has no background brush, so without this
+// the area keeps stale opaque pixels and the buttons work but are invisible.
+func (h *host) paintCaptionButtons(dc uintptr) {
+	rect := h.captionButtonsRect()
+	black, _, _ := procGetStockObject.Call(4) // BLACK_BRUSH
+	procFillRect.Call(dc, uintptr(unsafe.Pointer(&rect)), black)
 }
 
 func (h *host) clipTitlebarButtons() {
+	if h.titlebarEnabled {
+		procInvalidateRect.Call(h.hwnd, 0, 1)
+	}
 	var bounds titlebarRect
 	procGetClientRect.Call(h.hwnd, uintptr(unsafe.Pointer(&bounds)))
 	// WebView2's controller owns a child window. Clip every immediate child,
@@ -60,8 +97,8 @@ func (h *host) clipTitlebarButtons() {
 	for child != 0 {
 		if h.titlebarEnabled {
 			region, _, _ := procCreateRectRgn.Call(0, 0, uintptr(bounds.Right), uintptr(bounds.Bottom))
-			dpi := h.titlebarScale()
-			cutout, _, _ := procCreateRectRgn.Call(uintptr(max(0, bounds.Right-148*dpi/96)), 0, uintptr(bounds.Right), uintptr(36*dpi/96))
+			buttons := h.captionButtonsRect()
+			cutout, _, _ := procCreateRectRgn.Call(uintptr(buttons.Left), uintptr(buttons.Top), uintptr(buttons.Right), uintptr(buttons.Bottom))
 			procCombineRgn.Call(region, region, cutout, 4) // RGN_DIFF
 			procDeleteObject.Call(cutout)
 			if ok, _, _ := procSetWindowRgn.Call(child, region, 1); ok == 0 {
@@ -79,6 +116,17 @@ func (h *host) titlebarMessage(hwnd, message, wparam, lparam uintptr) (uintptr, 
 		return 0, false
 	}
 	switch message {
+	case 0x0014: // WM_ERASEBKGND
+		h.paintCaptionButtons(wparam)
+		return 1, true
+	case 0x000F: // WM_PAINT
+		var paint titlebarPaint
+		dc, _, _ := procBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		if dc != 0 {
+			h.paintCaptionButtons(dc)
+			procEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		}
+		return 0, true
 	case 0x0083: // WM_NCCALCSIZE: keep resize borders; extend only the caption.
 		if wparam != 0 {
 			rect := (*titlebarRect)(unsafe.Pointer(lparam))
