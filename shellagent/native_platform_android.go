@@ -167,3 +167,8 @@ func nativeLaunch(app NativeApp, _ string) error {
 	})
 	return err
 }
+
+// appNotesDir: Android has no coding agents on the device to read notes.
+func appNotesDir() (string, error) { return "", errors.New("app notes are not written on Android") }
+
+func writeNativeAppNotes(NativeApp, appNote) {}

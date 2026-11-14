@@ -82,6 +82,12 @@ func TestNativeInstallKeepsAnUnchangedBundle(t *testing.T) {
 	if info, err := os.Stat(first.Executable); err != nil || info.Mode()&0o111 == 0 {
 		t.Fatalf("host executable = %v %v", info, err)
 	}
+	root := filepath.Join(home, "Applications", "DynApp")
+	for _, note := range []string{filepath.Join(first.Path, "Contents", "Resources", "AGENTS.md"), filepath.Join(root, "Notes.dynapp.md")} {
+		if data, err := os.ReadFile(note); err != nil || noteStoreID(data) != "amit-bet/notes" {
+			t.Fatalf("coding-agent note %s = %q %v", note, data, err)
+		}
+	}
 	again, err := nativeInstall(spec)
 	if err != nil || again.CDHash != first.CDHash {
 		t.Fatalf("unchanged reinstall changed the signature: %#v %v", again, err)
@@ -99,6 +105,9 @@ func TestNativeInstallKeepsAnUnchangedBundle(t *testing.T) {
 	if _, err := os.Stat(first.Path); !os.IsNotExist(err) {
 		t.Fatalf("the old bundle was not removed after a rename: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "Notes.dynapp.md")); !os.IsNotExist(err) {
+		t.Fatalf("the old note was not removed after a rename: %v", err)
+	}
 	other := spec
 	other.StoreID = "someone/notes"
 	clash, err := nativeInstall(other)
@@ -107,6 +116,12 @@ func TestNativeInstallKeepsAnUnchangedBundle(t *testing.T) {
 	}
 	if err := nativeUninstall(NativeApp{StoreID: spec.StoreID, Path: renamed.Path}); err != nil {
 		t.Fatalf("uninstall: %v", err)
+	}
+	if paths := appNotePaths(root, spec.StoreID); len(paths) != 0 {
+		t.Fatalf("uninstall left notes: %v", paths)
+	}
+	if paths := appNotePaths(root, "someone/notes"); len(paths) != 1 {
+		t.Fatalf("uninstall removed another app's note: %v", paths)
 	}
 	if err := nativeUninstall(NativeApp{StoreID: spec.StoreID, Path: clash.Path}); err == nil {
 		t.Fatal("uninstall removed another app's bundle")
@@ -127,5 +142,29 @@ func TestNativeDocumentTypesUseManifestDeclarations(t *testing.T) {
 	}
 	if strings.Contains(string(nativeInfoPlist(nativeInstallSpec{}, "test.app")), "CFBundleDocumentTypes") {
 		t.Fatal("app without file declarations claims documents")
+	}
+}
+
+func TestBackfillWritesNotesBesideExistingBundlesWithoutTouchingThem(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "Applications", "DynApp")
+	bundle := filepath.Join(root, "Form & Fuel.app")
+	if err := os.MkdirAll(filepath.Join(bundle, "Contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Config: Config{NativeApps: []NativeApp{
+		{StoreID: "amit-bet/formfuel", Name: "Form & Fuel", Origin: "https://amitbet-formfuel.dynapp.io", Path: bundle},
+		{StoreID: "amit-bet/gone", Name: "Gone", Origin: "https://amitbet-gone.dynapp.io", Path: filepath.Join(root, "Gone.app")},
+	}}}
+	server.backfillAppNotes()
+	if data, err := os.ReadFile(filepath.Join(root, "Form & Fuel.dynapp.md")); err != nil || noteStoreID(data) != "amit-bet/formfuel" {
+		t.Fatalf("backfilled note = %q %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Gone.dynapp.md")); !os.IsNotExist(err) {
+		t.Fatal("a note was written for a missing bundle")
+	}
+	if _, err := os.Stat(filepath.Join(bundle, "Contents", "Resources", "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatal("backfill modified a signed bundle")
 	}
 }

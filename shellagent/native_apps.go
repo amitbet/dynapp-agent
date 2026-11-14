@@ -125,6 +125,8 @@ type nativeInstallSpec struct {
 	Icon          []byte
 	AgentEndpoint string
 	StateDir      string
+	// DynerURL is the Dyner base the coding-agent note points to.
+	DynerURL string
 }
 
 type nativeInstallResult struct {
@@ -450,6 +452,7 @@ func (s *Server) installNativeApp(ctx context.Context, args map[string]any) (any
 	result, err := nativeInstall(nativeInstallSpec{
 		StoreID: storeID, Name: manifest.app.Name, Origin: manifest.origin, URL: startURL, Icon: icon,
 		AgentEndpoint: s.nativeEndpoint(), StateDir: stateDir, DocumentTypes: manifest.documentTypes,
+		DynerURL: config.dynerBaseOrigin(),
 	})
 	if err != nil {
 		return nil, err
@@ -690,4 +693,8 @@ func manifestDocumentTypes(detail map[string]any) []nativeDocumentType {
 	var types []nativeDocumentType
 	_ = json.Unmarshal(data, &types)
 	return types
+}
+
+func (spec nativeInstallSpec) note() appNote {
+	return appNote{StoreID: spec.StoreID, Name: spec.Name, Origin: spec.Origin, Kind: appNoteKindNative, DynerURL: spec.DynerURL}
 }

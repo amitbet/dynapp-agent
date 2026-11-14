@@ -178,6 +178,8 @@ type socketAuthentication struct {
 	appName     string
 	development bool
 	ok          bool
+	// installedPWA: the browser reported that the app runs installed.
+	installedPWA bool
 }
 
 func (auth socketAuthentication) allows(required string) bool {
@@ -266,6 +268,10 @@ func (s *Server) serveLocalWebSocket(w http.ResponseWriter, r *http.Request, tes
 		_ = connection.Close(closeIdentityRejected, "Browser identity rejected")
 		return
 	}
+	if auth.installedPWA && !test {
+		// Only loopback connections come from an install on this computer.
+		go s.noteBrowserInstall(auth)
+	}
 	s.serveAuthenticatedSocket(ctx, connection, func(message) socketAuthentication { return auth }, carrierCapabilities{}, nil)
 }
 
@@ -285,6 +291,7 @@ func (s *Server) ListenAndServe() error {
 	config := s.Config
 	s.meshActive = true
 	s.mu.Unlock()
+	go s.backfillAppNotes()
 	// The loopback-only WebTransport listener is a browser carrier, which a
 	// shared loopback cannot protect; an explicit LAN listener still runs.
 	if config.LANEnabled && config.ListenerMode != ListenerOff && !(loopbackSharedAcrossApps && config.ListenerMode == ListenerLocal) {

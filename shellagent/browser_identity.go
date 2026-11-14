@@ -58,7 +58,14 @@ type directLocalProof struct {
 // loopback WebSocket and WebTransport carriers. Unknown app identities wait
 // for the Dyner client's decision; an unknown key from the authority origin
 // is recorded as the authority itself.
-func (s *Server) authenticateDirectLocal(ctx context.Context, socket protocolSocket, requestOrigin string) (socketAuthentication, directLocalOutcome) {
+func (s *Server) authenticateDirectLocal(ctx context.Context, socket protocolSocket, requestOrigin string) (auth socketAuthentication, outcome directLocalOutcome) {
+	var init directLocalInit
+	defer func() {
+		if outcome == directLocalOK {
+			client := normalizeBrowserClient(init.Client)
+			auth.installedPWA = client.Mode == browserClientModePWA && !client.Mobile
+		}
+	}()
 	// QUIC does not deliver a client-created stream to AcceptStream until the
 	// client writes. The harmless init record breaks that transport-level
 	// deadlock; it carries no credential or authority.
@@ -66,7 +73,6 @@ func (s *Server) authenticateDirectLocal(ctx context.Context, socket protocolSoc
 	if err != nil {
 		return socketAuthentication{}, directLocalAborted
 	}
-	var init directLocalInit
 	if json.Unmarshal(initial, &init) != nil || (init.Version != 1 && init.Version != 2) {
 		return socketAuthentication{}, directLocalRejected
 	}

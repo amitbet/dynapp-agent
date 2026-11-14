@@ -313,6 +313,9 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 	if err := os.WriteFile(icon, pngToICO(spec.Icon), 0o644); err != nil {
 		return nativeInstallResult{}, err
 	}
+	if err := writeFileIfChanged(filepath.Join(dir, "AGENTS.md"), appAgentNote(spec.note())); err != nil {
+		return nativeInstallResult{}, err
+	}
 	shortcut := filepath.Join(roaming, "Microsoft", "Windows", "Start Menu", "Programs", "DynApp", nativeShortcutName(spec.Name)+".lnk")
 	app := NativeApp{StoreID: spec.StoreID, Name: spec.Name, Origin: spec.Origin, URL: spec.URL}
 	powershell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
@@ -321,7 +324,7 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 		"DYNAPP_LNK_PATH="+shortcut, "DYNAPP_LNK_TARGET="+executable,
 		"DYNAPP_LNK_ARGS="+joinWindowsArgs(nativeHostArgs(app, spec.AgentEndpoint, icon)),
 		"DYNAPP_LNK_ICON="+icon, "DYNAPP_LNK_APPID="+nativeAppUserModelID(spec.StoreID),
-		"DYNAPP_LNK_DESCRIPTION="+spec.Name+" (DynApp)",
+		"DYNAPP_LNK_DESCRIPTION="+nativeShortcutDescription(spec),
 		"DYNAPP_NATIVE_ID="+nativeWindowsRegistrationID(spec.StoreID),
 		"DYNAPP_NATIVE_NAME="+spec.Name,
 		"DYNAPP_NATIVE_EXTENSIONS="+nativeWindowsExtensionsJSON(spec.DocumentTypes),
@@ -335,6 +338,9 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 	if previous, ok := previousNativeShortcut(programs, spec.StoreID, shortcut); ok {
 		_ = os.Remove(previous)
 	}
+	// The app folder is named by store id; this note is named after the app,
+	// so a search for the app's name finds it.
+	_ = writeAppNote(filepath.Join(local, "DynApp", "Apps"), spec.note())
 	return nativeInstallResult{Path: shortcut, Executable: executable, BundleID: nativeAppUserModelID(spec.StoreID)}, nil
 }
 
@@ -390,6 +396,8 @@ func nativeUninstall(app NativeApp) error {
 		return err
 	}
 	_ = os.Remove(filepath.Join(nativeAppDir(local, app.StoreID), "icon.ico"))
+	_ = os.Remove(filepath.Join(nativeAppDir(local, app.StoreID), "AGENTS.md"))
+	removeAppNote(filepath.Join(local, "DynApp", "Apps"), app.StoreID)
 	return nil
 }
 
@@ -431,4 +439,38 @@ func nativeWindowsExtensionsJSON(types []nativeDocumentType) string {
 	}
 	data, _ := json.Marshal(extensions)
 	return string(data)
+}
+
+// appNotesDir holds one coding-agent note per installed DynApp, beside the
+// per-app folders, in the signed-in user's LocalAppData.
+func appNotesDir() (string, error) {
+	user, local, _, err := nativeUserDirs()
+	if err != nil {
+		return "", err
+	}
+	user.Close()
+	return filepath.Join(local, "DynApp", "Apps"), nil
+}
+
+// nativeShortcutDescription is the Start menu tooltip. The store id tells a
+// coding agent that reads the shortcut which DynApp this is.
+func nativeShortcutDescription(spec nativeInstallSpec) string {
+	return spec.Name + " (DynApp " + spec.StoreID + ")"
+}
+
+func writeNativeAppNotes(app NativeApp, note appNote) {
+	user, local, _, err := nativeUserDirs()
+	if err != nil {
+		return
+	}
+	user.Close()
+	if dir := nativeAppDir(local, app.StoreID); dirExists(dir) {
+		_ = writeFileIfChanged(filepath.Join(dir, "AGENTS.md"), appAgentNote(note))
+	}
+	_ = writeAppNote(filepath.Join(local, "DynApp", "Apps"), note)
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }

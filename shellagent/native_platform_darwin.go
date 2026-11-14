@@ -374,6 +374,7 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 		"Contents/PkgInfo":                       []byte("APPL????"),
 		"Contents/MacOS/" + nativeHostExecutable: nativeHostBinary,
 		"Contents/Resources/AppIcon.icns":        icns,
+		"Contents/Resources/AGENTS.md":           appAgentNote(spec.note()),
 	}
 	if !bundleMatches(target, files) {
 		staging := filepath.Join(root, fmt.Sprintf(".%s.partial-%d", filepath.Base(target), os.Getpid()))
@@ -417,6 +418,8 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 		}
 	}
 	lsregister("-f", target)
+	// A search for the app's name lands on the bundle and on this note.
+	_ = writeAppNote(root, spec.note())
 	cdhash, err := bundleCDHash(target)
 	if err != nil {
 		return nativeInstallResult{}, err
@@ -455,6 +458,7 @@ func nativeUninstall(app NativeApp) error {
 		return errors.New("the app bundle belongs to a different app")
 	}
 	lsregister("-u", path)
+	removeAppNote(root, app.StoreID)
 	return os.RemoveAll(path)
 }
 
@@ -467,4 +471,14 @@ func nativeLaunch(app NativeApp, _ string) error {
 		return fmt.Errorf("open %s: %w: %s", app.Name, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// appNotesDir holds one coding-agent note per installed DynApp, next to the
+// native bundles.
+func appNotesDir() (string, error) { return nativeInstallRoot() }
+
+func writeNativeAppNotes(_ NativeApp, note appNote) {
+	if root, err := nativeInstallRoot(); err == nil {
+		_ = writeAppNote(root, note)
+	}
 }
