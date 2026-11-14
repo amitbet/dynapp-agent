@@ -86,7 +86,7 @@ func TestNativeWindowsTitlebarSharedUIWebView2(t *testing.T) {
   } catch(error) {chrome.webview.postMessage(JSON.stringify({ok:false,error:String(error.stack||error)}));}
  })();`
 	// SetHtml runs the test after DOM ready so the assertions follow installation.
-	view.SetHtml("<!doctype html><html><head></head><body style='margin:0'><div id='app' style='height:100vh'><div id='toolbar' style='position:fixed;top:0'>Toolbar</div></div><script>window.addEventListener('load',()=>{" + strings.ReplaceAll(script, "</script>", "<\\/script>") + "});</script></body></html>")
+	view.SetHtml("<!doctype html><html><head></head><body style='margin:0'><div id='app' style='height:100vh'><div id='toolbar' style='position:fixed;top:0;left:0;right:0'>Toolbar</div></div><script>window.addEventListener('load',()=>{" + strings.ReplaceAll(script, "</script>", "<\\/script>") + "});</script></body></html>")
 	view.Run()
 	if !completed {
 		t.Fatalf("shared titlebar UI: %s", failure)
