@@ -288,6 +288,15 @@
       platform: config.platform,
       storeId: config.storeId,
       origin: config.origin,
+      // Advertised by the host binary, so an updated agent never enables
+      // overlay chrome in an older installed macOS bundle.
+      ...(window.__DYNAPP_NATIVE_TITLEBAR__ === true ? {
+        titlebar: Object.freeze({
+          setEnabled: (enabled) => post({ op: "titlebar", enabled: Boolean(enabled) }),
+          drag: () => post({ op: "titlebarDrag" }),
+          toggleMaximize: () => post({ op: "titlebarZoom" }),
+        }),
+      } : {}),
       // Only updated Windows hosts register the additional-objects receiver.
       ...(config.platform === "windows" && window.__DYNAPP_WINDOWS_FILE_DROP__ === true
         && typeof window.chrome?.webview?.postMessageWithAdditionalObjects === "function" ? {

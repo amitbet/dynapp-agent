@@ -53,7 +53,9 @@ jobs:
       - name: Real WebView2 file objects
         env:
           DYNAPP_TEST_WEBVIEW2: "1"
-        run: go test ./shellagent/winhost -run '^TestNativeWindowsDropWebView2$' -count=1 -timeout 90s
+        run: |
+          go test ./shellagent/winhost -run '^TestNativeWindowsDropWebView2$' -count=1 -timeout 90s
+          go test ./shellagent/winhost -run '^TestNativeWindowsTitlebarWebView2$' -count=1 -timeout 90s
       - name: Console trace script smoke test
         if: always()
         run: ./scripts/trace-windows-consoles.ps1 -DurationSeconds 1
@@ -74,6 +76,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Compile the macOS app host
+        run: bash shellagent/nativehost/darwin/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-macos-host
+          path: shellagent/nativehost/darwin/dynapp-app-host
       - name: macOS update and rollback
         run: go test . ./shellagent -run 'SelfUpdate|UnixSelfUpdate|UpdateHelper|ReplaceExecutable|ResolveInstallPath|CleanupStaleUpdate|ReleaseSigning|UnfinishedUpdate|CompletedUpdate|StagedUpdate|BeginUpdate' -count=1 -timeout 3m
       - name: macOS trash AppleScript

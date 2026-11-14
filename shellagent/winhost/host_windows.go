@@ -169,22 +169,23 @@ func (c *frameConn) writeJSON(value any) error {
 }
 
 type host struct {
-	options     Options
-	view        webview2.WebView
-	core        *edge.ICoreWebView2
-	hwnd        uintptr
-	startURL    string
-	origin      string
-	control     *frameConn
-	controlMu   sync.Mutex // serialize startup and on-demand reconnections
-	closed      bool
-	mu          sync.Mutex
-	sockets     map[string]*frameConn
-	prompts     map[string]bool
-	reviews     map[string]string
-	oldProc     uintptr
-	promptsMu   sync.Mutex
-	dropHandler *webMessageHandler
+	options         Options
+	view            webview2.WebView
+	core            *edge.ICoreWebView2
+	hwnd            uintptr
+	startURL        string
+	origin          string
+	control         *frameConn
+	controlMu       sync.Mutex // serialize startup and on-demand reconnections
+	closed          bool
+	mu              sync.Mutex
+	sockets         map[string]*frameConn
+	prompts         map[string]bool
+	reviews         map[string]string
+	oldProc         uintptr
+	promptsMu       sync.Mutex
+	dropHandler     *webMessageHandler
+	titlebarEnabled bool
 }
 
 // Run shows the app and returns when its window closes.
@@ -240,6 +241,7 @@ func Run(options Options) error {
 	}
 	h.addPermissionsMenu()
 	if bootstrap != "" {
+		h.view.Init(`Object.defineProperty(window, "__DYNAPP_NATIVE_TITLEBAR__", {value: true});`)
 		if err := h.installFileDropReceiver(); err != nil {
 			log.Printf("native file drops unavailable: %v", err)
 		} else {
@@ -542,6 +544,9 @@ func (h *host) addPermissionsMenu() {
 	_, _, _ = procAppendMenu.Call(menu, mfSeparator, 0, 0)
 	_, _, _ = procAppendMenu.Call(menu, mfString, permissionsMenuCommand, uintptr(unsafe.Pointer(utf16("Permissions…"))))
 	callback := windows.NewCallback(func(hwnd, message, wparam, lparam uintptr) uintptr {
+		if result, handled := h.titlebarMessage(hwnd, message, wparam, lparam); handled {
+			return result
+		}
 		if message == wmSysCommand && wparam&0xFFF0 == permissionsMenuCommand {
 			go h.requestReview("")
 			return 0
@@ -553,13 +558,14 @@ func (h *host) addPermissionsMenu() {
 }
 
 type bridgeMessage struct {
-	Op     string `json:"op"`
-	SID    string `json:"sid"`
-	RID    string `json:"rid"`
-	Text   string `json:"text"`
-	Binary string `json:"binary"`
-	Code   int    `json:"code"`
-	Reason string `json:"reason"`
+	Op      string `json:"op"`
+	SID     string `json:"sid"`
+	RID     string `json:"rid"`
+	Text    string `json:"text"`
+	Binary  string `json:"binary"`
+	Code    int    `json:"code"`
+	Reason  string `json:"reason"`
+	Enabled bool   `json:"enabled"`
 }
 
 func (h *host) handleBridge(raw string) {
@@ -568,6 +574,25 @@ func (h *host) handleBridge(raw string) {
 		return
 	}
 	switch message.Op {
+	case "titlebar":
+		h.setTitlebar(message.Enabled)
+	case "titlebarDrag":
+		if h.titlebarEnabled {
+			// A system move runs a modal loop; leave the WebView2 COM callback first.
+			h.view.Dispatch(func() {
+				procReleaseCapture.Call()
+				procSendMessage.Call(h.hwnd, wmSysCommand, 0xF012, 0) // SC_MOVE | HTCAPTION
+			})
+		}
+	case "titlebarZoom":
+		if h.titlebarEnabled {
+			zoomed, _, _ := procIsZoomed.Call(h.hwnd)
+			command := uintptr(0xF030) // SC_MAXIMIZE
+			if zoomed != 0 {
+				command = 0xF120
+			} // SC_RESTORE
+			procSendMessage.Call(h.hwnd, wmSysCommand, command, 0)
+		}
 	case "open":
 		h.mu.Lock()
 		_, exists := h.sockets[message.SID]

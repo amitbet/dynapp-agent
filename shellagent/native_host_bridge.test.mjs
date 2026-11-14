@@ -9,7 +9,7 @@ const origin = "https://amitbet-notes.dynapp.io";
 // Objects made inside the vm context have that context's prototypes.
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-function page({ platform = "macos", pageOrigin = origin, top = true, nativeFileDrop = false, additionalObjects = true } = {}) {
+function page({ platform = "macos", pageOrigin = origin, top = true, nativeFileDrop = false, nativeTitlebar = false, additionalObjects = true } = {}) {
   const posted = [];
   const events = [];
   const listeners = {};
@@ -49,6 +49,7 @@ function page({ platform = "macos", pageOrigin = origin, top = true, nativeFileD
     window.AudioContext = class AudioContext {};
     window.HTMLMediaElement = class HTMLMediaElement {};
   }
+  window.__DYNAPP_NATIVE_TITLEBAR__ = nativeTitlebar;
   window.window = window;
   window.top = top ? window : {};
   const config = JSON.stringify({ version: 1, platform, storeId: "amit-bet/notes", origin });
@@ -250,4 +251,18 @@ test("Windows file resolution requires both the updated host and WebView2 API", 
   assert.equal(page({ platform: "windows" }).host.resolveDroppedFiles, undefined);
   assert.equal(page({ platform: "windows", nativeFileDrop: true, additionalObjects: false }).host.resolveDroppedFiles, undefined);
   assert.equal(page().host.resolveDroppedFiles, undefined);
+});
+
+
+test("titlebar support is advertised by the installed host and sends narrow commands", () => {
+  assert.equal(page().host.titlebar, undefined);
+  for (const platform of ["windows", "macos"]) {
+    const { host, posted } = page({ platform, nativeTitlebar: true });
+    assert.equal(Object.isFrozen(host.titlebar), true);
+    host.titlebar.setEnabled(true);
+    host.titlebar.drag();
+    host.titlebar.toggleMaximize();
+    assert.deepEqual(posted.map(x => x.op), ["titlebar", "titlebarDrag", "titlebarZoom"]);
+    assert.equal(posted[0].enabled, true);
+  }
 });

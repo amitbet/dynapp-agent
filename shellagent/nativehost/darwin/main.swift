@@ -230,6 +230,21 @@ final class PageSocket {
 /// normal DOM drop.
 final class HostWebView: WKWebView {
   var onFileDrop: (([String], CGPoint) -> Void)?
+  var overlayTitlebar = false
+
+  override func mouseDown(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    let top = isFlipped ? point.y : bounds.height - point.y
+    // Controls occupy the trailing area. Dragging and double-clicking the
+    // leading title area use the original NSEvent, preserving native behavior.
+    if overlayTitlebar && !(window?.styleMask.contains(.fullScreen) ?? false)
+      && top < 36 && point.x > 84 && point.x < bounds.width - 360 {
+      if event.clickCount == 2 { window?.performZoom(nil) }
+      else { window?.performDrag(with: event) }
+      return
+    }
+    super.mouseDown(with: event)
+  }
 
   override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
     let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
@@ -417,6 +432,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     let content = WKUserContentController()
     if let bootstrap, !bootstrap.isEmpty {
       content.add(self, contentWorld: .page, name: "dynappNativeHost")
+      content.addUserScript(WKUserScript(source: "Object.defineProperty(window, '__DYNAPP_NATIVE_TITLEBAR__', {value: true});", injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
       content.addUserScript(WKUserScript(source: bootstrap, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
     }
     configuration.userContentController = content
@@ -446,6 +462,19 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
       let op = body["op"] as? String
     else { return }
     switch op {
+    case "titlebar":
+      let enabled = body["enabled"] as? Bool ?? false
+      webView.overlayTitlebar = enabled
+      if enabled { window.styleMask.insert(.fullSizeContentView) }
+      else { window.styleMask.remove(.fullSizeContentView) }
+      window.titlebarAppearsTransparent = enabled
+      window.titleVisibility = enabled ? .hidden : .visible
+    case "titlebarDrag":
+      if webView.overlayTitlebar, let event = NSApp.currentEvent, event.type == .leftMouseDown {
+        window.performDrag(with: event)
+      }
+    case "titlebarZoom":
+      if webView.overlayTitlebar { window.performZoom(nil) }
     case "open":
       guard let sid = body["sid"] as? String, sockets[sid] == nil else { return }
       guard let connection = AgentConnection(path: settings.socketPath) else {
