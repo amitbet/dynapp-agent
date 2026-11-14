@@ -17,7 +17,9 @@ import (
 )
 
 // Two things help a coding agent the user already has find and use the
-// app notes (agent_notes.go), without installing anything into it:
+// app notes (agent_notes.go), without installing anything into it (copies of
+// the skill that `dynapp skill install` put in ~/.claude, ~/.codex or ~/.agents
+// are refreshed along with the local one):
 //
 //   - A local copy of the dynapp-developer skill beside installed-apps.md. Coding
 //     agents often run in a sandbox without network access, so a note that
@@ -75,23 +77,47 @@ func (s *Server) prepareCodingAgents(ctx context.Context) {
 	if base == "" {
 		base = defaultNoteDynerURL
 	}
+	home, codexHome, homeErr := codingAgentHomes()
 	localSkillRefresh.Lock()
 	if localSkillRefresh.base != base || time.Since(localSkillRefresh.at) > localSkillRefreshEvery {
 		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := refreshLocalSkill(refreshCtx, s.dynerHTTPClient(), base, dir); err == nil {
+		var copies []string
+		if homeErr == nil {
+			copies = userSkillCopies(home, codexHome)
+		}
+		if err := refreshLocalSkill(refreshCtx, s.dynerHTTPClient(), base, dir, copies...); err == nil {
 			localSkillRefresh.at, localSkillRefresh.base = time.Now(), base
 		}
 		cancel()
 	}
 	localSkillRefresh.Unlock()
-	if home, codexHome, err := codingAgentHomes(); err == nil {
+	if homeErr == nil {
 		_ = writeCodingAgentPointers(home, codexHome, dir)
 	}
 }
 
+// userSkillCopies are the user-level skill folders coding agents read. `dynapp
+// skill install` puts the skill there; the agent keeps those copies current
+// with https://dynapp.io/skill but never installs one itself.
+func userSkillCopies(home, codexHome string) []string {
+	if home == "" {
+		return nil
+	}
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+	return []string{
+		filepath.Join(home, ".claude", "skills", localSkillName),
+		filepath.Join(codexHome, "skills", localSkillName),
+		filepath.Join(home, ".agents", "skills", localSkillName),
+	}
+}
+
 // refreshLocalSkill downloads <base>/skill/dynapp-developer.zip and replaces
-// the local copy only when the archive is complete and valid.
-func refreshLocalSkill(ctx context.Context, client *http.Client, base, agentsDir string) error {
+// the local copy only when the archive is complete and valid. Each of
+// installed that already holds the skill (a real folder with SKILL.md, not a
+// symlink to someone's checkout) is replaced with the same files.
+func refreshLocalSkill(ctx context.Context, client *http.Client, base, agentsDir string, installed ...string) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/skill/"+localSkillName+".zip", nil)
 	if err != nil {
 		return err
@@ -115,7 +141,24 @@ func refreshLocalSkill(ctx context.Context, client *http.Client, base, agentsDir
 	if err != nil {
 		return err
 	}
-	target := localSkillDir(agentsDir)
+	if err := writeSkillDir(localSkillDir(agentsDir), files); err != nil {
+		return err
+	}
+	for _, target := range installed {
+		info, err := os.Lstat(target)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err != nil {
+			continue
+		}
+		_ = writeSkillDir(target, files)
+	}
+	return nil
+}
+
+// writeSkillDir replaces target with files, staging them beside it first.
+func writeSkillDir(target string, files map[string][]byte) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}

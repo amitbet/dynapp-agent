@@ -99,6 +99,33 @@ func TestRefreshLocalSkillReplacesTheCopy(t *testing.T) {
 	}
 }
 
+func TestRefreshLocalSkillUpdatesInstalledCopiesOnly(t *testing.T) {
+	notes, home := t.TempDir(), t.TempDir()
+	server := skillServer(t, skillZip(t, map[string]string{"dynapp-developer/SKILL.md": "v2"}))
+	copies := userSkillCopies(home, "")
+	installed := copies[0]
+	_ = os.MkdirAll(installed, 0o755)
+	_ = os.WriteFile(filepath.Join(installed, "SKILL.md"), []byte("v1"), 0o644)
+	checkout := t.TempDir()
+	_ = os.WriteFile(filepath.Join(checkout, "SKILL.md"), []byte("dev"), 0o644)
+	_ = os.MkdirAll(filepath.Dir(copies[2]), 0o755)
+	if err := os.Symlink(checkout, copies[2]); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshLocalSkill(context.Background(), server.Client(), server.URL, notes, copies...); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(installed, "SKILL.md")); string(data) != "v2" {
+		t.Fatalf("installed copy = %q", data)
+	}
+	if _, err := os.Stat(copies[1]); !os.IsNotExist(err) {
+		t.Fatal("installed the skill where it was not installed")
+	}
+	if data, _ := os.ReadFile(filepath.Join(checkout, "SKILL.md")); string(data) != "dev" {
+		t.Fatal("overwrote a symlinked checkout")
+	}
+}
+
 func TestUpsertMarkedBlockKeepsTheRestOfTheFile(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "AGENTS.md")
 	if err := os.WriteFile(file, []byte("# Mine\nKeep this."), 0o600); err != nil {
