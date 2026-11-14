@@ -4,15 +4,9 @@ package shellagent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strings"
 )
 
 // findDynappCLIs is the installer's default (~/.local/bin/dynapp) and the
@@ -48,42 +42,7 @@ func uniqueCLIInstalls(candidates []string, command func(context.Context, string
 	return installs
 }
 
-// replaceDynappCLI downloads the release beside the old binary, checks its
-// SHA-256 sidecar and that it runs and reports version, then renames it over
-// the old one, so a failure leaves the old CLI in place.
-func replaceDynappCLI(ctx context.Context, base, version string, install cliInstall) error {
-	target := runtime.GOOS + "-" + runtime.GOARCH
-	url := strings.TrimRight(base, "/") + "/download/cli/" + target
-	binary, err := cliGet(ctx, url, maxCLIBinarySize)
-	if err != nil {
-		return err
-	}
-	sidecar, err := cliGet(ctx, url+".sha256", 1024)
-	if err != nil {
-		return err
-	}
-	fields := strings.Fields(string(sidecar))
-	sum := sha256.Sum256(binary)
-	if len(fields) == 0 || !strings.EqualFold(fields[0], hex.EncodeToString(sum[:])) {
-		return errors.New("downloaded binary does not match its .sha256")
-	}
-	staged, err := os.CreateTemp(filepath.Dir(install.Path), ".dynapp-update-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(staged.Name())
-	if _, err := staged.Write(binary); err != nil {
-		staged.Close()
-		return err
-	}
-	if err := staged.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(staged.Name(), 0o755); err != nil {
-		return err
-	}
-	if got := installedCLIVersion(ctx, install, staged.Name()); got != version {
-		return fmt.Errorf("downloaded binary reports version %q, want %s", got, version)
-	}
-	return os.Rename(staged.Name(), install.Path)
+// installCLIBinary renames the checked download over the old CLI.
+func installCLIBinary(staged, target string) error {
+	return os.Rename(staged, target)
 }

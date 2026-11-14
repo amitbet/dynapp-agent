@@ -4,7 +4,6 @@ package shellagent
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,9 +12,10 @@ import (
 	"github.com/amitbet/dynapp-agent/shellagent/desktop"
 )
 
-// The Windows agent usually runs as LocalSystem, so the CLI is found and
-// replaced as the signed-in user: Dyner's install.ps1 runs with that user's
-// token, keeps the user as the file's owner and checks the SHA-256 itself.
+// The Windows agent usually runs as LocalSystem, so the CLI is found and its
+// version read as the signed-in user. The download itself is written by the
+// agent (cli_update_replace.go); it inherits the install folder's ACL, which
+// gives that user full control.
 
 func findDynappCLIs() ([]cliInstall, func()) {
 	user, err := desktop.CurrentUser()
@@ -50,18 +50,20 @@ func findDynappCLIs() ([]cliInstall, func()) {
 	return installs, func() { user.Close() }
 }
 
-func replaceDynappCLI(ctx context.Context, base, version string, install cliInstall) error {
-	script := fmt.Sprintf("$ErrorActionPreference='Stop'; irm '%s/install.ps1' | iex", strings.TrimRight(base, "/"))
-	command := install.command(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
-	if command.Env == nil {
-		command.Env = os.Environ()
+// installCLIBinary puts the checked download in place of the old CLI. A
+// running dynapp.exe cannot be replaced but can be renamed, so the old binary
+// moves aside first and comes back if the new one cannot take its place. A
+// leftover aside copy is removed on the next update.
+func installCLIBinary(staged, target string) error {
+	aside := target + ".old"
+	_ = os.Remove(aside)
+	if err := os.Rename(target, aside); err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	command.Env = append(command.Env, "DYNAPP_INSTALL_DIR="+filepath.Dir(install.Path), "DYNAPP_DOWNLOAD_BASE="+strings.TrimRight(base, "/"))
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("install.ps1: %w: %s", err, strings.TrimSpace(string(output)))
+	if err := os.Rename(staged, target); err != nil {
+		_ = os.Rename(aside, target)
+		return err
 	}
-	if got := installedCLIVersion(ctx, install, install.Path); got != version {
-		return fmt.Errorf("after install.ps1 the CLI reports %q, want %s", got, version)
-	}
+	_ = os.Remove(aside)
 	return nil
 }
