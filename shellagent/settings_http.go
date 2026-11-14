@@ -35,6 +35,7 @@ func (s *Server) registerSettingsHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/settings", s.handleSettingsIndex)
 	mux.HandleFunc("/ui/", s.handleSettingsAsset)
 	mux.HandleFunc("/api/settings/status", s.handleSettingsStatus)
+	mux.HandleFunc("/api/settings/update", s.handleSettingsUpdate)
 	mux.HandleFunc("/api/settings/login/start", s.handleSettingsLoginStart)
 	mux.HandleFunc("/api/settings/login/callback", s.handleSettingsLoginCallback)
 	mux.HandleFunc("/api/settings/remote-environments", s.handleSettingsRemoteList)

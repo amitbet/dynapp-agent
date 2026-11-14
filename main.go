@@ -156,9 +156,17 @@ func main() {
 	updateParent := flag.Int("update-parent", 0, "old agent PID for the self-update helper")
 	printVersion := flag.Bool("version", false, "print version and exit")
 	background := flag.Bool("background", false, "run without a console window (per-user agent started at sign-in)")
+	updateNow := flag.Bool("update", false, "ask the running agent to update to the latest release now, and wait for it")
 	flag.Parse()
 	if *printVersion {
 		fmt.Println(shellagent.AgentVersion)
+		return
+	}
+	if *updateNow || (len(flag.Args()) == 1 && flag.Arg(0) == "update") {
+		if err := runUpdateNow(*address); err != nil {
+			fmt.Fprintln(os.Stderr, "dynapp-shell-agent:", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if len(flag.Args()) >= 1 && flag.Arg(0) == "app" {

@@ -416,6 +416,20 @@ Release builds poll this GitHub repository at startup and once per hour. They
 select the binary for the current OS and CPU, download it into the agent state
 directory, and verify the release's SHA-256 sidecar before using it.
 
+To update now instead of waiting for the hourly check, run:
+
+```sh
+dynapp-shell-agent --update      # or: dynapp-shell-agent update
+```
+
+It asks the agent running on `--address` (default `127.0.0.1:9011`) to check
+GitHub, prints whether it is up to date, and otherwise waits until the new
+version answers on `/healthz`. It works the same for service, per-user, and
+LaunchAgent installs, and skips the backoff after an unfinished attempt. The
+request is `POST /api/settings/update` with a JSON body, under the same
+loopback, Origin and CSRF rules as the other settings endpoints. Agents older
+than 0.1.72 do not have it; restart those and they update at startup.
+
 The macOS release binaries are signed with the persistent `DynApp Local
 Signing` identity and carry the stable identifier
 `com.amitbet.dynapp.shell-agent`. The updater verifies that signature before it

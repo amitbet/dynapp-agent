@@ -83,6 +83,8 @@ type Server struct {
 	iceGeneration      uint64
 	activeICESessions  map[string]uint64
 	selfUpdateCancel   context.CancelFunc
+	selfUpdateConfig   SelfUpdateConfig // resolved by startSelfUpdater
+	updateNowRunning   atomic.Bool
 	cliUpdateCancel    context.CancelFunc
 	lanClose           func() error
 	bridgeCounter      atomic.Uint64
@@ -210,7 +212,7 @@ func (s *Server) Handler() http.Handler {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		writeJSON(w, map[string]any{"ok": true, "protocol": ProtocolVersion})
+		writeJSON(w, map[string]any{"ok": true, "protocol": ProtocolVersion, "version": AgentVersion})
 	})
 	mux.HandleFunc("/.well-known/dynapp-direct-local", s.handleDirectLocalInfo)
 	mux.HandleFunc("/external-open", s.handleExternalOpenHTTP)

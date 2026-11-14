@@ -156,6 +156,7 @@ func (s *Server) startSelfUpdater() {
 	log.Printf("self-update enabled: current=%s repository=%s interval=%s; checking now", config.Version, config.Repository, config.Interval)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.selfUpdateCancel = cancel
+	s.selfUpdateConfig = config
 	s.mu.Unlock()
 	go s.runSelfUpdater(ctx, config)
 }
