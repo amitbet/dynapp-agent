@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/amitbet/dynapp-agent/shellagent/fs"
@@ -82,6 +83,7 @@ type Server struct {
 	iceGeneration      uint64
 	activeICESessions  map[string]uint64
 	selfUpdateCancel   context.CancelFunc
+	cliUpdateCancel    context.CancelFunc
 	lanClose           func() error
 	bridgeCounter      atomic.Uint64
 	activeBridges      atomic.Int64
@@ -290,8 +292,15 @@ func (s *Server) ListenAndServe() error {
 	httpServer := s.http
 	config := s.Config
 	s.meshActive = true
+	var cliUpdateCtx context.Context
+	if !testing.Testing() {
+		cliUpdateCtx, s.cliUpdateCancel = context.WithCancel(context.Background())
+	}
 	s.mu.Unlock()
 	go s.refreshInstalledApps(context.Background())
+	if cliUpdateCtx != nil {
+		s.startCLIUpdater(cliUpdateCtx)
+	}
 	// The loopback-only WebTransport listener is a browser carrier, which a
 	// shared loopback cannot protect; an explicit LAN listener still runs.
 	if config.LANEnabled && config.ListenerMode != ListenerOff && !(loopbackSharedAcrossApps && config.ListenerMode == ListenerLocal) {
@@ -486,6 +495,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	iceCancel := s.iceCancel
 	identitySyncCancel := s.identitySyncCancel
 	selfUpdateCancel := s.selfUpdateCancel
+	cliUpdateCancel := s.cliUpdateCancel
 	chromiumRepairCancel := s.chromiumRepairCancel
 	lanClose := s.lanClose
 	s.mu.Unlock()
@@ -500,6 +510,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if selfUpdateCancel != nil {
 		selfUpdateCancel()
+	}
+	if cliUpdateCancel != nil {
+		cliUpdateCancel()
 	}
 	if chromiumRepairCancel != nil {
 		chromiumRepairCancel()
