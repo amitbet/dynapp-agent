@@ -27,7 +27,9 @@ func findDynappCLIs() ([]cliInstall, func()) {
 	}
 	var candidates []string
 	if local := user.Getenv("LOCALAPPDATA"); local != "" {
-		candidates = append(candidates, filepath.Join(local, "Programs", "dynapp", "dynapp.exe"))
+		candidates = append(candidates,
+			filepath.Join(local, "Programs", "dynapp-cli", "dynapp.exe"),
+			filepath.Join(local, "Programs", "dynapp", "dynapp.exe"))
 	}
 	if found, err := user.LookPath("dynapp"); err == nil && strings.EqualFold(filepath.Ext(found), ".exe") {
 		candidates = append(candidates, found)
@@ -39,7 +41,7 @@ func findDynappCLIs() ([]cliInstall, func()) {
 		if seen[key] {
 			continue
 		}
-		if info, err := os.Stat(candidate); err != nil || !info.Mode().IsRegular() {
+		if info, err := os.Stat(candidate); err != nil || !info.Mode().IsRegular() || isElectronAppDir(filepath.Dir(candidate)) {
 			continue
 		}
 		seen[key] = true

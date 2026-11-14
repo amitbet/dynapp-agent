@@ -6,7 +6,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -152,4 +154,16 @@ func cliGet(ctx context.Context, url string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("GET %s: response is larger than %d bytes", url, limit)
 	}
 	return body, nil
+}
+
+// isElectronAppDir reports the folder of the Electron DynApp.exe, which on a
+// case-insensitive file system answers to dynapp.exe. Running it with
+// "version" would start that app, so it is never treated as the CLI.
+func isElectronAppDir(dir string) bool {
+	for _, marker := range []string{filepath.Join("resources", "app.asar"), "resources.pak", "LICENSES.chromium.html"} {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+			return true
+		}
+	}
+	return false
 }

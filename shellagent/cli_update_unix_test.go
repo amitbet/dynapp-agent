@@ -100,3 +100,14 @@ func TestCLIUpdateLeavesDevelopmentBuildsAlone(t *testing.T) {
 		t.Fatalf("a dev build must not be replaced: %+v", updates)
 	}
 }
+
+func TestElectronAppFolderIsNotTheCLI(t *testing.T) {
+	dir := t.TempDir()
+	if isElectronAppDir(dir) {
+		t.Fatal("an empty folder is not an Electron app")
+	}
+	_ = os.WriteFile(filepath.Join(dir, "LICENSES.chromium.html"), nil, 0o644)
+	if !isElectronAppDir(dir) {
+		t.Fatal("an Electron distribution must be recognized")
+	}
+}
