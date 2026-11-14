@@ -12,7 +12,7 @@ contract is `docs/native-host.md` in the dynapp repository.
 ## 1. Unit tests
 
 ```powershell
-go test ./shellagent/ -run 'Native|PNGToICO|WindowsApp|EncodedPowerShell|DamagedNative'
+go test ./shellagent/ -run 'Native|PNGToICO|WindowsApp|DamagedNative'
 go vet ./shellagent/winhost/
 ```
 
@@ -69,8 +69,8 @@ Open `https://dynapp.io` in Edge or Chrome, pick an app that uses the agent
 
 The riskiest code to watch: `documentSource` (calls `ICoreWebView2::get_Source`
 through vtable slot 4), the reflection in `chromiumOf`/`unexportedField` into
-`go-webview2`, the system-menu window procedure, and the PowerShell C#
-shortcut writer. If bridge messages are ignored, log `documentSource` first.
+`go-webview2`, the system-menu window procedure, and the COM shortcut writer
+(`windowsShortcut.create`, vtable calls). If bridge messages are ignored, log `documentSource` first.
 
 ## 6. Permission prompts
 
