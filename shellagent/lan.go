@@ -184,6 +184,11 @@ func (s *Server) serveLANSession(session *webtransport.Session, config Config, r
 		_ = main.Close(closeIdentityRejected, "Browser identity rejected")
 		return
 	}
+	if directAuth.installedPWA && loopbackPeer(session.RemoteAddr()) {
+		// Chrome prefers loopback WebTransport over the WebSocket; only a
+		// loopback peer is an install on this computer.
+		go s.noteBrowserInstall(directAuth)
+	}
 	channels := make(chan protocolSocket, 8)
 	go func() {
 		defer close(channels)

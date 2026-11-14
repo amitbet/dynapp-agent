@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -219,4 +220,17 @@ func (s *Server) backfillAppNotes() {
 		}
 		writeNativeAppNotes(app, appNote{StoreID: app.StoreID, Name: app.Name, Origin: app.Origin, Kind: appNoteKindNative, DynerURL: base})
 	}
+}
+
+// loopbackPeer reports whether a carrier's remote address is this computer.
+func loopbackPeer(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }

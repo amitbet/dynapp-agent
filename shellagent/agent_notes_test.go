@@ -2,6 +2,7 @@ package shellagent
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -203,5 +204,21 @@ func TestInstalledPWAHandshakeWritesBrowserNote(t *testing.T) {
 			t.Fatalf("no note at %s: %v", note, err)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestLoopbackPeerAcceptsOnlyThisComputer(t *testing.T) {
+	cases := map[string]bool{"127.0.0.1:5000": true, "[::1]:5000": true, "192.168.1.20:5000": false, "100.64.0.1:9011": false, "[fe80::1]:5000": false}
+	for address, want := range cases {
+		addr, err := net.ResolveUDPAddr("udp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := loopbackPeer(addr); got != want {
+			t.Errorf("loopbackPeer(%s) = %v, want %v", address, got, want)
+		}
+	}
+	if loopbackPeer(nil) {
+		t.Error("nil address treated as loopback")
 	}
 }
