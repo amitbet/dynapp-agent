@@ -487,7 +487,7 @@ func SaveConfig(stateDir string, config Config) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return replaceConfigFile(temporaryPath, path)
 }
 
 // Redacted returns account diagnostics without ever displaying a credential.
