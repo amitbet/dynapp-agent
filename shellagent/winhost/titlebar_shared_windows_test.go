@@ -61,7 +61,7 @@ func TestNativeWindowsTitlebarSharedUIWebView2(t *testing.T) {
 	timer := time.AfterFunc(20*time.Second, func() { view.Dispatch(func() { failure = "shared UI timed out"; view.Terminate() }) })
 	defer timer.Stop()
 	source := strings.ReplaceAll(string(titlebar), "export function ", "function ")
-	script := string(badge) + "\n" + source + `
+	scenario := `
  (async () => {
   try {
    const check=(value,message)=>{if(!value)throw new Error(message)};
@@ -85,6 +85,16 @@ func TestNativeWindowsTitlebarSharedUIWebView2(t *testing.T) {
    chrome.webview.postMessage(JSON.stringify({ok:true}));
   } catch(error) {chrome.webview.postMessage(JSON.stringify({ok:false,error:String(error.stack||error)}));}
  })();`
+	// The runtime repository can supply additional placement scenarios against
+	// the same real DOM without copying shared implementation into this repo.
+	if scenarioPath := os.Getenv("DYNAPP_SHARED_CONTROLS_TEST"); scenarioPath != "" {
+		data, err := os.ReadFile(scenarioPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scenario = string(data)
+	}
+	script := string(badge) + "\n" + source + scenario
 	// SetHtml runs the test after DOM ready so the assertions follow installation.
 	view.SetHtml("<!doctype html><html><head></head><body style='margin:0'><div id='app' style='height:100vh'><div id='toolbar' style='position:fixed;top:0;left:0;right:0'>Toolbar</div></div><script>window.addEventListener('load',()=>{" + strings.ReplaceAll(script, "</script>", "<\\/script>") + "});</script></body></html>")
 	view.Run()
