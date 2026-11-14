@@ -291,7 +291,7 @@ func (s *Server) ListenAndServe() error {
 	config := s.Config
 	s.meshActive = true
 	s.mu.Unlock()
-	go s.backfillAppNotes()
+	go s.refreshInstalledApps(context.Background())
 	// The loopback-only WebTransport listener is a browser carrier, which a
 	// shared loopback cannot protect; an explicit LAN listener still runs.
 	if config.LANEnabled && config.ListenerMode != ListenerOff && !(loopbackSharedAcrossApps && config.ListenerMode == ListenerLocal) {

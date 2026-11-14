@@ -19,13 +19,13 @@ import (
 // Two things help a coding agent the user already has find and use the
 // app notes (agent_notes.go), without installing anything into it:
 //
-//   - A local copy of the dynapp-developer skill beside the notes. Coding
+//   - A local copy of the dynapp-developer skill beside installed-apps.md. Coding
 //     agents often run in a sandbox without network access, so a note that
 //     only links to https://dynapp.io/skill leaves them stuck.
 //   - One marked line in the global instructions of coding agents that are
 //     already set up on this computer (Codex ~/.codex/AGENTS.md, Claude Code
 //     ~/.claude/CLAUDE.md). Some models never search outside their working
-//     folder; this line tells them where installed apps are described.
+//     folder; this line tells them where installed apps are listed.
 
 const (
 	localSkillName         = "dynapp-developer"
@@ -37,14 +37,14 @@ const (
 	codingAgentMarkEnd     = "<!-- /dynapp -->"
 )
 
-// localSkillDir holds <notes>/.skill/dynapp-developer/SKILL.md and its references.
-func localSkillDir(notesDir string) string {
-	return filepath.Join(notesDir, ".skill", localSkillName)
+// localSkillDir holds <agents>/skill/dynapp-developer/SKILL.md and its references.
+func localSkillDir(agentsDir string) string {
+	return filepath.Join(agentsDir, "skill", localSkillName)
 }
 
 // localSkillPath is the local SKILL.md once a copy exists, otherwise "".
 func localSkillPath() string {
-	dir, err := appNotesDir()
+	dir, err := codingAgentsDir()
 	if err != nil {
 		return ""
 	}
@@ -62,12 +62,11 @@ var localSkillRefresh struct {
 }
 
 // prepareCodingAgents refreshes the local skill copy (at most every few
-// hours) and the global instruction lines. installing is true when an app is
-// being installed; otherwise it does nothing until an app note exists, so a
-// machine without installed apps is left alone.
-func (s *Server) prepareCodingAgents(ctx context.Context, installing bool) {
-	dir, err := appNotesDir()
-	if err != nil || (!installing && !hasAppNotes(dir)) {
+// hours) and the global instruction lines. Callers run it only on machines
+// with installed apps.
+func (s *Server) prepareCodingAgents(ctx context.Context) {
+	dir, err := codingAgentsDir()
+	if err != nil {
 		return
 	}
 	s.mu.Lock()
@@ -77,8 +76,7 @@ func (s *Server) prepareCodingAgents(ctx context.Context, installing bool) {
 		base = defaultNoteDynerURL
 	}
 	localSkillRefresh.Lock()
-	due := localSkillRefresh.base != base || time.Since(localSkillRefresh.at) > localSkillRefreshEvery
-	if due {
+	if localSkillRefresh.base != base || time.Since(localSkillRefresh.at) > localSkillRefreshEvery {
 		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := refreshLocalSkill(refreshCtx, s.dynerHTTPClient(), base, dir); err == nil {
 			localSkillRefresh.at, localSkillRefresh.base = time.Now(), base
@@ -91,22 +89,9 @@ func (s *Server) prepareCodingAgents(ctx context.Context, installing bool) {
 	}
 }
 
-func hasAppNotes(dir string) bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), appNoteSuffix) {
-			return true
-		}
-	}
-	return false
-}
-
 // refreshLocalSkill downloads <base>/skill/dynapp-developer.zip and replaces
 // the local copy only when the archive is complete and valid.
-func refreshLocalSkill(ctx context.Context, client *http.Client, base, notesDir string) error {
+func refreshLocalSkill(ctx context.Context, client *http.Client, base, agentsDir string) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/skill/"+localSkillName+".zip", nil)
 	if err != nil {
 		return err
@@ -130,7 +115,7 @@ func refreshLocalSkill(ctx context.Context, client *http.Client, base, notesDir 
 	if err != nil {
 		return err
 	}
-	target := localSkillDir(notesDir)
+	target := localSkillDir(agentsDir)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
@@ -198,21 +183,21 @@ func readSkillZip(data []byte) (map[string][]byte, error) {
 }
 
 // codingAgentPointer is the one line a coding agent reads in every session.
-func codingAgentPointer(notesDir string) string {
-	return "To change an app the user installed, first check " + filepath.Join(notesDir, "<App name>"+appNoteSuffix) + "."
+func codingAgentPointer(agentsDir string) string {
+	return "To change an app the user installed, first check " + filepath.Join(agentsDir, installedAppsIndexName) + "."
 }
 
 // writeCodingAgentPointers adds or updates the marked line in the global
 // instructions of each coding agent whose configuration folder exists. It
 // never creates a coding agent's folder.
-func writeCodingAgentPointers(home, codexHome, notesDir string) error {
+func writeCodingAgentPointers(home, codexHome, agentsDir string) error {
 	if home == "" {
 		return errors.New("no home folder")
 	}
 	if codexHome == "" {
 		codexHome = filepath.Join(home, ".codex")
 	}
-	line := codingAgentPointer(notesDir)
+	line := codingAgentPointer(agentsDir)
 	var failures []string
 	for _, file := range []string{filepath.Join(codexHome, "AGENTS.md"), filepath.Join(home, ".claude", "CLAUDE.md")} {
 		if info, err := os.Stat(filepath.Dir(file)); err != nil || !info.IsDir() {

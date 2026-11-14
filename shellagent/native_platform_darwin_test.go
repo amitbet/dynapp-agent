@@ -4,6 +4,7 @@ package shellagent
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/png"
@@ -83,10 +84,8 @@ func TestNativeInstallKeepsAnUnchangedBundle(t *testing.T) {
 		t.Fatalf("host executable = %v %v", info, err)
 	}
 	root := filepath.Join(home, "Applications", "DynApp")
-	for _, note := range []string{filepath.Join(first.Path, "Contents", "Resources", "AGENTS.md"), filepath.Join(root, "Notes.dynapp.md")} {
-		if data, err := os.ReadFile(note); err != nil || noteStoreID(data) != "amit-bet/notes" {
-			t.Fatalf("coding-agent note %s = %q %v", note, data, err)
-		}
+	if data, err := os.ReadFile(filepath.Join(first.Path, "Contents", "Resources", "AGENTS.md")); err != nil || !strings.Contains(string(data), "- App: `amit-bet/notes`") {
+		t.Fatalf("in-bundle note = %q %v", data, err)
 	}
 	again, err := nativeInstall(spec)
 	if err != nil || again.CDHash != first.CDHash {
@@ -105,9 +104,6 @@ func TestNativeInstallKeepsAnUnchangedBundle(t *testing.T) {
 	if _, err := os.Stat(first.Path); !os.IsNotExist(err) {
 		t.Fatalf("the old bundle was not removed after a rename: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "Notes.dynapp.md")); !os.IsNotExist(err) {
-		t.Fatalf("the old note was not removed after a rename: %v", err)
-	}
 	other := spec
 	other.StoreID = "someone/notes"
 	clash, err := nativeInstall(other)
@@ -117,11 +113,8 @@ func TestNativeInstallKeepsAnUnchangedBundle(t *testing.T) {
 	if err := nativeUninstall(NativeApp{StoreID: spec.StoreID, Path: renamed.Path}); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
-	if paths := appNotePaths(root, spec.StoreID); len(paths) != 0 {
-		t.Fatalf("uninstall left notes: %v", paths)
-	}
-	if paths := appNotePaths(root, "someone/notes"); len(paths) != 1 {
-		t.Fatalf("uninstall removed another app's note: %v", paths)
+	if entries, _ := os.ReadDir(root); len(entries) != 1 {
+		t.Fatalf("the apps folder should hold only the other bundle: %v", entries)
 	}
 	if err := nativeUninstall(NativeApp{StoreID: spec.StoreID, Path: clash.Path}); err == nil {
 		t.Fatal("uninstall removed another app's bundle")
@@ -145,31 +138,49 @@ func TestNativeDocumentTypesUseManifestDeclarations(t *testing.T) {
 	}
 }
 
-func TestBackfillWritesNotesBesideExistingBundlesWithoutTouchingThem(t *testing.T) {
+func TestRefreshListsExistingBundlesWithoutTouchingThem(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	root := filepath.Join(home, "Applications", "DynApp")
 	bundle := filepath.Join(root, "Form & Fuel.app")
 	if err := os.MkdirAll(filepath.Join(bundle, "Contents"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Notes an older agent left beside the bundles, and a file of the user's.
+	legacy := map[string]string{
+		"Form & Fuel.dynapp.md": "# Form & Fuel (DynApp)\n\n- App: `amit-bet/formfuel`\n\nThe DynApp agent wrote this note and replaces it on every install.\n",
+		"AGENTS.md":             "# DynApps installed on this computer\n",
+		"mine.dynapp.md":        "my own notes\n",
+	}
+	for name, content := range legacy {
+		_ = os.WriteFile(filepath.Join(root, name), []byte(content), 0o644)
+	}
+	_ = os.MkdirAll(filepath.Join(root, ".skill", "dynapp-developer"), 0o755)
 	resetLocalSkillRefresh(t)
 	dyner := skillServer(t, skillZip(t, map[string]string{"dynapp-developer/SKILL.md": "skill"}))
 	server := &Server{DynerHTTPClient: dyner.Client(), Config: Config{DynerBaseURL: dyner.URL, NativeApps: []NativeApp{
 		{StoreID: "amit-bet/formfuel", Name: "Form & Fuel", Origin: "https://amitbet-formfuel.dynapp.io", Path: bundle},
 		{StoreID: "amit-bet/gone", Name: "Gone", Origin: "https://amitbet-gone.dynapp.io", Path: filepath.Join(root, "Gone.app")},
 	}}}
-	server.backfillAppNotes()
-	if data, err := os.ReadFile(filepath.Join(root, "Form & Fuel.dynapp.md")); err != nil || noteStoreID(data) != "amit-bet/formfuel" {
-		t.Fatalf("backfilled note = %q %v", data, err)
+	server.refreshInstalledApps(context.Background())
+	agents := filepath.Join(home, "Library", "Application Support", "DynApp", "agents")
+	index := string(mustRead(t, filepath.Join(agents, "installed-apps.md")))
+	if !strings.Contains(index, "| Form & Fuel | `amit-bet/formfuel` | https://amitbet-formfuel.dynapp.io/ | desktop app |") || strings.Contains(index, "amit-bet/gone") {
+		t.Fatalf("index:\n%s", index)
 	}
-	if data, _ := os.ReadFile(filepath.Join(root, "Form & Fuel.dynapp.md")); !strings.Contains(string(data), filepath.Join(root, ".skill", "dynapp-developer", "SKILL.md")) {
-		t.Fatalf("backfilled note does not name the local skill copy:\n%s", data)
+	if !strings.Contains(index, filepath.Join(agents, "skill", "dynapp-developer", "SKILL.md")) {
+		t.Fatalf("index does not name the local skill copy:\n%s", index)
 	}
-	if _, err := os.Stat(filepath.Join(root, "Gone.dynapp.md")); !os.IsNotExist(err) {
-		t.Fatal("a note was written for a missing bundle")
+	names := []string{}
+	entries, _ := os.ReadDir(root)
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if strings.Join(names, "|") != "Form & Fuel.app|mine.dynapp.md" {
+		t.Fatalf("apps folder after cleanup = %v", names)
 	}
 	if _, err := os.Stat(filepath.Join(bundle, "Contents", "Resources", "AGENTS.md")); !os.IsNotExist(err) {
-		t.Fatal("backfill modified a signed bundle")
+		t.Fatal("refresh modified a signed bundle")
 	}
 }

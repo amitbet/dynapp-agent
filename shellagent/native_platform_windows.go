@@ -338,9 +338,6 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 	if previous, ok := previousNativeShortcut(programs, spec.StoreID, shortcut); ok {
 		_ = os.Remove(previous)
 	}
-	// The app folder is named by store id; this note is named after the app,
-	// so a search for the app's name finds it.
-	_ = writeAppNote(filepath.Join(local, "DynApp", "Apps"), spec.note())
 	return nativeInstallResult{Path: shortcut, Executable: executable, BundleID: nativeAppUserModelID(spec.StoreID)}, nil
 }
 
@@ -397,7 +394,6 @@ func nativeUninstall(app NativeApp) error {
 	}
 	_ = os.Remove(filepath.Join(nativeAppDir(local, app.StoreID), "icon.ico"))
 	_ = os.Remove(filepath.Join(nativeAppDir(local, app.StoreID), "AGENTS.md"))
-	removeAppNote(filepath.Join(local, "DynApp", "Apps"), app.StoreID)
 	return nil
 }
 
@@ -441,9 +437,19 @@ func nativeWindowsExtensionsJSON(types []nativeDocumentType) string {
 	return string(data)
 }
 
-// appNotesDir holds one coding-agent note per installed DynApp, beside the
-// per-app folders, in the signed-in user's LocalAppData.
-func appNotesDir() (string, error) {
+// codingAgentsDir holds installed-apps.md and the local skill copy, in the
+// signed-in user's LocalAppData.
+func codingAgentsDir() (string, error) {
+	user, local, _, err := nativeUserDirs()
+	if err != nil {
+		return "", err
+	}
+	user.Close()
+	return filepath.Join(local, "DynApp", "agents"), nil
+}
+
+// legacyAppNotesDir is where agents 0.1.59-0.1.61 wrote per-app notes.
+func legacyAppNotesDir() (string, error) {
 	user, local, _, err := nativeUserDirs()
 	if err != nil {
 		return "", err
@@ -452,13 +458,8 @@ func appNotesDir() (string, error) {
 	return filepath.Join(local, "DynApp", "Apps"), nil
 }
 
-// nativeShortcutDescription is the Start menu tooltip. The store id tells a
-// coding agent that reads the shortcut which DynApp this is.
-func nativeShortcutDescription(spec nativeInstallSpec) string {
-	return spec.Name + " (DynApp " + spec.StoreID + ")"
-}
-
-func writeNativeAppNotes(app NativeApp, note appNote) {
+// writeNativeAppNote keeps AGENTS.md in the app's folder current.
+func writeNativeAppNote(app NativeApp, note appNote) {
 	user, local, _, err := nativeUserDirs()
 	if err != nil {
 		return
@@ -467,7 +468,6 @@ func writeNativeAppNotes(app NativeApp, note appNote) {
 	if dir := nativeAppDir(local, app.StoreID); dirExists(dir) {
 		_ = writeFileIfChanged(filepath.Join(dir, "AGENTS.md"), appAgentNote(note))
 	}
-	_ = writeAppNote(filepath.Join(local, "DynApp", "Apps"), note)
 }
 
 func dirExists(path string) bool {
@@ -488,4 +488,10 @@ func codingAgentHomes() (string, string, error) {
 		return "", "", errors.New("could not find the signed-in user's profile folder")
 	}
 	return home, user.Getenv("CODEX_HOME"), nil
+}
+
+// nativeShortcutDescription is the Start menu tooltip. The store id tells a
+// coding agent that reads the shortcut which DynApp this is.
+func nativeShortcutDescription(spec nativeInstallSpec) string {
+	return spec.Name + " (DynApp " + spec.StoreID + ")"
 }

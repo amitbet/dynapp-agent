@@ -451,7 +451,7 @@ func (s *Server) installNativeApp(ctx context.Context, args map[string]any) (any
 	}
 	// Fetch the local skill copy first, so the note inside a signed macOS
 	// bundle names it from the start.
-	s.prepareCodingAgents(resolveCtx, true)
+	s.prepareCodingAgents(resolveCtx)
 	result, err := nativeInstall(nativeInstallSpec{
 		StoreID: storeID, Name: manifest.app.Name, Origin: manifest.origin, URL: startURL, Icon: icon,
 		AgentEndpoint: s.nativeEndpoint(), StateDir: stateDir, DocumentTypes: manifest.documentTypes,
@@ -480,6 +480,7 @@ func (s *Server) installNativeApp(ctx context.Context, args map[string]any) (any
 	s.upsertNativeApp(app)
 	s.closeNativeSockets(app, websocket.StatusServiceRestart, "Permissions changed")
 	go s.notifyPermissionsChanged()
+	go s.refreshInstalledApps(context.Background())
 	launched := false
 	if launch, _ := args["launch"].(bool); launch {
 		if err := nativeLaunch(app, s.nativeEndpoint()); err != nil {
@@ -504,6 +505,7 @@ func (s *Server) uninstallNativeApp(args map[string]any) (any, error) {
 	s.removeNativeApp(storeID)
 	s.closeNativeSockets(app, closePairingDeclined, "App uninstalled")
 	go s.notifyPermissionsChanged()
+	go s.refreshInstalledApps(context.Background())
 	return map[string]any{"removed": true}, nil
 }
 

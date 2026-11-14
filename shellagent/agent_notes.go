@@ -3,28 +3,38 @@ package shellagent
 import (
 	"bytes"
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
-// Coding agents learn that an installed app is a DynApp, and how to change
-// it, from small Markdown notes the agent writes next to each install. A user
-// says "change my Form & Fuel app"; the coding agent searches the disk for the
-// name and lands on a note that names the app and points at the
-// dynapp-developer skill. The notes hold facts only. The workflow lives in the
-// skill (docs/agent-notes.md in the DynApp repository).
+// A user tells their coding agent "change my Gridbook app". The agent reads one
+// line in its global instructions (coding_agents.go) that points at
+// installed-apps.md in the coding-agents folder. That index lists every app
+// installed on this computer, with its store id and address, and says where
+// the dynapp-developer skill is. The index holds facts only; the workflow
+// lives in the skill (docs/agent-notes.md in the DynApp repository).
+//
+// A native install also carries a per-app AGENTS.md (inside the macOS bundle,
+// in the Windows app folder), so a search for the app's name still lands on
+// something useful for coding agents that never read the global line.
 
 const (
-	appNoteSuffix       = ".dynapp.md"
-	appNoteKindNative   = "native"
-	appNoteKindBrowser  = "browser"
-	defaultNoteDynerURL = "https://dynapp.io"
+	installedAppsIndexName = "installed-apps.md"
+	browserAppsFileName    = "browser-apps.json"
+	appNoteKindNative      = "native"
+	appNoteKindBrowser     = "browser"
+	defaultNoteDynerURL    = "https://dynapp.io"
+	// Browser uninstalls are invisible to the agent; an app not opened for
+	// this long drops out of the index.
+	browserAppForgetAfter = 90 * 24 * time.Hour
 )
 
 type appNote struct {
@@ -38,25 +48,22 @@ type appNote struct {
 	SkillPath string
 }
 
-func (note appNote) dynerURL() string {
-	base := strings.TrimRight(strings.TrimSpace(note.DynerURL), "/")
+func noteDynerURL(base string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if base == "" {
 		return defaultNoteDynerURL
 	}
 	return base
 }
 
-// appAgentNote is deterministic: it carries no version or timestamp, so a
-// signed macOS bundle that contains it stays byte-identical across updates.
+// appAgentNote describes one native install. It is deterministic (no version
+// or timestamp), so a signed macOS bundle that contains it stays
+// byte-identical across updates.
 func appAgentNote(note appNote) []byte {
-	base := note.dynerURL()
-	installed := "as a desktop app"
-	if note.Kind == appNoteKindBrowser {
-		installed = "from the browser, as a web app (PWA)"
-	}
+	base := noteDynerURL(note.DynerURL)
 	var buffer bytes.Buffer
 	fmt.Fprintf(&buffer, "# %s (DynApp)\n\n", noteLine(note.Name))
-	fmt.Fprintf(&buffer, "%s is a DynApp, installed on this computer %s from %s.\n\n", noteLine(note.Name), installed, base)
+	fmt.Fprintf(&buffer, "%s is a DynApp, installed on this computer as a desktop app from %s.\n\n", noteLine(note.Name), base)
 	fmt.Fprintf(&buffer, "- App: `%s`\n", note.StoreID)
 	fmt.Fprintf(&buffer, "- Address: %s/\n", strings.TrimRight(note.Origin, "/"))
 	fmt.Fprintf(&buffer, "- Details and source: %s/api/v1/apps/%s\n\n", base, note.StoreID)
@@ -83,113 +90,54 @@ func skillPointer(base, skillPath, subject string) []byte {
 	return buffer.Bytes()
 }
 
-// appNotesFolderReadme explains a folder of notes to an agent that lists it.
-func appNotesFolderReadme(base, skillPath string) []byte {
-	base = strings.TrimRight(strings.TrimSpace(base), "/")
-	if base == "" {
-		base = defaultNoteDynerURL
-	}
-	var buffer bytes.Buffer
-	buffer.WriteString("# DynApps installed on this computer\n\n")
-	fmt.Fprintf(&buffer, "Each *%s file here describes one app installed from %s, named after\nthe app.\n\n", appNoteSuffix, base)
-	buffer.Write(skillPointer(base, skillPath, "one of them"))
-	buffer.WriteString("\nThe DynApp agent maintains this folder.\n")
-	return buffer.Bytes()
-}
-
 func noteLine(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
-var noteStoreIDLine = regexp.MustCompile("(?m)^- App: `([^`]+)`$")
-
-func noteStoreID(data []byte) string {
-	match := noteStoreIDLine.FindSubmatch(data)
-	if match == nil {
-		return ""
-	}
-	return string(match[1])
+func noteCell(value string) string {
+	return strings.ReplaceAll(noteLine(value), "|", "\\|")
 }
 
-var noteNameUnsafe = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]+`)
-
-// appNoteFileName is the app's display name, safe on every desktop OS, so a
-// search for the name finds the note.
-func appNoteFileName(name string) string {
-	name = strings.TrimSpace(noteNameUnsafe.ReplaceAllString(name, " "))
-	name = strings.Trim(name, ". ")
-	if len(name) > 80 {
-		name = strings.TrimSpace(name[:80])
-	}
-	if name == "" {
-		name = "DynApp"
-	}
-	return name
+type indexedApp struct {
+	StoreID string `json:"storeId"`
+	Name    string `json:"name"`
+	Origin  string `json:"origin"`
+	Kind    string `json:"kind,omitempty"`
+	SeenAt  int64  `json:"seenAt,omitempty"`
 }
 
-var appNotesMu sync.Mutex
-
-// writeAppNote writes dir/<name>.dynapp.md and the folder readme, and removes
-// an older note for the same app (for example after a rename).
-func writeAppNote(dir string, note appNote) error {
-	if dir == "" || !validStoreID(note.StoreID) {
-		return errors.New("app note needs a folder and a store id")
-	}
-	appNotesMu.Lock()
-	defer appNotesMu.Unlock()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if err := writeFileIfChanged(filepath.Join(dir, "AGENTS.md"), appNotesFolderReadme(note.DynerURL, note.SkillPath)); err != nil {
-		return err
-	}
-	base := appNoteFileName(note.Name)
-	target := filepath.Join(dir, base+appNoteSuffix)
-	if existing, err := os.ReadFile(target); err == nil {
-		if owner := noteStoreID(existing); owner != "" && owner != note.StoreID {
-			storeOwner, _, _ := strings.Cut(note.StoreID, "/")
-			target = filepath.Join(dir, base+" ("+appNoteFileName(storeOwner)+")"+appNoteSuffix)
+// installedAppsMarkdown is the index a coding agent reads. Apps are sorted by
+// name so an unchanged set of apps produces the same file.
+func installedAppsMarkdown(apps []indexedApp, base, skillPath string) []byte {
+	base = noteDynerURL(base)
+	sorted := append([]indexedApp(nil), apps...)
+	sort.Slice(sorted, func(i, j int) bool {
+		left, right := strings.ToLower(sorted[i].Name), strings.ToLower(sorted[j].Name)
+		if left != right {
+			return left < right
 		}
-	}
-	if err := writeFileIfChanged(target, appAgentNote(note)); err != nil {
-		return err
-	}
-	for _, path := range appNotePaths(dir, note.StoreID) {
-		if !strings.EqualFold(path, target) {
-			_ = os.Remove(path)
+		return sorted[i].StoreID < sorted[j].StoreID
+	})
+	var buffer bytes.Buffer
+	buffer.WriteString("# Apps installed on this computer from DynApp\n\n")
+	fmt.Fprintf(&buffer, "These apps were installed from %s. Each one is open source. The user\n", base)
+	buffer.WriteString("calls an app by its name; the App column is its id for the dynapp CLI.\n\n")
+	if len(sorted) == 0 {
+		buffer.WriteString("No apps are installed right now.\n\n")
+	} else {
+		buffer.WriteString("| Name | App | Address | Installed as |\n| --- | --- | --- | --- |\n")
+		for _, app := range sorted {
+			kind := "desktop app"
+			if app.Kind == appNoteKindBrowser {
+				kind = "web app (from the browser)"
+			}
+			fmt.Fprintf(&buffer, "| %s | `%s` | %s/ | %s |\n", noteCell(app.Name), app.StoreID, strings.TrimRight(app.Origin, "/"), kind)
 		}
+		buffer.WriteString("\n")
 	}
-	return nil
-}
-
-// removeAppNote deletes every note in dir that belongs to storeID.
-func removeAppNote(dir, storeID string) {
-	if dir == "" || storeID == "" {
-		return
-	}
-	appNotesMu.Lock()
-	defer appNotesMu.Unlock()
-	for _, path := range appNotePaths(dir, storeID) {
-		_ = os.Remove(path)
-	}
-}
-
-func appNotePaths(dir, storeID string) []string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	paths := []string{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), appNoteSuffix) {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		if data, err := os.ReadFile(path); err == nil && noteStoreID(data) == storeID {
-			paths = append(paths, path)
-		}
-	}
-	return paths
+	buffer.Write(skillPointer(base, skillPath, "one of these apps"))
+	buffer.WriteString("\nThe DynApp agent maintains this file.\n")
+	return buffer.Bytes()
 }
 
 func writeFileIfChanged(path string, data []byte) error {
@@ -199,57 +147,166 @@ func writeFileIfChanged(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+var installedAppsMu sync.Mutex
+
+func readBrowserApps(dir string) []indexedApp {
+	data, err := os.ReadFile(filepath.Join(dir, browserAppsFileName))
+	if err != nil {
+		return nil
+	}
+	var apps []indexedApp
+	if json.Unmarshal(data, &apps) != nil {
+		return nil
+	}
+	valid := apps[:0]
+	for _, app := range apps {
+		if validStoreID(app.StoreID) && strings.HasPrefix(app.Origin, "https://") {
+			valid = append(valid, app)
+		}
+	}
+	return valid
+}
+
+func writeBrowserApps(dir string, apps []indexedApp) error {
+	sort.Slice(apps, func(i, j int) bool { return apps[i].StoreID < apps[j].StoreID })
+	data, err := json.MarshalIndent(apps, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileIfChanged(filepath.Join(dir, browserAppsFileName), append(data, '\n'))
+}
+
 // noteBrowserInstall records an app that runs installed from the browser on
 // this computer. The store id, name and origin come from the verified
-// handshake, never from the page. A native install of the same app keeps its
-// own note.
+// handshake, never from the page.
 func (s *Server) noteBrowserInstall(auth socketAuthentication) {
 	if auth.development || !validStoreID(auth.storeID) || !strings.HasPrefix(auth.origin, "https://") {
 		return
 	}
-	if _, native := s.nativeApp(auth.storeID); native {
-		return
-	}
-	s.mu.Lock()
-	base := s.Config.dynerBaseOrigin()
-	s.mu.Unlock()
-	dir, err := appNotesDir()
+	dir, err := codingAgentsDir()
 	if err != nil {
 		return
 	}
-	note := appNote{StoreID: auth.storeID, Name: auth.appName, Origin: auth.origin, Kind: appNoteKindBrowser, DynerURL: base}
-	s.prepareCodingAgents(context.Background(), true)
-	note.SkillPath = localSkillPath()
-	_ = writeAppNote(dir, note)
+	now := time.Now()
+	installedAppsMu.Lock()
+	apps := readBrowserApps(dir)
+	found := false
+	changed := true
+	for index := range apps {
+		if apps[index].StoreID != auth.storeID {
+			continue
+		}
+		found = true
+		// Record a reopen at most once a day.
+		changed = apps[index].Name != auth.appName || apps[index].Origin != auth.origin || now.Sub(time.UnixMilli(apps[index].SeenAt)) > 24*time.Hour
+		apps[index].Name, apps[index].Origin = auth.appName, auth.origin
+		if changed {
+			apps[index].SeenAt = now.UnixMilli()
+		}
+	}
+	if !found {
+		apps = append(apps, indexedApp{StoreID: auth.storeID, Name: auth.appName, Origin: auth.origin, Kind: appNoteKindBrowser, SeenAt: now.UnixMilli()})
+	}
+	if changed {
+		_ = os.MkdirAll(dir, 0o755)
+		_ = writeBrowserApps(dir, apps)
+	}
+	installedAppsMu.Unlock()
+	s.refreshInstalledApps(context.Background())
 }
 
-// backfillAppNotes writes notes for native apps installed before the agent
-// wrote them. It never rewrites a signed macOS bundle, which would reset the
-// app's camera grant: the in-bundle note arrives with the next install.
-func (s *Server) backfillAppNotes() {
+// refreshInstalledApps rewrites installed-apps.md from the native installs
+// and the recorded browser installs, keeps the skill copy and coding-agent
+// lines current, and removes the per-app notes older agents wrote. A machine
+// that never had an installed app is left alone.
+func (s *Server) refreshInstalledApps(ctx context.Context) {
+	dir, err := codingAgentsDir()
+	if err != nil {
+		return
+	}
 	s.mu.Lock()
-	apps := append([]NativeApp(nil), s.Config.NativeApps...)
+	natives := append([]NativeApp(nil), s.Config.NativeApps...)
 	base := s.Config.dynerBaseOrigin()
 	s.mu.Unlock()
-	prepared := false
-	for _, app := range apps {
+	defer removeLegacyAppNotes()
+
+	installedAppsMu.Lock()
+	apps := []indexedApp{}
+	native := map[string]NativeApp{}
+	for _, app := range natives {
 		if !validStoreID(app.StoreID) || app.Path == "" {
 			continue
 		}
 		if _, err := os.Stat(app.Path); err != nil {
 			continue
 		}
-		if !prepared {
-			// Only machines with installed apps get the skill copy and the
-			// coding-agent lines.
-			s.prepareCodingAgents(context.Background(), true)
-			prepared = true
-		}
-		writeNativeAppNotes(app, appNote{StoreID: app.StoreID, Name: app.Name, Origin: app.Origin, Kind: appNoteKindNative, DynerURL: base, SkillPath: localSkillPath()})
+		native[app.StoreID] = app
+		apps = append(apps, indexedApp{StoreID: app.StoreID, Name: app.Name, Origin: app.Origin, Kind: appNoteKindNative})
 	}
-	// Browser installs left notes too; keep their skill copy current.
-	if !prepared {
-		s.prepareCodingAgents(context.Background(), false)
+	browser := readBrowserApps(dir)
+	kept := browser[:0]
+	for _, app := range browser {
+		if time.Since(time.UnixMilli(app.SeenAt)) > browserAppForgetAfter {
+			continue
+		}
+		kept = append(kept, app)
+		if _, ok := native[app.StoreID]; !ok {
+			apps = append(apps, app)
+		}
+	}
+	if len(kept) != len(browser) {
+		_ = writeBrowserApps(dir, kept)
+	}
+	_, indexErr := os.Stat(filepath.Join(dir, installedAppsIndexName))
+	installedAppsMu.Unlock()
+	if len(apps) == 0 && indexErr != nil {
+		return
+	}
+
+	s.prepareCodingAgents(ctx)
+	skill := localSkillPath()
+	for _, app := range native {
+		writeNativeAppNote(app, appNote{StoreID: app.StoreID, Name: app.Name, Origin: app.Origin, Kind: appNoteKindNative, DynerURL: base, SkillPath: skill})
+	}
+	installedAppsMu.Lock()
+	defer installedAppsMu.Unlock()
+	if err := os.MkdirAll(dir, 0o755); err == nil {
+		_ = writeFileIfChanged(filepath.Join(dir, installedAppsIndexName), installedAppsMarkdown(apps, base, skill))
+	}
+}
+
+var legacyNoteStoreID = regexp.MustCompile("(?m)^- App: `[^`]+`$")
+
+// removeLegacyAppNotes deletes the <Name>.dynapp.md notes, folder AGENTS.md
+// and .skill copy that agents 0.1.59-0.1.61 wrote beside the installs. Only
+// files with this agent's own content are removed.
+func removeLegacyAppNotes() {
+	dir, err := legacyAppNotesDir()
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		switch {
+		case entry.IsDir() && entry.Name() == ".skill":
+			_ = os.RemoveAll(path)
+		case !entry.IsDir() && strings.HasSuffix(entry.Name(), ".dynapp.md"):
+			if data, err := os.ReadFile(path); err == nil && legacyNoteStoreID.Match(data) && bytes.Contains(data, []byte("The DynApp agent wrote this note")) {
+				_ = os.Remove(path)
+			}
+		case !entry.IsDir() && entry.Name() == "AGENTS.md":
+			if data, err := os.ReadFile(path); err == nil && bytes.HasPrefix(data, []byte("# DynApps installed on this computer")) {
+				_ = os.Remove(path)
+			}
+		}
+	}
+	// Linux had a folder only for these notes.
+	if strings.HasSuffix(filepath.ToSlash(dir), "dynapp/apps") {
+		_ = os.Remove(dir)
 	}
 }
 

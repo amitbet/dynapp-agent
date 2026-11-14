@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -144,42 +143,11 @@ func TestCodingAgentPointersOnlyForInstalledAgents(t *testing.T) {
 	if err := writeCodingAgentPointers(home, codexHome, notes); err != nil {
 		t.Fatal(err)
 	}
-	line := "To change an app the user installed, first check " + filepath.Join(notes, "<App name>.dynapp.md") + "."
+	line := "To change an app the user installed, first check " + filepath.Join(notes, "installed-apps.md") + "."
 	for _, file := range []string{filepath.Join(codexHome, "AGENTS.md"), filepath.Join(home, ".claude", "CLAUDE.md")} {
 		if !strings.Contains(string(mustRead(t, file)), line) {
 			t.Fatalf("%s lacks the pointer:\n%s", file, mustRead(t, file))
 		}
-	}
-}
-
-func TestPrepareCodingAgentsWaitsForAnInstalledApp(t *testing.T) {
-	if runtime.GOOS == "windows" || runtime.GOOS == "android" {
-		t.Skip("resolves the signed-in user's profile")
-	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_DATA_HOME", "")
-	t.Setenv("CODEX_HOME", "")
-	resetLocalSkillRefresh(t)
-	_ = os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
-	dyner := skillServer(t, skillZip(t, map[string]string{"dynapp-developer/SKILL.md": "skill"}))
-	server := &Server{Config: Config{DynerBaseURL: dyner.URL}, DynerHTTPClient: dyner.Client()}
-
-	server.prepareCodingAgents(context.Background(), false)
-	if _, err := os.Stat(filepath.Join(home, ".codex", "AGENTS.md")); !os.IsNotExist(err) {
-		t.Fatal("wrote a pointer with no installed apps")
-	}
-	server.prepareCodingAgents(context.Background(), true)
-	if localSkillPath() == "" {
-		t.Fatal("no local skill copy after an install")
-	}
-	dir, _ := appNotesDir()
-	if !strings.Contains(string(mustRead(t, filepath.Join(home, ".codex", "AGENTS.md"))), dir) {
-		t.Fatal("the Codex pointer does not name the notes folder")
-	}
-	note := string(appAgentNote(appNote{StoreID: "amit-bet/notes", Name: "Notes", Origin: "https://amitbet-notes.dynapp.io", SkillPath: localSkillPath(), DynerURL: dyner.URL}))
-	if !strings.Contains(note, "a copy is at "+localSkillPath()) || !strings.Contains(note, "needs network access to 127.0.0.1") {
-		t.Fatalf("note:\n%s", note)
 	}
 }
 

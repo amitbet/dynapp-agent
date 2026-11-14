@@ -418,8 +418,6 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 		}
 	}
 	lsregister("-f", target)
-	// A search for the app's name lands on the bundle and on this note.
-	_ = writeAppNote(root, spec.note())
 	cdhash, err := bundleCDHash(target)
 	if err != nil {
 		return nativeInstallResult{}, err
@@ -458,7 +456,6 @@ func nativeUninstall(app NativeApp) error {
 		return errors.New("the app bundle belongs to a different app")
 	}
 	lsregister("-u", path)
-	removeAppNote(root, app.StoreID)
 	return os.RemoveAll(path)
 }
 
@@ -473,18 +470,24 @@ func nativeLaunch(app NativeApp, _ string) error {
 	return nil
 }
 
-// appNotesDir holds one coding-agent note per installed DynApp, next to the
-// native bundles.
-func appNotesDir() (string, error) { return nativeInstallRoot() }
-
-func writeNativeAppNotes(_ NativeApp, note appNote) {
-	if root, err := nativeInstallRoot(); err == nil {
-		_ = writeAppNote(root, note)
-	}
-}
-
 // codingAgentHomes is the user's home folder and CODEX_HOME, if set.
 func codingAgentHomes() (string, string, error) {
 	home, err := os.UserHomeDir()
 	return home, os.Getenv("CODEX_HOME"), err
 }
+
+// codingAgentsDir holds installed-apps.md and the local skill copy.
+func codingAgentsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Library", "Application Support", "DynApp", "agents"), nil
+}
+
+// legacyAppNotesDir is where agents 0.1.59-0.1.61 wrote per-app notes.
+func legacyAppNotesDir() (string, error) { return nativeInstallRoot() }
+
+// writeNativeAppNote: the note inside a signed bundle is written at install
+// time; rewriting it later would re-sign the bundle and reset its grants.
+func writeNativeAppNote(NativeApp, appNote) {}
