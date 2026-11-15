@@ -110,8 +110,79 @@
     post({ op, rid, ...payload });
   });
 
+  // Automation (docs/native-automation.md): while a coding agent is allowed
+  // to drive this app, console output and uncaught errors go to the agent.
+  // The hooks are installed only once automation is on, so the Web Inspector
+  // shows the page's own call sites otherwise.
+  let automation = false;
+  let consoleHooked = false;
+  let consoleQueue = [];
+  let consoleTimer = 0;
+  const describeArgument = (value) => {
+    if (typeof value === "string") return value;
+    // Duck-typed, so errors from other frames are described too.
+    if (value instanceof Error || (value && typeof value === "object" && typeof value.message === "string" && "stack" in value)) {
+      // WebKit's stack has no message line; V8's starts with it.
+      const head = `${value.name}: ${value.message}`;
+      const stack = String(value.stack || "");
+      return stack.startsWith(head) ? stack : stack ? `${head}\n${stack}` : head;
+    }
+    if (typeof value === "function") return `[Function ${value.name || "anonymous"}]`;
+    if (typeof Element !== "undefined" && value instanceof Element) return `<${value.tagName.toLowerCase()}${value.id ? `#${value.id}` : ""}>`;
+    try {
+      const text = JSON.stringify(value);
+      return text === undefined ? String(value) : text;
+    } catch {
+      return String(value);
+    }
+  };
+  const flushConsole = () => {
+    consoleTimer = 0;
+    const entries = consoleQueue;
+    consoleQueue = [];
+    if (entries.length) post({ op: "console", entries });
+  };
+  const captureConsole = (level, source, values) => {
+    if (!automation) return;
+    let text = "";
+    try { text = values.map(describeArgument).join(" "); } catch { text = "[unprintable]"; }
+    consoleQueue.push({ level, source, text: text.slice(0, 8000), time: Date.now() });
+    if (consoleQueue.length >= 100) flushConsole();
+    else if (!consoleTimer) consoleTimer = setTimeout(flushConsole, 50);
+  };
+  const hookConsole = () => {
+    if (consoleHooked || typeof console !== "object" || !console) return;
+    consoleHooked = true;
+    for (const level of ["log", "info", "warn", "error", "debug"]) {
+      const original = console[level];
+      if (typeof original !== "function") continue;
+      console[level] = function (...values) {
+        captureConsole(level, "console", values);
+        return original.apply(this, values);
+      };
+    }
+    window.addEventListener?.("error", (event) => {
+      // Opaque cross-origin errors carry no information.
+      if (!event.error && event.message === "Script error.") return;
+      const where = event.filename ? `(${event.filename}:${event.lineno}:${event.colno})` : "";
+      captureConsole("error", "exception", [event.error ?? event.message, where].filter(Boolean));
+    });
+    window.addEventListener?.("unhandledrejection", (event) => {
+      captureConsole("error", "rejection", ["Unhandled rejection:", event.reason]);
+    });
+  };
+  const setAutomation = (enabled) => {
+    automation = Boolean(enabled);
+    if (automation) hookConsole();
+  };
+  if (config.automation === true || window.__DYNAPP_NATIVE_AUTOMATION__ === true) setAutomation(true);
+
   const deliver = (message) => {
     if (!message || typeof message !== "object") return;
+    if (message.event === "automation") {
+      setAutomation(message.enabled);
+      return;
+    }
     if (message.event === "result") {
       const pending = calls.get(message.rid);
       if (!pending) return;

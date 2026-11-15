@@ -50,6 +50,10 @@ type NativeApp struct {
 	// Orientation is the app manifest's display.orientation ("landscape" or
 	// "portrait"); hosts that can lock the screen apply it. Empty means any.
 	Orientation string `json:"orientation,omitempty"`
+	// Automation is true after the user allowed coding agents to drive this
+	// app through the agent's automation socket (docs/native-automation.md).
+	// A reinstall clears it, since it installs a new host binary.
+	Automation bool `json:"automation,omitempty"`
 }
 
 // NativeAppList decodes leniently: an entry that does not parse or validate

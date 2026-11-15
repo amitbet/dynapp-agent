@@ -222,6 +222,9 @@ func main() {
 		}
 		return
 	}
+	if len(flag.Args()) >= 1 && flag.Arg(0) == "native" {
+		os.Exit(shellagent.RunNativeAutomationCLI(flag.Args()[1:], *stateDir, os.Stdout, os.Stderr))
+	}
 	if len(flag.Args()) == 1 && flag.Arg(0) == "file-promise-helper" {
 		if err := shellagent.RunFilePromiseHelper(); err != nil {
 			log.Fatal(err)

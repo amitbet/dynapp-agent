@@ -285,11 +285,21 @@ lists the same grants. On Windows, new requests and permission reviews use
 one native checklist with risk levels and descriptions. Reviews preserve
 existing selections; very-high-risk groups start unchecked in new requests.
 
-The Windows native host reconnects its control channel on the next file drop
-or permissions request after an agent restart. This is independent of the PWA
+The Windows native host reconnects its control channel after an agent restart
+(and also on the next file drop or permissions request). This is independent of the PWA
 Shell's reconnecting app sockets: the window stays open, startup files are not
 replayed, and the agent authenticates the installed app again before accepting
 new drops.
+
+### Automation for coding agents
+
+`dynapp-shell-agent native …` (and `dynapp-shell-agent native mcp` for MCP
+clients such as Codex and Claude Code) lets a coding agent on this computer
+drive an installed native app: run JavaScript in the page, read its console,
+take screenshots, click and type with real input events, navigate and resize
+the window. It is off for every app until the user allows it in the app's own
+window, and it is reachable only through a user-only local socket. See
+[docs/native-automation.md](docs/native-automation.md).
 
 `go test -tags nativee2e -run 'TestNativeApp|TestNativePermissionSheet' ./shellagent/`
 installs real bundles under a temporary home on macOS and drives them end to

@@ -9,7 +9,7 @@ const origin = "https://amitbet-notes.dynapp.io";
 // Objects made inside the vm context have that context's prototypes.
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-function page({ platform = "macos", pageOrigin = origin, top = true, nativeFileDrop = false, nativeTitlebar = false, additionalObjects = true } = {}) {
+function page({ platform = "macos", pageOrigin = origin, top = true, nativeFileDrop = false, nativeTitlebar = false, additionalObjects = true, console: pageConsole } = {}) {
   const posted = [];
   const events = [];
   const listeners = {};
@@ -17,6 +17,7 @@ function page({ platform = "macos", pageOrigin = origin, top = true, nativeFileD
     addEventListener(type, listener) { (listeners[type] ??= []).push(listener); },
     location: { origin: pageOrigin },
     btoa, atob, setTimeout, clearTimeout,
+    console: pageConsole,
     __DYNAPP_WINDOWS_FILE_DROP__: nativeFileDrop,
     CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
     dispatchEvent(event) { events.push(event); },
@@ -55,7 +56,7 @@ function page({ platform = "macos", pageOrigin = origin, top = true, nativeFileD
   const config = JSON.stringify({ version: 1, platform, storeId: "amit-bet/notes", origin });
   vm.runInNewContext(template.replace("__DYNAPP_NATIVE_HOST_CONFIG__", config), window);
   const fire = (type) => { for (const listener of listeners[type] ?? []) listener({ type }); };
-  return { window, posted, events, fire, host: window.__DYNAPP_NATIVE_HOST__, deliver: window.__dynappNativeHostDeliver };
+  return { window, posted, events, listeners, fire, host: window.__DYNAPP_NATIVE_HOST__, deliver: window.__dynappNativeHostDeliver };
 }
 
 test("the bridge installs only in the app's own top-level document", () => {
@@ -265,4 +266,32 @@ test("titlebar support is advertised by the installed host and sends narrow comm
     assert.deepEqual(posted.map(x => x.op), ["titlebar", "titlebarDrag", "titlebarZoom"]);
     assert.equal(posted[0].enabled, true);
   }
+});
+
+test("automation forwards console output only while it is enabled", async () => {
+  const printed = [];
+  const pageConsole = { log: (...values) => printed.push(values), warn() {}, error() {}, info() {}, debug() {} };
+  const original = pageConsole.log;
+  const { window, posted, listeners, deliver } = page({ console: pageConsole });
+  assert.equal(window.console.log, original, "the console is untouched until automation is on");
+  deliver({ event: "automation", enabled: true });
+  window.console.log("hello", { a: 1 });
+  for (const listener of listeners.error ?? []) listener({ message: "Script error.", error: null });
+  const failure = new Error("boom");
+  failure.stack = "f@https://amitbet-notes.dynapp.io/app.js:1:2";
+  for (const listener of listeners.error ?? []) listener({ message: "boom", error: failure, filename: "app.js", lineno: 1, colno: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(printed, [["hello", { a: 1 }]], "the page still sees its own console");
+  const batches = posted.filter((message) => message.op === "console");
+  assert.equal(batches.length, 1);
+  const entries = plain(batches[0].entries);
+  assert.equal(entries.length, 2, "opaque cross-origin errors are skipped");
+  assert.deepEqual(entries.map(({ level, source, text }) => ({ level, source, text })), [
+    { level: "log", source: "console", text: 'hello {"a":1}' },
+    { level: "error", source: "exception", text: "Error: boom\nf@https://amitbet-notes.dynapp.io/app.js:1:2 (app.js:1:2)" },
+  ]);
+  deliver({ event: "automation", enabled: false });
+  window.console.log("quiet");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(posted.filter((message) => message.op === "console").length, 1);
 });

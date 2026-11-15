@@ -117,6 +117,8 @@ type nativeHello struct {
 	Version int    `json:"version"`
 	StoreID string `json:"storeId"`
 	Purpose string `json:"purpose"`
+	// Features lists optional host abilities, such as "automation".
+	Features []string `json:"features,omitempty"`
 }
 
 type nativeHostFrame struct {
@@ -162,6 +164,7 @@ func (s *Server) startNativeHost() {
 	s.mu.Lock()
 	s.nativeListener = listener
 	s.mu.Unlock()
+	s.startAutomation()
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -185,6 +188,7 @@ func (s *Server) stopNativeHost() {
 	conns := s.nativeConns
 	s.nativeConns = nil
 	s.mu.Unlock()
+	s.stopAutomation()
 	if listener != nil {
 		_ = listener.Close()
 	}
@@ -249,7 +253,7 @@ func (s *Server) serveNativeConnection(conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Time{})
 	switch hello.Purpose {
 	case "control":
-		s.serveNativeControl(ctx, socket, app)
+		s.serveNativeControl(ctx, socket, app, hello.Features)
 	case "app", "":
 		auth, err := s.authorizeNativeApp(ctx, socket, app)
 		if err != nil {
@@ -291,9 +295,15 @@ func nativeReady(app NativeApp, capabilities []string, bootstrap string) map[str
 // nativeBootstrapScript is the page bridge the host injects before any page
 // script runs.
 func nativeBootstrapScript(app NativeApp) string {
+	return nativeBootstrapScriptFor(app, false)
+}
+
+// nativeBootstrapScriptFor tells the bridge whether automation (console
+// capture) starts enabled; only hosts that implement automation get true.
+func nativeBootstrapScriptFor(app NativeApp, automation bool) string {
 	config := mustJSON(map[string]any{
 		"version": nativeProtocolVersion, "platform": nativePlatformName(),
-		"storeId": app.StoreID, "origin": app.Origin,
+		"storeId": app.StoreID, "origin": app.Origin, "automation": automation,
 	})
 	return strings.Replace(nativeBridgeTemplate, "__DYNAPP_NATIVE_HOST_CONFIG__", string(config), 1)
 }
@@ -473,11 +483,18 @@ func (s *Server) sharedNativeAsk(app NativeApp, manifest nativeManifest, kind st
 
 // serveNativeControl answers the host's launch-time bootstrap request and its
 // "Permissions…" reviews for one app.
-func (s *Server) serveNativeControl(ctx context.Context, socket *nativeFrameSocket, app NativeApp) {
+func (s *Server) serveNativeControl(ctx context.Context, socket *nativeFrameSocket, app NativeApp, features []string) {
 	s.mu.Lock()
 	config := s.Config
 	s.mu.Unlock()
-	if !send(socket, ctx, nativeReady(app, authForNative(config, app, nil).capabilities, nativeBootstrapScript(app))) {
+	control := s.registerAutomationControl(app.StoreID, socket, features)
+	defer s.unregisterAutomationControl(app.StoreID, control)
+	automation := control.supported && app.Automation
+	ready := nativeReady(app, authForNative(config, app, nil).capabilities, nativeBootstrapScriptFor(app, automation))
+	if control.supported {
+		ready["automation"] = automation
+	}
+	if !send(socket, ctx, ready) {
 		return
 	}
 	// The ready frame carries the stored orientation; check Dyner for a newer
@@ -499,6 +516,9 @@ func (s *Server) serveNativeControl(ctx context.Context, socket *nativeFrameSock
 		}
 		var frame nativeHostFrame
 		if json.Unmarshal(data, &frame) != nil {
+			continue
+		}
+		if s.handleAutomationFrame(app.StoreID, frame.Type, data) {
 			continue
 		}
 		if frame.Type == "native-host-drop-files" {
@@ -592,7 +612,11 @@ func (s *Server) reviewNativeApp(ctx context.Context, socket *nativeFrameSocket,
 			continue
 		}
 		var frame nativeHostFrame
-		if json.Unmarshal(data, &frame) != nil || frame.Type != "native-host-permission-decision" || frame.RequestID != requestID {
+		if json.Unmarshal(data, &frame) != nil {
+			continue
+		}
+		// Automation results keep flowing while the review sheet is open.
+		if s.handleAutomationFrame(storeID, frame.Type, data) || frame.Type != "native-host-permission-decision" || frame.RequestID != requestID {
 			continue
 		}
 		if frame.Capabilities == nil {

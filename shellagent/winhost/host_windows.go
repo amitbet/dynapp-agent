@@ -186,6 +186,11 @@ type host struct {
 	promptsMu       sync.Mutex
 	dropHandler     *webMessageHandler
 	titlebarEnabled bool
+	automation      bool
+	automationInit  bool
+	automationMenu  bool
+	evals           map[string]bool
+	bridge          bool
 }
 
 // Run shows the app and returns when its window closes.
@@ -198,7 +203,7 @@ func Run(options Options) error {
 	log.Printf("app host starting: storeId=%s origin=%s url=%s pipe=%s", options.StoreID, options.Origin, options.URL, options.Pipe)
 	appID := AppUserModelID(options.StoreID)
 	_, _, _ = procSetAppUserModelID.Call(uintptr(unsafe.Pointer(utf16(appID))))
-	h := &host{options: options, startURL: options.URL, origin: originKey(options.Origin), sockets: map[string]*frameConn{}, prompts: map[string]bool{}, reviews: map[string]string{}}
+	h := &host{options: options, startURL: options.URL, origin: originKey(options.Origin), sockets: map[string]*frameConn{}, prompts: map[string]bool{}, reviews: map[string]string{}, evals: map[string]bool{}}
 	// Queue document opens before focusing an existing instance.
 	var bootstrap string
 	if len(options.Files) > 0 {
@@ -246,6 +251,14 @@ func Run(options Options) error {
 			log.Printf("native file drops unavailable: %v", err)
 		} else {
 			h.view.Init(`Object.defineProperty(window, "__DYNAPP_WINDOWS_FILE_DROP__", {value: true});`)
+		}
+		h.bridge = true
+		h.mu.Lock()
+		automation := h.automation
+		h.mu.Unlock()
+		if automation {
+			h.installAutomationFlag()
+			h.setAutomationMenu(true)
 		}
 		h.view.Init(bootstrap)
 	}
@@ -319,7 +332,7 @@ func (h *host) acquireControl(initial bool) (*frameConn, string, error) {
 	}
 	// Bound both writes and reads while the peer authenticates this host.
 	_ = conn.conn.SetDeadline(time.Now().Add(6 * time.Second))
-	if err := conn.writeJSON(map[string]any{"type": "native-host-hello", "version": 1, "storeId": h.options.StoreID, "purpose": "control"}); err != nil {
+	if err := conn.writeJSON(map[string]any{"type": "native-host-hello", "version": 1, "storeId": h.options.StoreID, "purpose": "control", "features": []string{"automation"}}); err != nil {
 		_ = conn.conn.Close()
 		return nil, "", err
 	}
@@ -359,7 +372,16 @@ func (h *host) acquireControl(initial bool) (*frameConn, string, error) {
 		return nil, "", errors.New("the app window is closed")
 	}
 	h.control = conn
+	automation, _ := ready["automation"].(bool)
+	changed := h.automation != automation
 	h.mu.Unlock()
+	if initial {
+		h.mu.Lock()
+		h.automation = automation
+		h.mu.Unlock()
+	} else if changed {
+		h.applyAutomation(automation)
+	}
 	go h.readControl(conn)
 	script, _ := ready["bootstrapScript"].(string)
 	log.Printf("control: ready; bridge script %d bytes, start %s, capabilities %v", len(script), h.startURL, ready["capabilities"])
@@ -380,6 +402,7 @@ func (h *host) readControl(conn *frameConn) {
 			pending := h.reviews
 			h.reviews = map[string]string{}
 			h.mu.Unlock()
+			go h.reconnectControl()
 			for rid := range pending {
 				if !strings.HasPrefix(rid, "menu-") {
 					h.deliver(map[string]any{"rid": rid, "event": "review", "error": errAgentNotAvailable.Error()})
@@ -395,6 +418,11 @@ func (h *host) readControl(conn *frameConn) {
 			continue
 		}
 		switch frame["type"] {
+		case "native-host-automation":
+			go h.handleAutomation(frame, conn)
+		case "native-host-automation-state":
+			enabled, _ := frame["enabled"].(bool)
+			h.applyAutomation(enabled)
 		case "native-host-permission-request":
 			h.prompt(frame, conn)
 		case "native-host-drop-files-result":
@@ -458,6 +486,9 @@ func (h *host) hookWebView(bridge bool) error {
 	}
 	chromium.NavigationCompletedCallback = func(sender *edge.ICoreWebView2, _ *edge.ICoreWebView2NavigationCompletedEventArgs) {
 		source := documentSource(sender)
+		if originKey(source) == h.origin {
+			h.automationNavigated(source)
+		}
 		if source == "" || strings.HasPrefix(source, "about:") || originKey(source) == h.origin {
 			return
 		}
@@ -551,6 +582,10 @@ func (h *host) addPermissionsMenu() {
 			go h.requestReview("")
 			return 0
 		}
+		if message == wmSysCommand && wparam&0xFFF0 == stopAutomationCommand {
+			go h.stopAutomation()
+			return 0
+		}
 		result, _, _ := procCallWindowProc.Call(h.oldProc, hwnd, message, wparam, lparam)
 		return result
 	})
@@ -558,14 +593,17 @@ func (h *host) addPermissionsMenu() {
 }
 
 type bridgeMessage struct {
-	Op      string `json:"op"`
-	SID     string `json:"sid"`
-	RID     string `json:"rid"`
-	Text    string `json:"text"`
-	Binary  string `json:"binary"`
-	Code    int    `json:"code"`
-	Reason  string `json:"reason"`
-	Enabled bool   `json:"enabled"`
+	Op      string            `json:"op"`
+	ID      string            `json:"id"`
+	JSON    string            `json:"json"`
+	Entries []json.RawMessage `json:"entries"`
+	SID     string            `json:"sid"`
+	RID     string            `json:"rid"`
+	Text    string            `json:"text"`
+	Binary  string            `json:"binary"`
+	Code    int               `json:"code"`
+	Reason  string            `json:"reason"`
+	Enabled bool              `json:"enabled"`
 }
 
 func (h *host) handleBridge(raw string) {
@@ -620,6 +658,10 @@ func (h *host) handleBridge(raw string) {
 		if message.RID != "" {
 			go h.requestReview(message.RID)
 		}
+	case "console":
+		h.forwardConsole(message.Entries)
+	case "automationResult":
+		h.finishEval(message.ID, message.JSON)
 	}
 }
 

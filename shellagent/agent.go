@@ -120,6 +120,7 @@ type Server struct {
 	nativeInstallMu      sync.Mutex
 	nativeAskMu          sync.Mutex
 	nativeAsks           map[string]*nativeAsk
+	automation           nativeAutomation
 
 	// Mesh plumbing (docs/mesh-network.md): the inbox socket and the router
 	// port mapping run only inside a started agent (meshActive) that is
