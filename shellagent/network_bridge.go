@@ -218,14 +218,22 @@ func (s *Server) forwardTCPBridge(socket protocolSocket, bridges *bridgeSet, bri
 					return
 				}
 			} else if mode == "datagram" {
+				controlChannel := false
 				if datagrams, ok := carrier.(interface{ SendDatagram([]byte) error }); ok {
 					for _, datagram := range encodeBridgeDatagrams(bridgeID, buffer[:count]) {
-						if datagrams.SendDatagram(datagram) != nil {
-							// QUIC datagrams may be dropped. A local send error drops
-							// this UDP packet without tearing down its socket.
+						if err := datagrams.SendDatagram(datagram); err != nil {
+							// A resumed session may sit on a carrier without a
+							// datagram channel; the packet then rides the
+							// control channel. Otherwise datagrams may be
+							// dropped, and a local send error drops this UDP
+							// packet without tearing down its socket.
+							controlChannel = errors.Is(err, errDatagramsUnavailable)
 							break
 						}
 					}
+				}
+				if controlChannel {
+					sendBinary(carrier, context.Background(), map[string]any{"type": "net-data", "bridgeId": bridgeID}, buffer[:count])
 				}
 			} else {
 				sendBinary(carrier, context.Background(), map[string]any{"type": "net-data", "bridgeId": bridgeID}, buffer[:count])

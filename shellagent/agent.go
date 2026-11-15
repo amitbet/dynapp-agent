@@ -140,6 +140,14 @@ type Server struct {
 	portmapLocalPort    int // 0: meshICEPort; negative: any free port (tests)
 	portmapBindFailedAt time.Time
 	iceTransport        atomic.Pointer[iceMuxTransport]
+
+	// Resumable sessions by id (resume.go) and the ICE server list Dyner
+	// issued (ice_servers.go).
+	resumeMu            sync.Mutex
+	resumeSessions      map[string]*sessionSocket
+	resumeGraceOverride time.Duration
+	iceServersMu        sync.Mutex
+	iceServersCache     iceServerCache
 }
 
 type protocolSocket interface {
@@ -160,6 +168,12 @@ type carrierCapabilities struct {
 	// portMapping is the advertised router mapping ({protocol, external}) a
 	// WebRTC hello reply reports under transport.portMapping.
 	portMapping map[string]any
+	// resumable: a session on this carrier may outlive it (relay and WebRTC
+	// carriers of Dyner-account environments).
+	resumable bool
+	// rejectReason is what a rejected hello reports, when the carrier has an
+	// established text for it.
+	rejectReason string
 }
 
 var connectionWriters sync.Map // map[protocolSocket]*sync.Mutex
@@ -508,6 +522,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if iceCancel != nil {
 		iceCancel()
 	}
+	s.endResumableSessions()
 	if identitySyncCancel != nil {
 		identitySyncCancel()
 	}
@@ -595,29 +610,31 @@ type message struct {
 	KeyID string          `json:"keyId,omitempty"`
 	App   *directLocalApp `json:"app,omitempty"`
 	// Fragments marks a browser that reassembles oversized WebRTC messages.
-	Fragments    bool           `json:"fragments,omitempty"`
-	Method       string         `json:"method,omitempty"`
-	Service      string         `json:"service,omitempty"`
-	AppID        string         `json:"appId,omitempty"`
-	SessionID    string         `json:"sessionId,omitempty"`
-	Args         []any          `json:"args,omitempty"`
-	File         string         `json:"file,omitempty"`
-	Command      string         `json:"command,omitempty"`
-	Cwd          string         `json:"cwd,omitempty"`
-	Action       string         `json:"action,omitempty"`
-	Stream       bool           `json:"stream,omitempty"`
-	Stdin        string         `json:"stdin,omitempty"`
-	Mode         string         `json:"mode,omitempty"`
-	Cols         int            `json:"cols,omitempty"`
-	Rows         int            `json:"rows,omitempty"`
-	Term         string         `json:"term,omitempty"`
-	Env          map[string]any `json:"env,omitempty"`
-	ProcessID    string         `json:"processId,omitempty"`
-	Data         string         `json:"data,omitempty"`
-	Signal       string         `json:"signal,omitempty"`
-	BridgeID     string         `json:"bridgeId,omitempty"`
-	Kind         string         `json:"kind,omitempty"`
-	ProtocolName string         `json:"-"`
+	Fragments bool `json:"fragments,omitempty"`
+	// Session asks for a resumable session or resumes one (hello only).
+	Session      json.RawMessage `json:"session,omitempty"`
+	Method       string          `json:"method,omitempty"`
+	Service      string          `json:"service,omitempty"`
+	AppID        string          `json:"appId,omitempty"`
+	SessionID    string          `json:"sessionId,omitempty"`
+	Args         []any           `json:"args,omitempty"`
+	File         string          `json:"file,omitempty"`
+	Command      string          `json:"command,omitempty"`
+	Cwd          string          `json:"cwd,omitempty"`
+	Action       string          `json:"action,omitempty"`
+	Stream       bool            `json:"stream,omitempty"`
+	Stdin        string          `json:"stdin,omitempty"`
+	Mode         string          `json:"mode,omitempty"`
+	Cols         int             `json:"cols,omitempty"`
+	Rows         int             `json:"rows,omitempty"`
+	Term         string          `json:"term,omitempty"`
+	Env          map[string]any  `json:"env,omitempty"`
+	ProcessID    string          `json:"processId,omitempty"`
+	Data         string          `json:"data,omitempty"`
+	Signal       string          `json:"signal,omitempty"`
+	BridgeID     string          `json:"bridgeId,omitempty"`
+	Kind         string          `json:"kind,omitempty"`
+	ProtocolName string          `json:"-"`
 	Target       struct {
 		Host      string `json:"host"`
 		Port      int    `json:"port"`
@@ -637,9 +654,49 @@ func (m message) allows(required string) bool {
 	return m.auth.allows(required)
 }
 
-func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protocolSocket, authenticate func(message) socketAuthentication, carrier carrierCapabilities, channels <-chan protocolSocket) {
-	connectionWriters.Store(connection, &sync.Mutex{})
-	defer connectionWriters.Delete(connection)
+func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket protocolSocket, authenticate func(message) socketAuthentication, carrier carrierCapabilities, channels <-chan protocolSocket) {
+	connectionWriters.Store(carrierSocket, &sync.Mutex{})
+	defer connectionWriters.Delete(carrierSocket)
+	rejected := carrier.rejectReason
+	if rejected == "" {
+		rejected = "Authentication required"
+	}
+	_, data, err := carrierSocket.Read(ctx)
+	if err != nil {
+		return
+	}
+	var hello message
+	if err := json.Unmarshal(data, &hello); err != nil {
+		closeCarrier(carrierSocket, ctx, websocket.StatusPolicyViolation, rejected)
+		return
+	}
+	negotiatedProtocol := protocolNumber(hello.Protocol)
+	authentication := authenticate(hello)
+	if hello.Type != "hello" || (negotiatedProtocol != LegacyProtocolVersion && negotiatedProtocol != ProtocolVersion) || !authentication.ok {
+		closeCarrier(carrierSocket, ctx, websocket.StatusPolicyViolation, rejected)
+		return
+	}
+	requested := parseHelloSession(hello.Session)
+	if requested != nil && requested.Resume != "" {
+		s.resumeSession(ctx, carrierSocket, requested, negotiatedProtocol, authentication, carrier)
+		return
+	}
+	// The session state below binds to connection: the carrier itself, or a
+	// sessionSocket that outlives it.
+	connection := carrierSocket
+	carrierCtx := ctx
+	var session *sessionSocket
+	if requested != nil && requested.Resumable && carrier.resumable && negotiatedProtocol == ProtocolVersion && authentication.keyID != "" {
+		if session, err = s.newSessionSocket(ctx, authentication); err == nil {
+			connection, ctx = session, session.ctx
+			carrier = resumableCarrierFeatures(carrier)
+			connectionWriters.Store(connection, &sync.Mutex{})
+			defer connectionWriters.Delete(connection)
+			defer session.end(websocket.StatusNormalClosure, "")
+		} else {
+			session = nil
+		}
+	}
 	bridges := newBridgeSet(&s.activeBridges)
 	defer bridges.closeAll()
 	processes := proc.NewSet(processSender(connection, ctx), ctx)
@@ -652,25 +709,10 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 	}()
 	agents := newAgentService(s, connection)
 	defer agents.closeAll()
-	_, data, err := connection.Read(ctx)
-	if err != nil {
-		return
-	}
-	var hello message
-	if err := json.Unmarshal(data, &hello); err != nil {
-		_ = connection.Close(websocket.StatusPolicyViolation, "Authentication required")
-		return
-	}
-	negotiatedProtocol := protocolNumber(hello.Protocol)
-	authentication := authenticate(hello)
-	if hello.Type != "hello" || (negotiatedProtocol != LegacyProtocolVersion && negotiatedProtocol != ProtocolVersion) || !authentication.ok {
-		_ = connection.Close(websocket.StatusPolicyViolation, "Authentication required")
-		return
-	}
 	if authentication.keyID != "" {
 		defer s.trackLiveSocket(connection, &authentication)()
 	}
-	if channels != nil {
+	if channels != nil && session == nil {
 		go func() {
 			for {
 				select {
@@ -685,7 +727,10 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 			}
 		}()
 	}
-	if datagrams, ok := connection.(interface {
+	if session != nil {
+		// Datagrams follow whichever carrier is attached.
+		go s.handleBridgeDatagrams(ctx, session, bridges)
+	} else if datagrams, ok := connection.(interface {
 		ReceiveDatagram(context.Context) ([]byte, error)
 	}); ok && carrier.datagrams {
 		go s.handleBridgeDatagrams(ctx, datagrams, bridges)
@@ -700,7 +745,13 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, connection protoc
 	if carrier.portMapping != nil {
 		helloReply["transport"] = map[string]any{"portMapping": carrier.portMapping}
 	}
-	if !send(connection, ctx, helloReply) {
+	if session != nil {
+		helloReply["features"] = sessionFeatures(carrier)
+		helloReply["session"] = map[string]any{"id": session.id, "token": session.token, "graceMs": session.grace.Milliseconds()}
+		if session.attach(carrierSocket, carrierCtx, carrier, 0, func(uint64) map[string]any { return helloReply }) != nil {
+			return
+		}
+	} else if !send(connection, ctx, helloReply) {
 		return
 	}
 	for {

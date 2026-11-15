@@ -509,6 +509,25 @@ func TestWebRTCSocketOnlyFragmentsForBrowsersThatAskedFor(t *testing.T) {
 // and returns the browser's control channel plus its reassembled messages.
 func connectedICEBrowser(t *testing.T, agent *Server, hello string) (*webrtc.DataChannel, <-chan []byte, *atomic.Int64) {
 	t.Helper()
+	browser := dialICEBrowser(t, agent)
+	if err := browser.control.SendText(hello); err != nil {
+		t.Fatal(err)
+	}
+	return browser.control, browser.messages, browser.fragmentsSeen
+}
+
+type testICEBrowser struct {
+	peer          *webrtc.PeerConnection
+	control       *webrtc.DataChannel
+	messages      chan []byte
+	fragmentsSeen *atomic.Int64
+	closed        chan struct{}
+}
+
+// dialICEBrowser opens the control channel of a real pion browser peer
+// against answerICESession, without sending a hello.
+func dialICEBrowser(t *testing.T, agent *Server) *testICEBrowser {
+	t.Helper()
 	answerPosted := make(chan struct{})
 	var answerMu sync.Mutex
 	var answer iceDescription
@@ -539,8 +558,10 @@ func connectedICEBrowser(t *testing.T, agent *Server, hello string) (*webrtc.Dat
 		t.Fatal(err)
 	}
 	opened := make(chan struct{})
+	closed := make(chan struct{})
 	control.OnOpen(func() { close(opened) })
-	messages := make(chan []byte, 8)
+	control.OnClose(func() { close(closed) })
+	messages := make(chan []byte, 4096)
 	fragmentsSeen := &atomic.Int64{}
 	// The same reassembly the browser runtime performs.
 	var parts []byte
@@ -599,10 +620,7 @@ func connectedICEBrowser(t *testing.T, agent *Server, hello string) (*webrtc.Dat
 	case <-time.After(10 * time.Second):
 		t.Fatal("WebRTC control channel did not open")
 	}
-	if err := control.SendText(hello); err != nil {
-		t.Fatal(err)
-	}
-	return control, messages, fragmentsSeen
+	return &testICEBrowser{peer: browser, control: control, messages: messages, fragmentsSeen: fragmentsSeen, closed: closed}
 }
 
 func receiveICEMessage(t *testing.T, messages <-chan []byte, what string) map[string]any {

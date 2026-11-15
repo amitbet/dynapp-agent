@@ -434,7 +434,10 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 	transport := s.currentICETransport()
 	transport.apply(&settings)
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
-	peer, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.cloudflare.com:3478"}}}})
+	// pion gathers udp4 and udp6 by default; nothing here narrows the
+	// network types, so IPv6 host and server-reflexive candidates appear
+	// whenever the machine has global IPv6.
+	peer, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: s.iceServers(ctx, config)})
 	if err != nil {
 		return err
 	}
@@ -477,7 +480,7 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 					return s.authenticateICEHello(connectionCtx, config, hello)
 				}, carrierCapabilities{
 					reliableStreams: true, datagrams: datagrams, rawBridgeStreams: true, filesystemStreams: true, fragments: true,
-					portMapping: transport.helloPortMapping(),
+					portMapping: transport.helloPortMapping(), resumable: true,
 				}, channels)
 			}()
 		})

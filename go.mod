@@ -13,6 +13,7 @@ require (
 	github.com/jlaffaye/ftp v0.2.0
 	github.com/kardianos/service v1.2.4
 	github.com/pion/ice/v4 v4.0.10
+	github.com/pion/stun/v3 v3.0.0
 	github.com/pion/webrtc/v4 v4.1.6
 	github.com/pkg/sftp v1.13.9
 	github.com/quic-go/quic-go v0.59.0
@@ -46,7 +47,6 @@ require (
 	github.com/pion/sctp v1.8.40 // indirect
 	github.com/pion/sdp/v3 v3.0.16 // indirect
 	github.com/pion/srtp/v3 v3.0.8 // indirect
-	github.com/pion/stun/v3 v3.0.0 // indirect
 	github.com/pion/transport/v3 v3.0.8 // indirect
 	github.com/pion/turn/v4 v4.1.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect

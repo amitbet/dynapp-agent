@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amitbet/dynapp-agent/shellagent/proc"
 	"nhooyr.io/websocket"
 )
 
@@ -55,153 +54,256 @@ func (s *Server) runRelay(ctx context.Context, config Config) {
 	}
 }
 
+// relayRetiredLimit bounds how many ended browser session ids the relay
+// remembers, so late frames from a replaced browser socket are dropped.
+const relayRetiredLimit = 256
+
+// relayHub demultiplexes the one agent socket to the relay Durable Object.
+// The DO tags each browser frame with that browser socket's ticket id and
+// forwards agent frames, untagged, to its single current browser socket. So
+// each id becomes a virtual socket served by the shared session core, and a
+// frame under a new id means the DO replaced the browser socket: every
+// earlier virtual socket's carrier is dead, and only the current one may
+// write.
+type relayHub struct {
+	socket protocolSocket
+	ctx    context.Context
+	// writeMu serializes writes on the shared socket and the switch of the
+	// current id, so a replaced session never writes to its successor.
+	writeMu sync.Mutex
+	current *relayVirtualSocket
+	retired map[string]struct{}
+	order   []string
+}
+
+func newRelayHub(ctx context.Context, socket protocolSocket) *relayHub {
+	return &relayHub{socket: socket, ctx: ctx, retired: map[string]struct{}{}}
+}
+
+// route returns the virtual socket for a browser session id, creating it
+// when the id is new. created reports a socket that still needs serving.
+func (hub *relayHub) route(id string, e2ee bool) (socket *relayVirtualSocket, created bool) {
+	hub.writeMu.Lock()
+	if hub.current != nil && hub.current.id == id {
+		socket = hub.current
+		hub.writeMu.Unlock()
+		return socket, false
+	}
+	if _, ok := hub.retired[id]; ok {
+		hub.writeMu.Unlock()
+		return nil, false
+	}
+	previous := hub.current
+	socket = &relayVirtualSocket{hub: hub, id: id, e2eeRequired: e2ee, incoming: make(chan dataChannelMessage, 256), closed: make(chan struct{})}
+	hub.current = socket
+	if previous != nil {
+		hub.retireLocked(previous.id)
+	}
+	hub.writeMu.Unlock()
+	if previous != nil {
+		previous.markDead()
+	}
+	return socket, true
+}
+
+func (hub *relayHub) retireLocked(id string) {
+	if _, ok := hub.retired[id]; ok {
+		return
+	}
+	hub.retired[id] = struct{}{}
+	hub.order = append(hub.order, id)
+	if len(hub.order) > relayRetiredLimit {
+		delete(hub.retired, hub.order[0])
+		hub.order = hub.order[1:]
+	}
+}
+
+func (hub *relayHub) closeAll() {
+	hub.writeMu.Lock()
+	current := hub.current
+	hub.current = nil
+	hub.writeMu.Unlock()
+	if current != nil {
+		current.markDead()
+	}
+}
+
+// relayVirtualSocket is one browser session on the relay socket. Legacy
+// end-to-end encryption is negotiated inside it, before the hello.
+type relayVirtualSocket struct {
+	hub          *relayHub
+	id           string
+	incoming     chan dataChannelMessage
+	closed       chan struct{}
+	closeOnce    sync.Once
+	e2eeRequired bool
+	accepted     map[string]bool
+	tokenMu      sync.Mutex
+	e2eeToken    string
+}
+
+func (v *relayVirtualSocket) markDead() {
+	v.closeOnce.Do(func() {
+		close(v.closed)
+		connectionE2EE.Delete(v)
+	})
+}
+
+func (v *relayVirtualSocket) token() string {
+	v.tokenMu.Lock()
+	defer v.tokenMu.Unlock()
+	return v.e2eeToken
+}
+
+func (v *relayVirtualSocket) Read(ctx context.Context) (websocket.MessageType, []byte, error) {
+	for {
+		var frame dataChannelMessage
+		select {
+		case frame = <-v.incoming:
+		case <-v.closed:
+			return 0, nil, errors.New("relay browser session ended")
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		}
+		if !v.e2eeRequired {
+			return frame.kind, frame.data, nil
+		}
+		token := v.token()
+		if token == "" {
+			v.negotiateE2EE(ctx, frame.data)
+			continue
+		}
+		plain, err := openRemoteFrame(token, frame.data)
+		if err != nil {
+			continue
+		}
+		kind := websocket.MessageText
+		if len(plain) >= 4 && string(plain[:4]) == "DFB1" {
+			kind = websocket.MessageBinary
+		}
+		return kind, plain, nil
+	}
+}
+
+func (v *relayVirtualSocket) negotiateE2EE(ctx context.Context, data []byte) {
+	var init struct {
+		Type    string `json:"type"`
+		Version int    `json:"version"`
+		KeyID   string `json:"keyId"`
+	}
+	if json.Unmarshal(data, &init) != nil || init.Type != "dynapp-e2ee-init" || init.Version != 1 {
+		_ = v.writeFrame(ctx, map[string]any{"type": "error", "error": "End-to-end encryption is required"})
+		return
+	}
+	token := ""
+	for candidate := range v.accepted {
+		if remoteKeyID(candidate) == init.KeyID {
+			token = candidate
+			break
+		}
+	}
+	if token == "" {
+		_ = v.writeFrame(ctx, map[string]any{"type": "error", "error": "End-to-end encryption credential rejected"})
+		return
+	}
+	// Ready is intentionally outside the protected stream, matching the
+	// existing Electron implementation.
+	_ = v.writeFrame(ctx, map[string]any{"type": "dynapp-e2ee-ready", "version": 1})
+	v.tokenMu.Lock()
+	v.e2eeToken = token
+	v.tokenMu.Unlock()
+	connectionE2EE.Store(v, relayCipher{tokenHash: token})
+}
+
+// writeFrame sends a JSON record outside send(), which keeps a per-socket
+// writer entry this socket may no longer have; it seals the record once
+// encryption is up.
+func (v *relayVirtualSocket) writeFrame(ctx context.Context, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if token := v.token(); token != "" {
+		if data, err = sealRemoteFrame(token, data); err != nil {
+			return err
+		}
+	}
+	return v.Write(ctx, websocket.MessageText, data)
+}
+
+func (v *relayVirtualSocket) Write(ctx context.Context, kind websocket.MessageType, data []byte) error {
+	v.hub.writeMu.Lock()
+	defer v.hub.writeMu.Unlock()
+	if v.hub.current != v {
+		return errors.New("relay browser session ended")
+	}
+	return v.hub.socket.Write(ctx, kind, data)
+}
+
+// Close cannot close the browser's relay socket; it reports the close as an
+// `error` frame (the relay's existing rejection record, plus the code) while
+// this session still owns the browser socket, then drops the session id.
+func (v *relayVirtualSocket) Close(code websocket.StatusCode, reason string) error {
+	_ = v.writeFrame(v.hub.ctx, map[string]any{"type": "error", "error": reason, "code": int(code)})
+	v.hub.writeMu.Lock()
+	if v.hub.current == v {
+		v.hub.current = nil
+	}
+	v.hub.retireLocked(v.id)
+	v.hub.writeMu.Unlock()
+	v.markDead()
+	return nil
+}
+
 func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, relay RelayConnection, config Config) {
-	connectionWriters.Store(socket, &sync.Mutex{})
-	defer connectionWriters.Delete(socket)
-	defer connectionE2EE.Delete(socket)
 	socket.SetReadLimit(maxReadBytes + 512*1024)
 	accepted := make(map[string]bool, len(relay.AcceptedAuthTokenHashes))
 	for _, hash := range relay.AcceptedAuthTokenHashes {
 		accepted[strings.ToLower(hash)] = true
 	}
-	var session string
-	authenticated := false
-	var negotiated int
-	var granted socketAuthentication
-	bridges := newBridgeSet(&s.activeBridges)
-	defer bridges.closeAll()
-	processes := proc.NewSet(processSender(socket, ctx), ctx)
-	defer processes.CloseAll()
-	agents := newAgentService(s, socket)
-	defer agents.closeAll()
-	e2eeRequired := relay.Transport.E2EEncryption
-	var e2eeToken string
-	reset := func(next string) {
-		if session == next {
-			return
+	e2ee := relay.Transport.E2EEncryption
+	hub := newRelayHub(ctx, socket)
+	defer hub.closeAll()
+	authenticate := func(hello message) socketAuthentication {
+		candidate := normalizeAuthHash(hello.TokenHash)
+		if candidate == "" {
+			candidate = normalizeAuthHash(hello.Token)
 		}
-		bridges.closeAll()
-		processes.CloseAll()
-		bridges = newBridgeSet()
-		session, authenticated, negotiated, e2eeToken = next, false, 0, ""
-		granted = socketAuthentication{}
-		connectionE2EE.Delete(socket)
+		if !accepted[candidate] {
+			return socketAuthentication{}
+		}
+		granted := s.relayGrant(ctx, config, hello)
+		granted.environment = map[string]any{"id": config.EnvironmentID, "name": "This device", "endpoint": nil, "state": "connected", "source": "relay", "capabilities": granted.capabilities}
+		return granted
 	}
+	carrier := carrierCapabilities{resumable: !e2ee, rejectReason: "Pairing credential rejected"}
 	for ctx.Err() == nil {
 		kind, wire, err := socket.Read(ctx)
 		if err != nil {
 			return
 		}
-		incoming, nextSession, ok := decodeRelayFrame(kind, wire)
+		incoming, id, ok := decodeRelayFrame(kind, wire)
 		if !ok {
 			continue
 		}
 		s.noteRelayActivity()
-		reset(nextSession)
-		if e2eeRequired {
-			if e2eeToken == "" {
-				var init struct {
-					Type    string `json:"type"`
-					Version int    `json:"version"`
-					KeyID   string `json:"keyId"`
-				}
-				if json.Unmarshal(incoming, &init) != nil || init.Type != "dynapp-e2ee-init" || init.Version != 1 {
-					send(socket, ctx, map[string]any{"type": "error", "error": "End-to-end encryption is required"})
-					continue
-				}
-				for candidate := range accepted {
-					if remoteKeyID(candidate) == init.KeyID {
-						e2eeToken = candidate
-						break
-					}
-				}
-				if e2eeToken == "" {
-					send(socket, ctx, map[string]any{"type": "error", "error": "End-to-end encryption credential rejected"})
-					continue
-				}
-				// Ready is intentionally outside the protected stream, matching the
-				// existing Electron implementation.
-				connectionE2EE.Delete(socket)
-				send(socket, ctx, map[string]any{"type": "dynapp-e2ee-ready", "version": 1})
-				connectionE2EE.Store(socket, relayCipher{tokenHash: e2eeToken})
-				continue
-			}
-			incoming, err = openRemoteFrame(e2eeToken, incoming)
-			if err != nil {
-				continue
-			}
-		}
-		var request message
-		var body []byte
-		if len(incoming) >= 4 && string(incoming[:4]) == "DFB1" {
-			request, body, err = decodeBinaryFrame(incoming)
-		} else {
-			err = json.Unmarshal(incoming, &request)
-		}
-		if err != nil {
-			sendError(socket, ctx, "", "Remote message is invalid")
+		virtual, created := hub.route(id, e2ee)
+		if virtual == nil {
 			continue
 		}
-		if !authenticated {
-			candidate := normalizeAuthHash(request.TokenHash)
-			if candidate == "" {
-				candidate = normalizeAuthHash(request.Token)
-			}
-			version := protocolNumber(request.Protocol)
-			if request.Type != "hello" || (version != LegacyProtocolVersion && version != ProtocolVersion) || !accepted[candidate] {
-				send(socket, ctx, map[string]any{"type": "error", "error": "Pairing credential rejected"})
-				continue
-			}
-			authenticated, negotiated = true, version
-			granted = s.relayGrant(ctx, config, request)
-			send(socket, ctx, map[string]any{"type": "hello", "ok": true, "protocol": negotiated, "serverId": "go-shell-agent", "environment": map[string]any{"id": config.EnvironmentID, "name": "This device", "endpoint": nil, "state": "connected", "source": "relay", "capabilities": granted.capabilities}, "capabilities": granted.capabilities, "features": protocolFeatures(negotiated)})
-			continue
+		if created {
+			virtual.accepted = accepted
+			go s.serveAuthenticatedSocket(ctx, virtual, authenticate, carrier, nil)
 		}
-		if granted.storeID != "" && !appIDMatches(granted.storeID, request.AppID) {
-			sendFrameError(socket, ctx, request, "Frame app id does not match the paired app")
-			continue
+		frameKind := websocket.MessageText
+		if kind == websocket.MessageBinary {
+			frameKind = websocket.MessageBinary
 		}
-		auth := granted
-		request.auth = &auth
-		switch request.Type {
-		case "ping":
-			send(socket, ctx, map[string]any{"type": "pong", "id": request.ID, "now": time.Now().UnixMilli()})
-		case "fs":
-			if !socketAllows(granted.capabilities, filesystemCapability(request.Method)) {
-				sendError(socket, ctx, request.ID, permissionDeniedError(filesystemCapability(request.Method)))
-				continue
-			}
-			s.handleFilesystem(socket, ctx, request, body)
-		case "exec":
-			required := "fs.execFile"
-			if request.Command != "" {
-				required = "fs.exec"
-			}
-			if !socketAllows(granted.capabilities, required) {
-				send(socket, ctx, map[string]any{"type": "exec-error", "id": request.ID, "error": permissionDeniedError(required)})
-				continue
-			}
-			s.handleExec(socket, ctx, processes, request)
-		case "process":
-			processes.Handle(processRequest(request))
-		case "rpc":
-			if required := rpcCapability(request); !socketAllows(granted.capabilities, required) {
-				rpcError(socket, ctx, request, errors.New(permissionDeniedError(required)))
-				continue
-			}
-			s.handleRPC(socket, ctx, agents, request, body)
-		case "net":
-			if !socketAllows(granted.capabilities, "net."+request.ProtocolName+".connect") && !socketAllows(granted.capabilities, "net.protocol."+request.ProtocolName) {
-				sendError(socket, ctx, request.ID, permissionDeniedError(networkCapability(request.ProtocolName)))
-				continue
-			}
-			s.handleNetwork(socket, ctx, bridges, request, body)
-		case "net-data":
-			s.handleNetwork(socket, ctx, bridges, message{Action: "data", BridgeID: request.BridgeID}, body)
-		case "net-close":
-			s.handleNetwork(socket, ctx, bridges, message{Action: "close", BridgeID: request.BridgeID}, nil)
-		default:
-			send(socket, ctx, map[string]any{"type": "error", "id": request.ID, "error": "Unknown remote request"})
+		select {
+		case virtual.incoming <- dataChannelMessage{kind: frameKind, data: incoming}:
+		case <-virtual.closed:
+		case <-ctx.Done():
+			return
 		}
 	}
 }
