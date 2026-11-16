@@ -157,13 +157,23 @@ func main() {
 	printVersion := flag.Bool("version", false, "print version and exit")
 	background := flag.Bool("background", false, "run without a console window (per-user agent started at sign-in)")
 	updateNow := flag.Bool("update", false, "ask the running agent to update to the latest release now, and wait for it")
+	updateForce := flag.Bool("force", false, "with --update: close active bridges instead of waiting for them")
 	flag.Parse()
 	if *printVersion {
 		fmt.Println(shellagent.AgentVersion)
 		return
 	}
-	if *updateNow || (len(flag.Args()) == 1 && flag.Arg(0) == "update") {
-		if err := runUpdateNow(*address); err != nil {
+	if *updateNow || (flag.NArg() >= 1 && flag.Arg(0) == "update") {
+		force := *updateForce
+		for _, arg := range flag.Args()[min(1, flag.NArg()):] {
+			if arg == "--force" || arg == "-force" {
+				force = true
+			} else {
+				fmt.Fprintf(os.Stderr, "dynapp-shell-agent: unexpected argument to update: %s\n", arg)
+				os.Exit(2)
+			}
+		}
+		if err := runUpdateNow(*address, force); err != nil {
 			fmt.Fprintln(os.Stderr, "dynapp-shell-agent:", err)
 			os.Exit(1)
 		}

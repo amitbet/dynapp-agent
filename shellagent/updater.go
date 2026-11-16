@@ -242,6 +242,20 @@ func (config SelfUpdateConfig) bridgeUpdateDelay() time.Duration {
 	return DefaultMaxBridgeUpdateDelay
 }
 
+func (s *Server) setBridgeWait(deadline time.Time) {
+	s.updateMu.Lock()
+	s.updateBridgeWait = deadline
+	s.updateMu.Unlock()
+}
+
+// bridgeWaitDeadline is when a pending update stops waiting for active
+// bridges, or zero when no update is waiting for them.
+func (s *Server) bridgeWaitDeadline() time.Time {
+	s.updateMu.RLock()
+	defer s.updateMu.RUnlock()
+	return s.updateBridgeWait
+}
+
 func (s *Server) waitForIdleBridges(ctx context.Context, limit time.Duration) (force, proceed bool) {
 	if s.ActiveBridges() == 0 {
 		return false, true
@@ -249,12 +263,17 @@ func (s *Server) waitForIdleBridges(ctx context.Context, limit time.Duration) (f
 	if ctx.Err() != nil {
 		return false, false
 	}
+	if s.updateForce.Load() {
+		return true, true
+	}
 	deadline := s.bridgeDeferralDeadline(limit)
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return s.ActiveBridges() != 0, true
 	}
 	log.Printf("DynApp Shell agent: update downloaded; waiting up to %s for %d active bridge(s)", remaining.Round(time.Millisecond), s.ActiveBridges())
+	s.setBridgeWait(deadline)
+	defer s.setBridgeWait(time.Time{})
 	timer := time.NewTimer(remaining)
 	defer timer.Stop()
 	ticker := time.NewTicker(bridgeUpdatePollInterval)
@@ -265,6 +284,10 @@ func (s *Server) waitForIdleBridges(ctx context.Context, limit time.Duration) (f
 		}
 		if s.ActiveBridges() == 0 {
 			return false, true
+		}
+		if s.updateForce.Load() {
+			log.Printf("DynApp Shell agent: update forced; closing %d active bridge(s)", s.ActiveBridges())
+			return true, true
 		}
 		select {
 		case <-ctx.Done():

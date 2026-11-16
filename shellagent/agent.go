@@ -87,6 +87,8 @@ type Server struct {
 	selfUpdateCancel   context.CancelFunc
 	selfUpdateConfig   SelfUpdateConfig // resolved by startSelfUpdater
 	updateNowRunning   atomic.Bool
+	updateForce        atomic.Bool // set by `--update --force`: stop waiting for bridges
+	updateBridgeWait   time.Time   // guarded by updateMu: when a bridge wait gives up, zero when not waiting
 	cliUpdateCancel    context.CancelFunc
 	lanClose           func() error
 	bridgeCounter      atomic.Uint64

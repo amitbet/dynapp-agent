@@ -435,15 +435,25 @@ directory, and verify the release's SHA-256 sidecar before using it.
 To update now instead of waiting for the hourly check, run:
 
 ```sh
-dynapp-shell-agent --update      # or: dynapp-shell-agent update
+dynapp-shell-agent --update          # or: dynapp-shell-agent update
+dynapp-shell-agent --update --force  # close open bridges instead of waiting
 ```
 
 It asks the agent running on `--address` (default `127.0.0.1:9011`) to check
 GitHub, prints whether it is up to date, and otherwise waits until the new
 version answers on `/healthz`. It works the same for service, per-user, and
-LaunchAgent installs, and skips the backoff after an unfinished attempt. The
-request is `POST /api/settings/update` with a JSON body, under the same
-loopback, Origin and CSRF rules as the other settings endpoints. Agents older
+LaunchAgent installs, and skips the backoff after an unfinished attempt.
+
+Like the hourly check, a requested update waits for open TCP, UDP and RDP
+bridges (remote sessions, port forwards) to close, for up to 2 hours, because
+they live inside the agent process. The command says when it is waiting, how
+many bridges are open, and when the update applies anyway. `--force` closes
+them and applies the update now, and also ends a wait that is already running.
+
+The request is `POST /api/settings/update` with a JSON body (`{"force": true}`
+to force), under the same loopback, Origin and CSRF rules as the other
+settings endpoints. `GET /api/settings/update` reports `updating`,
+`activeBridges`, `waitingForBridges` and `bridgeWaitUntil`. Agents older
 than 0.1.72 do not have it; restart those and they update at startup.
 
 The macOS release binaries are signed with the persistent `DynApp Local

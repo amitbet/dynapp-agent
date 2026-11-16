@@ -20,6 +20,21 @@ type UpdateNowResult struct {
 	Current  string `json:"current"`
 	Latest   string `json:"latest"`
 	Updating bool   `json:"updating"`
+	// ActiveBridges counts the TCP, UDP and RDP bridges open in the agent.
+	// An update waits for them to close unless it was forced.
+	ActiveBridges int `json:"activeBridges"`
+}
+
+// UpdateStatus is what GET /api/settings/update reports while
+// `dynapp-shell-agent --update` waits for the new version.
+type UpdateStatus struct {
+	Current       string `json:"current"`
+	Updating      bool   `json:"updating"`
+	ActiveBridges int    `json:"activeBridges"`
+	// WaitingForBridges is set while a downloaded update waits for active
+	// bridges to close; BridgeWaitUntil is when it applies anyway.
+	WaitingForBridges bool      `json:"waitingForBridges"`
+	BridgeWaitUntil   time.Time `json:"bridgeWaitUntil,omitzero"`
 }
 
 // updateNowVerifier checks a downloaded release's signature; tests stub it.
@@ -27,15 +42,17 @@ var updateNowVerifier = verifyDownloadedAgentSignature
 
 // updateNow checks GitHub for a newer agent right away. When one exists it
 // installs it in the background, as the hourly check would, skipping the
-// backoff after an unfinished attempt because someone asked for it.
-func (s *Server) updateNow(ctx context.Context) (UpdateNowResult, error) {
+// backoff after an unfinished attempt because someone asked for it. It still
+// waits for active bridges to close unless force is set; force also ends a
+// wait that is already under way.
+func (s *Server) updateNow(ctx context.Context, force bool) (UpdateNowResult, error) {
 	s.mu.Lock()
 	config, enabled := s.selfUpdateConfig, s.selfUpdateCancel != nil
 	s.mu.Unlock()
 	if !enabled {
 		return UpdateNowResult{}, errors.New("self-update is off for this agent (a development build, or started with --no-self-update)")
 	}
-	result := UpdateNowResult{Current: config.Version}
+	result := UpdateNowResult{Current: config.Version, ActiveBridges: s.ActiveBridges()}
 	release, err := fetchLatestRelease(ctx, config)
 	if err != nil {
 		return result, fmt.Errorf("check for updates: %w", err)
@@ -45,6 +62,9 @@ func (s *Server) updateNow(ctx context.Context) (UpdateNowResult, error) {
 		return result, nil
 	}
 	result.Updating = true
+	if force {
+		s.updateForce.Store(true)
+	}
 	if !s.updateNowRunning.CompareAndSwap(false, true) {
 		return result, nil // an update requested earlier is still running
 	}
@@ -53,23 +73,38 @@ func (s *Server) updateNow(ctx context.Context) (UpdateNowResult, error) {
 	}
 	go func() {
 		defer s.updateNowRunning.Store(false)
-		log.Printf("self-update requested: current=%s latest=%s", config.Version, release.TagName)
+		// Still running here means the update did not restart the agent; a
+		// later scheduled update must wait for bridges again.
+		defer s.updateForce.Store(false)
+		log.Printf("self-update requested: current=%s latest=%s force=%t", config.Version, release.TagName, force)
 		s.checkSelfUpdateWithVerifier(context.Background(), config, updateNowVerifier)
 	}()
 	return result, nil
 }
 
 func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	switch r.Method {
+	case http.MethodGet:
+		if !s.guardSettingsRequest(w, r, false) {
+			return
+		}
+		writeJSON(w, s.updateStatus())
+		return
+	case http.MethodPost:
+	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.guardSettingsRequest(w, r, true) {
 		return
 	}
+	var body struct {
+		Force bool `json:"force"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	result, err := s.updateNow(ctx)
+	result, err := s.updateNow(ctx, body.Force)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -79,10 +114,38 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
+func (s *Server) updateStatus() UpdateStatus {
+	s.mu.Lock()
+	current := s.selfUpdateConfig.Version
+	s.mu.Unlock()
+	if current == "" {
+		current = AgentVersion
+	}
+	s.updateMu.RLock()
+	pending := s.updatePending
+	s.updateMu.RUnlock()
+	status := UpdateStatus{
+		Current:       current,
+		Updating:      s.updateNowRunning.Load() || pending,
+		ActiveBridges: s.ActiveBridges(),
+	}
+	if deadline := s.bridgeWaitDeadline(); !deadline.IsZero() {
+		status.WaitingForBridges = true
+		status.BridgeWaitUntil = deadline
+		status.Updating = true
+	}
+	return status
+}
+
 // RequestUpdate asks the agent listening on address to update itself now.
-func RequestUpdate(ctx context.Context, address string) (UpdateNowResult, error) {
+// With force it closes active bridges instead of waiting for them.
+func RequestUpdate(ctx context.Context, address string, force bool) (UpdateNowResult, error) {
 	var result UpdateNowResult
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+"/api/settings/update", strings.NewReader("{}"))
+	payload := "{}"
+	if force {
+		payload = `{"force":true}`
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+"/api/settings/update", strings.NewReader(payload))
 	if err != nil {
 		return result, err
 	}
@@ -107,6 +170,24 @@ func RequestUpdate(ctx context.Context, address string) (UpdateNowResult, error)
 		return result, fmt.Errorf("agent on %s: HTTP %d: %s", address, response.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return result, json.Unmarshal(body, &result)
+}
+
+// FetchUpdateStatus reads GET /api/settings/update. ok is false when no agent
+// answers or the agent predates the status endpoint.
+func FetchUpdateStatus(ctx context.Context, address string) (status UpdateStatus, ok bool) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/api/settings/update", nil)
+	if err != nil {
+		return status, false
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return status, false
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
+		return status, false
+	}
+	return status, json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&status) == nil
 }
 
 // RunningAgentVersion is the version /healthz reports, or "" when no agent
