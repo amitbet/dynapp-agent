@@ -52,8 +52,10 @@ const (
 // Server is the local, unprivileged-by-default environment provider. It is
 // deliberately usable in-process in tests and as a background OS service.
 type Server struct {
-	Address  string
-	StateDir string
+	Address string
+	// networkCategory caches the OS network trust level for the settings page.
+	networkCategory networkCategoryCache
+	StateDir        string
 	// SelfUpdate controls the optional GitHub release poller. The command
 	// package supplies the callback that restarts the process after a verified
 	// binary has been staged.

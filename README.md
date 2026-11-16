@@ -235,6 +235,12 @@ Optional overrides, all defaulted when omitted:
 
 Settings UI: `http://127.0.0.1:9011/settings`
 
+On Windows the settings page suggests switching the listener to LAN when
+every connected network is one Windows marks Private (or a domain network).
+The agent reads this with `Get-NetConnectionProfile` (cached for 30 s) and
+reports it as `network` in `GET /api/settings/remote-environments`. It never
+switches on its own; a Public network suppresses the suggestion.
+
 Runtime logs are appended to `logs/agent.log` beneath the state directory. An
 interactive launch also mirrors them to stdout. If the default UDP/TCP port is
 already occupied on a first no-argument launch, the agent selects an available

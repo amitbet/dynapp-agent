@@ -267,6 +267,7 @@ func (s *Server) settingsRemotePayload(ctx context.Context) (map[string]any, err
 			environments = append(environments, item)
 		}
 	}
+	profiles, profilesErr := s.networkCategory.get(ctx)
 	relayState := "Disabled"
 	if config.RelayEnabled {
 		relayState = "Reconnecting"
@@ -296,6 +297,7 @@ func (s *Server) settingsRemotePayload(ctx context.Context) (map[string]any, err
 		"relay":                map[string]any{"supported": true, "enabled": config.RelayEnabled, "connected": false, "state": relayState, "portMapping": s.portMappingStatus()},
 		"listenerRegistration": listenerRegistration, "hostedRegistration": hostedRegistration,
 		"pairingLinks": []any{},
+		"network":      networkSettingsStatus(profiles, profilesErr, config.resolvedListenerMode()),
 	}, nil
 }
 
