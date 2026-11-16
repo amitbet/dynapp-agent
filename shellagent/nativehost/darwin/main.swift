@@ -283,6 +283,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   var permissionQueue: [(frame: [String: Any], reply: ([String]?) -> Void)] = []
   var shownRequests = Set<String>()
   var permissionSheetOpen = false
+  var permissionPage: PermissionPageSheet?
   var bootstrapScript: String?
   var automationEnabled = false
   var pendingScripts: [String: (Any?, String?) -> Void] = [:]
@@ -587,6 +588,24 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     guard !permissionSheetOpen, !permissionQueue.isEmpty, let window else { return }
     let (frame, reply) = permissionQueue.removeFirst()
     permissionSheetOpen = true
+    let done: ([String]?) -> Void = { [weak self] capabilities in
+      reply(capabilities)
+      self?.permissionSheetOpen = false
+      self?.showNextPermissionRequest()
+    }
+    window.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    // The agent's permission page, shared with the Windows host. Agents that
+    // predate it send only "groups"; the native alert below draws those.
+    if let page = frame["page"] as? String, !page.isEmpty {
+      let sheet = PermissionPageSheet(page: page) { [weak self] capabilities in
+        self?.permissionPage = nil
+        done(capabilities)
+      }
+      permissionPage = sheet
+      sheet.present(on: window)
+      return
+    }
     let kind = (frame["kind"] as? String) ?? "pairing"
     let groups = (frame["groups"] as? [[String: Any]]) ?? []
     let appName = (frame["appName"] as? String) ?? settings.appName
@@ -656,26 +675,22 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     allow.isEnabled = false
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { allow.isEnabled = true }
 
-    window.makeKeyAndOrderFront(nil)
-    NSApp.activate(ignoringOtherApps: true)
     if let directory = ProcessInfo.processInfo.environment["DYNAPP_HOST_SNAPSHOT"] {
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
         snapshot(alert.window, to: directory + "/permission-sheet.png")
         if let main = self.window { snapshot(main, to: directory + "/window.png") }
       }
     }
-    alert.beginSheetModal(for: window) { [weak self] response in
+    alert.beginSheetModal(for: window) { response in
       if response == .alertSecondButtonReturn {
         var capabilities: [String] = []
         for (checkbox, permissions) in checkboxes where checkbox.state == .on {
           capabilities.append(contentsOf: permissions)
         }
-        reply(capabilities)
+        done(capabilities)
       } else {
-        reply(nil)
+        done(nil)
       }
-      self?.permissionSheetOpen = false
-      self?.showNextPermissionRequest()
     }
   }
 
@@ -1242,6 +1257,118 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
 
 /// Renders a window without Screen Recording access. Used only when the host
 /// is launched with DYNAPP_HOST_SNAPSHOT for UI checks.
+// MARK: - Permission page
+
+/// Shows the agent's permission page as a sheet on the app window. The page
+/// runs in its own WKWebView with a non-persistent store; only its main frame
+/// can post to "dynappPermission", and it cannot navigate anywhere. The app's
+/// page has no path to this web view or its message handler.
+final class PermissionPageSheet: NSObject, WKNavigationDelegate, WKUIDelegate {
+  static let width: CGFloat = 500
+  private let panel: NSPanel
+  private let webView: WKWebView
+  private var finish: (([String]?) -> Void)?
+  private weak var parent: NSWindow?
+  private var shown = false
+
+  init(page: String, finish: @escaping ([String]?) -> Void) {
+    self.finish = finish
+    let configuration = WKWebViewConfiguration()
+    configuration.websiteDataStore = .nonPersistent()
+    configuration.userContentController = WKUserContentController()
+    configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+    let frame = NSRect(x: 0, y: 0, width: PermissionPageSheet.width, height: 420)
+    webView = WKWebView(frame: frame, configuration: configuration)
+    panel = NSPanel(contentRect: frame, styleMask: [.titled, .docModalWindow], backing: .buffered, defer: false)
+    super.init()
+    configuration.userContentController.add(PermissionMessageProxy(self), name: "dynappPermission")
+    webView.navigationDelegate = self
+    webView.uiDelegate = self
+    webView.allowsMagnification = false
+    panel.contentView = webView
+    panel.isReleasedWhenClosed = false
+    webView.loadHTMLString(page, baseURL: nil)
+  }
+
+  func present(on window: NSWindow) {
+    parent = window
+    // The page reports its height once laid out; show it then so the sheet
+    // opens at its real size. Show anyway if that report never comes.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.show() }
+  }
+
+  private func show() {
+    guard !shown, finish != nil, let parent else { return }
+    shown = true
+    parent.beginSheet(panel, completionHandler: nil)
+    panel.makeFirstResponder(webView)
+    if let directory = ProcessInfo.processInfo.environment["DYNAPP_HOST_SNAPSHOT"] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+        guard let self else { return }
+        self.webView.takeSnapshot(with: nil) { image, _ in
+          guard let image, let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+            let png = bitmap.representation(using: .png, properties: [:])
+          else { return }
+          try? png.write(to: URL(fileURLWithPath: directory + "/permission-sheet.png"))
+        }
+        snapshot(parent, to: directory + "/window.png")
+      }
+    }
+  }
+
+  func received(_ body: Any) {
+    guard let message = body as? [String: Any] else { return }
+    if let height = (message["resize"] as? NSNumber)?.doubleValue {
+      let available = max(320, (parent?.contentLayoutRect.height ?? 700) - 40)
+      let target = min(max(CGFloat(height), 220), min(available, 680))
+      panel.setContentSize(NSSize(width: PermissionPageSheet.width, height: target))
+      show()
+      return
+    }
+    if (message["decision"] as? Bool) == true {
+      complete(message["capabilities"] as? [String])
+    }
+  }
+
+  private func complete(_ capabilities: [String]?) {
+    guard let finish else { return }
+    self.finish = nil
+    webView.configuration.userContentController.removeScriptMessageHandler(forName: "dynappPermission")
+    if shown, let parent {
+      parent.endSheet(panel)
+    } else {
+      panel.orderOut(nil)
+    }
+    finish(capabilities)
+  }
+
+  func webView(
+    _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+    decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+  ) {
+    let url = navigationAction.request.url?.absoluteString ?? "about:blank"
+    let initial = navigationAction.targetFrame?.isMainFrame == true && url == "about:blank"
+    decisionHandler(initial ? .allow : .cancel)
+  }
+
+  func webView(
+    _ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+    for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
+  ) -> WKWebView? { nil }
+
+  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { complete(nil) }
+}
+
+/// Holds the sheet weakly: WKUserContentController retains its handlers.
+final class PermissionMessageProxy: NSObject, WKScriptMessageHandler {
+  weak var target: PermissionPageSheet?
+  init(_ target: PermissionPageSheet) { self.target = target }
+  func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+    guard message.frameInfo.isMainFrame else { return }
+    target?.received(message.body)
+  }
+}
+
 func snapshot(_ window: NSWindow, to path: String) {
   guard let view = window.contentView?.superview ?? window.contentView,
     let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds)

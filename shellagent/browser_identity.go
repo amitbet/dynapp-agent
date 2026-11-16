@@ -124,8 +124,8 @@ func (s *Server) authenticateDirectLocal(ctx context.Context, socket protocolSoc
 
 // continuePairedIdentity builds the socket authentication for a known
 // identity. A fresh Dyner pre-approval replaces the saved app grant on every
-// catalog launch. Direct reconnects keep the saved grant and never open a
-// permission UI from inside the app.
+// catalog launch. Direct reconnects keep the saved grant; permissions an
+// update added become one pending Dyner request.
 func (s *Server) continuePairedIdentity(ctx context.Context, socket protocolSocket, config Config, identity BrowserIdentity, init directLocalInit, requestOrigin string) (socketAuthentication, directLocalOutcome) {
 	changed := applyBrowserClient(&identity, init.Client)
 	persist := func() {
@@ -175,8 +175,9 @@ func (s *Server) continuePairedIdentity(ctx context.Context, socket protocolSock
 				persist()
 				return authForIdentity(config, identity, &resolved), directLocalOK
 			} else if expanded := normalizePermissionSet(unionStrings(identity.Declared, resolved.Declared)); len(subtractStrings(expanded, identity.Declared)) > 0 {
-				// Keep the existing grant. Raise the reviewed ceiling so Dyner
-				// → Permissions can offer newly declared capabilities.
+				// Keep the existing grant and ask Dyner about what the update
+				// added, once, without holding up the app.
+				s.startBrowserDelta(identity, resolved, subtractStrings(expanded, identity.Declared), config)
 				identity.Declared = expanded
 				if resolved.Connect != nil {
 					identity.Connect = resolved.Connect
@@ -229,6 +230,9 @@ func (s *Server) pairUnknownIdentity(ctx context.Context, socket protocolSocket,
 	if existing, ok := findApprovedAppGrant(identities, proof.Origin, resolved.StoreID); ok {
 		// The grant is for this hosted origin and store id. A new browser key
 		// (PWA reinstall, another profile) reuses it instead of failing closed.
+		// Permissions an update added are asked in Dyner once, without
+		// holding up the app.
+		fresh := subtractStrings(resolved.Declared, unionStrings(existing.Declared, existing.Capabilities))
 		identity.StoreID = resolved.StoreID
 		identity.Capabilities = normalizePermissionSet(intersectStrings(existing.Capabilities, resolved.Declared))
 		identity.Declared = normalizePermissionSet(unionStrings(existing.Declared, resolved.Declared))
@@ -236,6 +240,7 @@ func (s *Server) pairUnknownIdentity(ctx context.Context, socket protocolSocket,
 		identity.ApprovedAt = time.Now().UnixMilli()
 		s.upsertBrowserIdentity(identity)
 		go s.notifyPermissionsChanged()
+		s.startBrowserDelta(identity, resolved, fresh, config)
 		return authForIdentity(config, identity, &resolved), directLocalOK
 	}
 	if s.autoApprovePairings {

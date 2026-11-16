@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Permissions</title>
+<!--
+  The agent's permission prompt for native apps. The macOS and Windows hosts
+  show this page in their own web view, separate from the app's page, with a
+  message channel that only this page can reach. The agent fills in the
+  request object below; the page never loads anything else.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f7;
+    --card: #ffffff;
+    --card-border: rgba(0, 0, 0, 0.09);
+    --text: #1d1d1f;
+    --muted: #5f6368;
+    --faint: #8a8d91;
+    --accent: #0a66d8;
+    --accent-text: #ffffff;
+    --focus: rgba(10, 102, 216, 0.45);
+    --row-hover: rgba(0, 0, 0, 0.035);
+    --risk-low-bg: #e7f5ec; --risk-low: #1d7a3e;
+    --risk-medium-bg: #fff4dc; --risk-medium: #8a5a00;
+    --risk-high-bg: #ffe9dc; --risk-high: #a3420c;
+    --risk-very-high-bg: #fde3e3; --risk-very-high: #b3261e;
+    --button-bg: #ffffff;
+    --button-border: rgba(0, 0, 0, 0.16);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e20;
+      --card: #2a2a2d;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text: #f2f2f3;
+      --muted: #b0b3b8;
+      --faint: #8d9096;
+      --accent: #3b8cf5;
+      --focus: rgba(59, 140, 245, 0.55);
+      --row-hover: rgba(255, 255, 255, 0.04);
+      --risk-low-bg: rgba(52, 168, 83, 0.18); --risk-low: #7fd69a;
+      --risk-medium-bg: rgba(251, 188, 4, 0.16); --risk-medium: #f5c862;
+      --risk-high-bg: rgba(244, 120, 40, 0.18); --risk-high: #ffa36b;
+      --risk-very-high-bg: rgba(234, 67, 53, 0.2); --risk-very-high: #ff8a80;
+      --button-bg: #3a3a3e;
+      --button-border: rgba(255, 255, 255, 0.12);
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+  }
+  .prompt { display: flex; flex-direction: column; max-height: 100vh; }
+  header { padding: 20px 22px 12px; display: flex; gap: 14px; align-items: flex-start; }
+  .shield {
+    flex: none; width: 40px; height: 40px; border-radius: 10px;
+    display: grid; place-items: center;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+  }
+  .shield svg { width: 22px; height: 22px; }
+  h1 { margin: 0 0 3px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .lead { margin: 0; color: var(--muted); }
+  .origin {
+    display: inline-block; margin-top: 6px; padding: 1px 7px; border-radius: 5px;
+    font: 11.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--muted); background: var(--row-hover); border: 1px solid var(--card-border);
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    user-select: text; -webkit-user-select: text;
+  }
+  .list-wrap { flex: 1 1 auto; overflow-y: auto; padding: 4px 22px 4px; min-height: 0; }
+  ul.groups {
+    list-style: none; margin: 0; padding: 0;
+    background: var(--card); border: 1px solid var(--card-border); border-radius: 10px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  li.group + li.group { border-top: 1px solid var(--card-border); }
+  label.row { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 10px 12px; align-items: start; }
+  label.row:hover { background: var(--row-hover); }
+  input[type=checkbox] {
+    appearance: none; -webkit-appearance: none; margin: 1px 0 0; width: 16px; height: 16px;
+    border-radius: 4px; border: 1.5px solid var(--button-border); background: var(--button-bg);
+    display: grid; place-items: center; transition: background 80ms, border-color 80ms;
+  }
+  input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+  input[type=checkbox]:checked::after {
+    content: ""; width: 4px; height: 8px; border: solid var(--accent-text); border-width: 0 2px 2px 0;
+    transform: translateY(-1px) rotate(45deg);
+  }
+  input[type=checkbox]:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  .title-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .title { font-weight: 600; }
+  .risk {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase;
+    padding: 0 6px; border-radius: 4px; line-height: 17px;
+  }
+  .risk.low { background: var(--risk-low-bg); color: var(--risk-low); }
+  .risk.medium { background: var(--risk-medium-bg); color: var(--risk-medium); }
+  .risk.high { background: var(--risk-high-bg); color: var(--risk-high); }
+  .risk.very-high { background: var(--risk-very-high-bg); color: var(--risk-very-high); }
+  .needed {
+    font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: 4px; line-height: 17px;
+    background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent);
+  }
+  .summary { color: var(--muted); margin-top: 1px; }
+  .reason { color: var(--muted); margin-top: 4px; padding-left: 8px; border-left: 2px solid var(--card-border); font-style: italic; }
+  .granted-note { color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+  .hint { padding: 10px 22px 0; color: var(--faint); font-size: 11.5px; }
+  footer { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 22px 18px; align-items: center; }
+  footer .spacer { flex: 1; }
+  .select-all { color: var(--accent); background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
+  .select-all:focus-visible { outline: 3px solid var(--focus); border-radius: 3px; }
+  button.action {
+    font: inherit; font-weight: 500; min-width: 96px; height: 30px; padding: 0 14px; border-radius: 7px;
+    border: 1px solid var(--button-border); background: var(--button-bg); color: var(--text); cursor: pointer;
+    box-shadow: var(--shadow);
+  }
+  button.action.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.action:disabled { opacity: 0.45; cursor: default; }
+  button.action:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  .platform-windows button.action { border-radius: 5px; height: 32px; }
+  .platform-windows .shield { border-radius: 8px; }
+</style>
+</head>
+<body>
+<main class="prompt" role="dialog" aria-modal="true" aria-labelledby="title" aria-describedby="lead">
+  <header>
+    <div class="shield" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6l7-3z"/>
+        <path d="M9.2 12.2l2 2 3.8-4"/>
+      </svg>
+    </div>
+    <div>
+      <h1 id="title"></h1>
+      <p class="lead" id="lead"></p>
+      <span class="origin" id="origin"></span>
+    </div>
+  </header>
+  <div class="list-wrap" id="list-wrap"><ul class="groups" id="groups"></ul></div>
+  <div class="hint" id="hint"></div>
+  <footer>
+    <button type="button" class="select-all" id="select-all" hidden></button>
+    <span class="spacer"></span>
+    <button type="button" class="action" id="deny"></button>
+    <button type="button" class="action primary" id="allow" disabled></button>
+  </footer>
+</main>
+<script>
+"use strict";
+(() => {
+  const request = __DYNAPP_PERMISSION_REQUEST__;
+  const kind = request.kind || "pairing";
+  const appName = request.appName || "This app";
+  const groups = Array.isArray(request.groups) ? request.groups : [];
+  const focus = new Set(Array.isArray(request.focus) ? request.focus : []);
+  const platform = request.platform === "windows" ? "windows" : "darwin";
+  document.body.classList.add("platform-" + platform);
+
+  let finished = false;
+  function post(message) {
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.dynappPermission) {
+        window.webkit.messageHandlers.dynappPermission.postMessage(message);
+      } else if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage(JSON.stringify(Object.assign({ dynappPermission: 1 }, message)));
+      }
+    } catch (error) { /* the host is gone */ }
+  }
+  function finish(capabilities) {
+    if (finished) return;
+    finished = true;
+    post({ decision: true, capabilities });
+  }
+
+  const text = (id, value) => { document.getElementById(id).textContent = value; };
+  const menuPath = platform === "windows"
+    ? "the window menu (Alt+Space) › Permissions…"
+    : appName + " › Permissions… in the menu bar";
+  const denyLabel = kind === "review" ? "Cancel" : "Don't Allow";
+  const allowLabel = kind === "review" ? "Save" : (groups.length > 1 ? "Allow Selected" : "Allow");
+  if (kind === "review") {
+    text("title", "Permissions for " + appName);
+    text("lead", "Choose what " + appName + " may do on this computer.");
+  } else if (kind === "delta") {
+    text("title", appName + " wants more access");
+    text("lead", "This version of " + appName + " asks for new permissions. Choose the ones to allow.");
+  } else if (kind === "required") {
+    text("title", appName + " needs your permission");
+    text("lead", "What you just did in " + appName + " needs access it doesn't have yet.");
+  } else {
+    text("title", "Allow " + appName + " to use this computer?");
+    text("lead", "Choose what " + appName + " may do. Everything else stays off.");
+  }
+  text("origin", request.origin || "");
+  document.getElementById("origin").hidden = !request.origin;
+  text("hint", "You can change this later from " + menuPath + ".");
+  text("deny", denyLabel);
+  text("allow", allowLabel);
+
+  const list = document.getElementById("groups");
+  const boxes = [];
+  groups.forEach((group, index) => {
+    const danger = ["low", "medium", "high", "very-high"].includes(group.danger) ? group.danger : "medium";
+    const checked = kind === "review"
+      ? Boolean(group.granted)
+      : (Boolean(group.suggested) || focus.has(group.id)) && danger !== "very-high";
+    const item = document.createElement("li");
+    item.className = "group";
+    const label = document.createElement("label");
+    label.className = "row";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = checked;
+    box.id = "group-" + index;
+    const body = document.createElement("div");
+    const line = document.createElement("div");
+    line.className = "title-line";
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = group.title || group.id || "Permission";
+    const risk = document.createElement("span");
+    risk.className = "risk " + danger;
+    risk.textContent = danger.replace("-", " ") + " risk";
+    line.append(title, risk);
+    if (focus.has(group.id)) {
+      const needed = document.createElement("span");
+      needed.className = "needed";
+      needed.textContent = "Needed now";
+      line.append(needed);
+    }
+    body.append(line);
+    if (group.summary) {
+      const summary = document.createElement("div");
+      summary.className = "summary";
+      summary.textContent = group.summary;
+      body.append(summary);
+    }
+    for (const reason of Array.isArray(group.reasons) ? group.reasons : []) {
+      const quote = document.createElement("div");
+      quote.className = "reason";
+      quote.textContent = "“" + reason + "”";
+      body.append(quote);
+    }
+    if (kind !== "review" && group.granted) {
+      const note = document.createElement("div");
+      note.className = "granted-note";
+      note.textContent = "Already allowed";
+      body.append(note);
+    }
+    label.append(box, body);
+    item.append(label);
+    list.append(item);
+    boxes.push({ box, group });
+  });
+
+  const selectAll = document.getElementById("select-all");
+  function refreshSelectAll() {
+    if (boxes.length < 3) return;
+    const all = boxes.every(({ box }) => box.checked);
+    selectAll.hidden = false;
+    selectAll.textContent = all ? "Clear all" : "Select all";
+  }
+  selectAll.addEventListener("click", () => {
+    const all = boxes.every(({ box }) => box.checked);
+    for (const { box } of boxes) box.checked = !all;
+    refreshSelectAll();
+  });
+  for (const { box } of boxes) box.addEventListener("change", refreshSelectAll);
+  refreshSelectAll();
+
+  const deny = document.getElementById("deny");
+  const allow = document.getElementById("allow");
+  deny.addEventListener("click", () => finish(null));
+  allow.addEventListener("click", () => {
+    if (allow.disabled) return;
+    const selected = [];
+    for (const { box, group } of boxes) {
+      if (box.checked && Array.isArray(group.permissions)) selected.push(...group.permissions);
+    }
+    finish(selected);
+  });
+  // A click that was aimed at the app must not land on Allow.
+  setTimeout(() => { allow.disabled = false; }, 1000);
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      finish(null);
+    } else if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) {
+      // Return without a focused button is the safe answer.
+      event.preventDefault();
+      finish(null);
+    }
+  });
+  document.addEventListener("contextmenu", (event) => event.preventDefault());
+  document.addEventListener("dragstart", (event) => event.preventDefault());
+  document.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.closest("a")) event.preventDefault();
+  });
+
+  function reportSize() {
+    const main = document.querySelector(".prompt");
+    const listHeight = list.scrollHeight;
+    const chrome = main.scrollHeight - document.getElementById("list-wrap").clientHeight;
+    post({ resize: Math.ceil(chrome + listHeight + 10) });
+  }
+  window.addEventListener("load", () => {
+    reportSize();
+    deny.focus();
+  });
+})();
+</script>
+</body>
+</html>

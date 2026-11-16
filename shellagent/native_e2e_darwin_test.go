@@ -272,9 +272,11 @@ func TestNativePermissionSheet(t *testing.T) {
 			}}},
 		})
 	})
-	mux.HandleFunc("/icon-512.png", func(w http.ResponseWriter, r *http.Request) {
+	sheetIcon := func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(testPNG(t, color.RGBA{120, 60, 200, 255}))
-	})
+	}
+	mux.HandleFunc("/icon-512.png", sheetIcon)
+	mux.HandleFunc("/icon-512-maskable.png", sheetIcon)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `<!doctype html><body style="font:20px system-ui;padding:40px">Sheet probe<script>const s = window.__DYNAPP_NATIVE_HOST__.openAgentSocket();</script>`)
 	})

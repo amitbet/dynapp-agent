@@ -459,11 +459,8 @@ func (s *Server) sharedNativeAsk(app NativeApp, manifest nativeManifest, kind st
 		return nil, err
 	}
 	shared := &nativeAsk{pending: pending, kind: kind, ask: ask, done: make(chan struct{})}
-	shared.frame = mustJSON(map[string]any{
-		"type": "native-host-permission-request", "requestId": pending.ID, "kind": kind,
-		"appName": manifest.app.Name, "origin": app.Origin,
-		"groups": nativePermissionGroups(ask, app.Capabilities, manifest.reasons),
-	})
+	shared.frame = mustJSON(nativePermissionRequestFrame(pending.ID, kind, manifest.app.Name, app.Origin,
+		nativePermissionGroups(ask, app.Capabilities, manifest.reasons), nil))
 	s.nativeAsks[app.StoreID] = shared
 	go func() {
 		granted, approved := s.awaitDecision(context.Background(), pending)
@@ -518,7 +515,7 @@ func (s *Server) serveNativeControl(ctx context.Context, socket *nativeFrameSock
 		if json.Unmarshal(data, &frame) != nil {
 			continue
 		}
-		if s.handleAutomationFrame(app.StoreID, frame.Type, data) {
+		if s.handleAutomationFrame(app.StoreID, frame.Type, data) || s.routeNativeDecision(app.StoreID, frame) {
 			continue
 		}
 		if frame.Type == "native-host-drop-files" {
@@ -594,12 +591,9 @@ func (s *Server) reviewNativeApp(ctx context.Context, socket *nativeFrameSocket,
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := socket.Write(ctx, websocket.MessageText, mustJSON(map[string]any{
-		"type": "native-host-permission-request", "requestId": requestID, "kind": "review",
-		"appName": name, "origin": app.Origin,
-		"groups": nativePermissionGroups(declared, app.Capabilities, reasons),
-	})); err != nil {
-		return nil, nil, err
+	if !send(socket, ctx, nativePermissionRequestFrame(requestID, "review", name, app.Origin,
+		nativePermissionGroups(declared, app.Capabilities, reasons), nil)) {
+		return nil, nil, errors.New("the app window closed")
 	}
 	deadline, cancelDeadline := context.WithTimeout(ctx, nativeReviewTimeout)
 	defer cancelDeadline()
@@ -615,8 +609,13 @@ func (s *Server) reviewNativeApp(ctx context.Context, socket *nativeFrameSocket,
 		if json.Unmarshal(data, &frame) != nil {
 			continue
 		}
-		// Automation results keep flowing while the review sheet is open.
-		if s.handleAutomationFrame(storeID, frame.Type, data) || frame.Type != "native-host-permission-decision" || frame.RequestID != requestID {
+		// Automation results and other prompts keep flowing while the review
+		// sheet is open.
+		if s.handleAutomationFrame(storeID, frame.Type, data) || frame.Type != "native-host-permission-decision" {
+			continue
+		}
+		if frame.RequestID != requestID {
+			s.routeNativeDecision(storeID, frame)
 			continue
 		}
 		if frame.Capabilities == nil {

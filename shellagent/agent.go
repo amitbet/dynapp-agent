@@ -104,25 +104,26 @@ type Server struct {
 	testWebSocket      bool
 	// autoApprovePairings lets in-process tests skip the authority decision;
 	// production never sets it.
-	autoApprovePairings  bool
-	permissionState      *permissionsState
-	csrfMu               sync.Mutex
-	csrfToken            string
-	loginMu              sync.Mutex
-	loginStates          map[string]time.Time
-	settingsAssetMu      sync.Mutex
-	settingsAssetCache   map[string]settingsAsset
-	settingsAssetOrigin  string
-	presentationMu       sync.Mutex
-	presentations        map[*presentationBridge]struct{}
-	presentationClosed   bool
-	chromiumRepairCancel context.CancelFunc
-	nativeListener       net.Listener
-	nativeConns          map[net.Conn]struct{}
-	nativeInstallMu      sync.Mutex
-	nativeAskMu          sync.Mutex
-	nativeAsks           map[string]*nativeAsk
-	automation           nativeAutomation
+	autoApprovePairings   bool
+	permissionState       *permissionsState
+	permissionDemandState *permissionDemands
+	csrfMu                sync.Mutex
+	csrfToken             string
+	loginMu               sync.Mutex
+	loginStates           map[string]time.Time
+	settingsAssetMu       sync.Mutex
+	settingsAssetCache    map[string]settingsAsset
+	settingsAssetOrigin   string
+	presentationMu        sync.Mutex
+	presentations         map[*presentationBridge]struct{}
+	presentationClosed    bool
+	chromiumRepairCancel  context.CancelFunc
+	nativeListener        net.Listener
+	nativeConns           map[net.Conn]struct{}
+	nativeInstallMu       sync.Mutex
+	nativeAskMu           sync.Mutex
+	nativeAsks            map[string]*nativeAsk
+	automation            nativeAutomation
 
 	// Mesh plumbing (docs/mesh-network.md): the inbox socket and the router
 	// port mapping run only inside a started agent (meshActive) that is
@@ -208,6 +209,9 @@ type socketAuthentication struct {
 	targets []string
 	// subject is the Dyner user the carrier vouched for, when known.
 	subject string
+	// native marks a page socket of an installed native app; its host can
+	// ask the user for a missing permission in the app's own window.
+	native bool
 }
 
 func (auth socketAuthentication) allows(required string) bool {
@@ -758,6 +762,18 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 	if session != nil {
 		helloReply["features"] = sessionFeatures(carrier)
 		helloReply["session"] = map[string]any{"id": session.id, "token": session.token, "graceMs": session.grace.Milliseconds()}
+	}
+	if features, ok := helloReply["features"].(map[string]bool); ok && negotiatedProtocol == ProtocolVersion && authentication.storeID != "" && !authentication.scoped {
+		// The agent, not the runtime, decides calls that need a declared but
+		// ungranted permission: a native host asks in the app's window; a
+		// browser app gets a pending Dyner request.
+		if authentication.native {
+			features["permissionPrompt"] = true
+		} else if authentication.keyID != "" {
+			features["permissionRequest"] = true
+		}
+	}
+	if session != nil {
 		if session.attach(carrierSocket, carrierCtx, carrier, 0, func(uint64) map[string]any { return helloReply }) != nil {
 			return
 		}
@@ -807,7 +823,7 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 			send(connection, ctx, map[string]any{"type": "pong", "id": request.ID, "now": time.Now().UnixMilli()})
 		case "fs":
 			required := filesystemCapability(request.Method)
-			if !socketAllows(authentication.capabilities, required) {
+			if !s.ensureCapability(ctx, &authentication, required) {
 				sendError(connection, ctx, request.ID, permissionDeniedError(required))
 				continue
 			}
@@ -817,7 +833,7 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 			if request.Command != "" {
 				required = "fs.exec"
 			}
-			if !socketAllows(authentication.capabilities, required) {
+			if !s.ensureCapability(ctx, &authentication, required) {
 				send(connection, ctx, map[string]any{"type": "exec-error", "id": request.ID, "error": permissionDeniedError(required)})
 				continue
 			}
@@ -825,7 +841,7 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 		case "process":
 			processes.Handle(processRequest(request))
 		case "rpc":
-			if required := rpcCapability(request); !socketAllows(authentication.capabilities, required) {
+			if required := rpcCapability(request); !s.ensureCapability(ctx, &authentication, required) {
 				rpcError(connection, ctx, request, errors.New(permissionDeniedError(required)))
 				continue
 			}
@@ -847,7 +863,7 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 			}
 			s.handleRPC(connection, ctx, agents, request, body)
 		case "net":
-			if !socketAllows(authentication.capabilities, "net."+request.ProtocolName+".connect") && !socketAllows(authentication.capabilities, "net.protocol."+request.ProtocolName) {
+			if !socketAllows(authentication.capabilities, "net."+request.ProtocolName+".connect") && !socketAllows(authentication.capabilities, "net.protocol."+request.ProtocolName) && !s.ensureCapability(ctx, &authentication, networkCapability(request.ProtocolName)) {
 				sendError(connection, ctx, request.ID, permissionDeniedError(networkCapability(request.ProtocolName)))
 				continue
 			}
@@ -1252,7 +1268,7 @@ func (s *Server) handleFilesystemChannel(ctx context.Context, channel protocolSo
 		sendError(channel, ctx, request.ID, errNotShared)
 		return
 	}
-	if !socketAllows(authentication.capabilities, filesystemCapability(request.Method)) {
+	if !s.ensureCapability(ctx, &authentication, filesystemCapability(request.Method)) {
 		sendError(channel, ctx, request.ID, permissionDeniedError(filesystemCapability(request.Method)))
 		return
 	}

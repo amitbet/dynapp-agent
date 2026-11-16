@@ -605,7 +605,7 @@ func (s *Server) handleFileSearchRPC(ctx context.Context, request message) (any,
 		}
 		return out, nil
 	case "configure", "rebuild":
-		if !request.allows("fs.list") {
+		if !s.requireCapability(ctx, request, "fs.list") {
 			return nil, errors.New("configuring search roots requires fs.list")
 		}
 		return s.rebuildSearch(objectArg(request.Args, 0))
@@ -615,7 +615,7 @@ func (s *Server) handleFileSearchRPC(ctx context.Context, request message) (any,
 	case "cancel":
 		return false, nil
 	case "open", "reveal":
-		if !request.allows("fs.openPath") {
+		if !s.requireCapability(ctx, request, "fs.openPath") {
 			return nil, errors.New("opening search results requires fs.openPath")
 		}
 		if len(request.Args) < 1 {

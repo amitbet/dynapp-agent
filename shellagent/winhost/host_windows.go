@@ -184,6 +184,7 @@ type host struct {
 	reviews         map[string]string
 	oldProc         uintptr
 	promptsMu       sync.Mutex
+	promptSerial    sync.Mutex
 	dropHandler     *webMessageHandler
 	titlebarEnabled bool
 	automation      bool
@@ -221,7 +222,7 @@ func Run(options Options) error {
 	if h.currentControl() == nil {
 		bootstrap = h.connectControl()
 	}
-	dataPath := filepath.Join(filepath.Dir(options.Icon), "WebView2")
+	dataPath := webViewDataPath(options)
 	debug := os.Getenv("DYNAPP_HOST_DEBUG") == "1"
 	h.view = webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:     debug,
@@ -793,9 +794,10 @@ func (h *host) prompt(frame map[string]any, conn *frameConn) {
 	h.prompts[requestID] = true
 	h.promptsMu.Unlock()
 	go func() {
-		// One prompt at a time; the lock also serializes the dialogs.
-		h.promptsMu.Lock()
-		defer h.promptsMu.Unlock()
+		// One prompt at a time. A separate lock keeps the frame readers free
+		// to queue more prompts while one is open.
+		h.promptSerial.Lock()
+		defer h.promptSerial.Unlock()
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		var groups []permissionGroup
@@ -807,7 +809,18 @@ func (h *host) prompt(frame map[string]any, conn *frameConn) {
 		if appName == "" {
 			appName = h.options.Name
 		}
-		capabilities, decided := askPermissions(h.hwnd, kind, appName, origin, groups)
+		var capabilities []string
+		var decided bool
+		var err error = errors.New("no permission page")
+		if page, _ := frame["page"].(string); page != "" {
+			capabilities, decided, err = h.askPermissionPage(page)
+			if err != nil {
+				log.Printf("permission page unavailable, using the native checklist: %v", err)
+			}
+		}
+		if err != nil {
+			capabilities, decided = askPermissions(h.hwnd, kind, appName, origin, groups)
+		}
 		reply := map[string]any{"type": "native-host-permission-decision", "requestId": requestID, "capabilities": nil}
 		if decided {
 			reply["capabilities"] = capabilities

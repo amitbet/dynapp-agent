@@ -241,6 +241,7 @@ func authForNative(config Config, app NativeApp, resolved *resolvedApp) socketAu
 		storeID:      app.StoreID,
 		appName:      name,
 		ok:           true,
+		native:       true,
 	}
 }
 

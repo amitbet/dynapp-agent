@@ -146,7 +146,7 @@ func (s *Server) handleHTTPRPCBody(ctx context.Context, request message, binaryB
 	if err := assertHTTPTargetAllowed(parsed, patterns, namedHosts...); err != nil {
 		return nil, err
 	}
-	if request.Method == "download" && !request.allows("fs.writeBase64") {
+	if request.Method == "download" && !s.requireCapability(ctx, request, "fs.writeBase64") {
 		return nil, errors.New("http.download requires fs.writeBase64")
 	}
 	timeout := time.Duration(integer64(options["timeoutMs"])) * time.Millisecond

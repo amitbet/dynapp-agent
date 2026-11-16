@@ -12,13 +12,13 @@ func (s *Server) handleNetworkFileRPC(ctx context.Context, socket protocolSocket
 	if len(request.Args) < 1 {
 		return nil, errors.New("network connection is required")
 	}
-	if request.Method == "copyToLocal" && !request.allows("fs.writeBase64") {
+	if request.Method == "copyToLocal" && !s.requireCapability(ctx, request, "fs.writeBase64") {
 		return nil, errors.New("copyToLocal requires fs.writeBase64")
 	}
-	if request.Method == "copyFromLocal" && !request.allows("fs.readBase64") {
+	if request.Method == "copyFromLocal" && !s.requireCapability(ctx, request, "fs.readBase64") {
 		return nil, errors.New("copyFromLocal requires fs.readBase64")
 	}
-	if connection, _ := request.Args[0].(map[string]any); strings.TrimSpace(stringValue(connection["identityFile"])) != "" && !request.allows("fs.readText") {
+	if connection, _ := request.Args[0].(map[string]any); strings.TrimSpace(stringValue(connection["identityFile"])) != "" && !s.requireCapability(ctx, request, "fs.readText") {
 		return nil, errors.New("identityFile requires fs.readText")
 	}
 	return netfiles.HandleRPC(ctx, s.StateDir, request.Service, request.Method, request.Args, func(event map[string]any) {
