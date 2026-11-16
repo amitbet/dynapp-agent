@@ -4,9 +4,11 @@ package shellagent
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -377,33 +379,7 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 		"Contents/Resources/AGENTS.md":           appAgentNote(spec.note()),
 	}
 	if !bundleMatches(target, files) {
-		staging := filepath.Join(root, fmt.Sprintf(".%s.partial-%d", filepath.Base(target), os.Getpid()))
-		_ = os.RemoveAll(staging)
-		for relative, data := range files {
-			path := filepath.Join(staging, filepath.FromSlash(relative))
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				_ = os.RemoveAll(staging)
-				return nativeInstallResult{}, err
-			}
-			mode := os.FileMode(0o644)
-			if strings.HasPrefix(relative, "Contents/MacOS/") {
-				mode = 0o755
-			}
-			if err := os.WriteFile(path, data, mode); err != nil {
-				_ = os.RemoveAll(staging)
-				return nativeInstallResult{}, err
-			}
-		}
-		if output, err := exec.Command("/usr/bin/codesign", "--force", "--sign", "-", "--identifier", bundleID, staging).CombinedOutput(); err != nil {
-			_ = os.RemoveAll(staging)
-			return nativeInstallResult{}, fmt.Errorf("sign the app: %w: %s", err, strings.TrimSpace(string(output)))
-		}
-		if err := os.RemoveAll(target); err != nil {
-			_ = os.RemoveAll(staging)
-			return nativeInstallResult{}, err
-		}
-		if err := os.Rename(staging, target); err != nil {
-			_ = os.RemoveAll(staging)
+		if err := writeSignedBundle(root, target, bundleID, files); err != nil {
 			return nativeInstallResult{}, err
 		}
 	}
@@ -424,6 +400,218 @@ func nativeInstall(spec nativeInstallSpec) (nativeInstallResult, error) {
 	}
 	return nativeInstallResult{
 		Path: target, Executable: filepath.Join(target, "Contents", "MacOS", nativeHostExecutable),
+		CDHash: cdhash, BundleID: bundleID,
+	}, nil
+}
+
+// writeSignedBundle builds files into a staging bundle, signs it ad hoc and
+// swaps it in for target. The old bundle stays in place until the new one is
+// signed, and the swap is two renames, so a launch never sees a half bundle.
+func writeSignedBundle(root, target, bundleID string, files map[string][]byte) error {
+	staging := filepath.Join(root, fmt.Sprintf(".%s.partial-%d", filepath.Base(target), os.Getpid()))
+	_ = os.RemoveAll(staging)
+	for relative, data := range files {
+		path := filepath.Join(staging, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			_ = os.RemoveAll(staging)
+			return err
+		}
+		mode := os.FileMode(0o644)
+		if strings.HasPrefix(relative, "Contents/MacOS/") {
+			mode = 0o755
+		}
+		if err := os.WriteFile(path, data, mode); err != nil {
+			_ = os.RemoveAll(staging)
+			return err
+		}
+	}
+	if output, err := exec.Command("/usr/bin/codesign", "--force", "--sign", "-", "--identifier", bundleID, staging).CombinedOutput(); err != nil {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("sign the app: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	previous := filepath.Join(root, fmt.Sprintf(".%s.previous-%d", filepath.Base(target), os.Getpid()))
+	_ = os.RemoveAll(previous)
+	hadPrevious := false
+	if _, err := os.Lstat(target); err == nil {
+		if err := os.Rename(target, previous); err != nil {
+			_ = os.RemoveAll(staging)
+			return err
+		}
+		hadPrevious = true
+	}
+	if err := os.Rename(staging, target); err != nil {
+		if hadPrevious {
+			_ = os.Rename(previous, target)
+		}
+		_ = os.RemoveAll(staging)
+		return err
+	}
+	_ = os.RemoveAll(previous)
+	return nil
+}
+
+// nativeHostOutdated reports whether an installed bundle runs a host other
+// than the one this agent embeds. The agent never rewrites bundles on update
+// by itself, so hosts from older agents keep running until upgraded. Signing
+// writes the signature into the executable, so the comparison strips it from
+// both sides; an unreadable or unstrippable host counts as current.
+func nativeHostOutdated(app NativeApp) bool {
+	info, err := os.Stat(app.Executable)
+	if err != nil {
+		return false
+	}
+	key := nativeHostIdentityKey{path: app.Executable, size: info.Size(), modified: info.ModTime().UnixNano()}
+	if cached, ok := nativeHostIdentityCache.Load(key); ok {
+		return cached.(bool)
+	}
+	embedded, err := embeddedHostSum()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(app.Executable)
+	if err != nil {
+		return false
+	}
+	installed, err := unsignedSum(data)
+	if err != nil {
+		log.Printf("DynApp Shell agent: could not compare the app host of %s: %v", app.StoreID, err)
+		return false
+	}
+	outdated := installed != embedded
+	nativeHostIdentityCache.Store(key, outdated)
+	return outdated
+}
+
+type nativeHostIdentityKey struct {
+	path     string
+	size     int64
+	modified int64
+}
+
+var (
+	nativeHostIdentityCache sync.Map // nativeHostIdentityKey → bool (outdated)
+	embeddedHostOnce        sync.Once
+	embeddedHostDigest      [32]byte
+	embeddedHostErr         error
+)
+
+func embeddedHostSum() ([32]byte, error) {
+	embeddedHostOnce.Do(func() { embeddedHostDigest, embeddedHostErr = unsignedSum(nativeHostBinary) })
+	return embeddedHostDigest, embeddedHostErr
+}
+
+// unsignedSum hashes a Mach-O executable with its code signature removed.
+func unsignedSum(executable []byte) ([32]byte, error) {
+	work, err := os.MkdirTemp("", "dynapp-host-*")
+	if err != nil {
+		return [32]byte{}, err
+	}
+	defer os.RemoveAll(work)
+	path := filepath.Join(work, nativeHostExecutable)
+	if err := os.WriteFile(path, executable, 0o600); err != nil {
+		return [32]byte{}, err
+	}
+	if output, err := exec.Command("/usr/bin/codesign", "--remove-signature", path).CombinedOutput(); err != nil {
+		return [32]byte{}, fmt.Errorf("remove signature: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	unsigned, err := os.ReadFile(path)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return sha256.Sum256(unsigned), nil
+}
+
+// nativeAppRunning reports whether a host process runs from the app's bundle.
+// Replacing the executable under a live window would break its signature
+// checks, so upgrades wait until the app quits.
+func nativeAppRunning(app NativeApp) bool {
+	procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
+	if err != nil {
+		return true // Unknown: assume running and try again later.
+	}
+	for _, proc := range procs {
+		comm := proc.Proc.P_comm[:]
+		if end := bytes.IndexByte(comm, 0); end >= 0 {
+			comm = comm[:end]
+		}
+		// p_comm holds at most 16 bytes of the executable name.
+		if !strings.HasPrefix(nativeHostExecutable, string(comm)) || len(comm) == 0 {
+			continue
+		}
+		executable, err := processExecutablePath(int(proc.Proc.P_pid))
+		if err != nil {
+			continue
+		}
+		if filepath.Clean(executable) == filepath.Clean(app.Executable) || sameFile(executable, app.Executable) {
+			return true
+		}
+	}
+	return false
+}
+
+// nativeUpgradeHost rewrites an installed bundle with the embedded host and
+// re-signs it. Every other file (Info.plist, icon, note) is kept as installed.
+// The new ad-hoc signature has a new cdhash, which the caller records; macOS
+// asks again for camera, microphone and Local Network access the app uses.
+func nativeUpgradeHost(app NativeApp) (nativeInstallResult, error) {
+	root, err := nativeInstallRoot()
+	if err != nil {
+		return nativeInstallResult{}, err
+	}
+	bundle := filepath.Clean(app.Path)
+	if filepath.Dir(bundle) != root || !strings.HasSuffix(bundle, ".app") {
+		return nativeInstallResult{}, errors.New("the installed app is outside the DynApp apps folder")
+	}
+	if storeID := bundleStoreID(bundle); storeID != app.StoreID {
+		return nativeInstallResult{}, errors.New("the app bundle belongs to a different app")
+	}
+	host := "Contents/MacOS/" + nativeHostExecutable
+	files := map[string][]byte{host: nativeHostBinary}
+	err = filepath.WalkDir(bundle, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(bundle, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if entry.IsDir() {
+			if relative == "Contents/_CodeSignature" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if relative == host || relative == "Contents/CodeResources" || !entry.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files[relative] = data
+		return nil
+	})
+	if err != nil {
+		return nativeInstallResult{}, err
+	}
+	if _, ok := files["Contents/Info.plist"]; !ok {
+		return nativeInstallResult{}, errors.New("the app bundle has no Info.plist")
+	}
+	bundleID := app.BundleID
+	if bundleID == "" {
+		bundleID = nativeBundleID(app.StoreID)
+	}
+	if err := writeSignedBundle(root, bundle, bundleID, files); err != nil {
+		return nativeInstallResult{}, err
+	}
+	lsregister("-f", bundle)
+	cdhash, err := bundleCDHash(bundle)
+	if err != nil {
+		return nativeInstallResult{}, err
+	}
+	return nativeInstallResult{
+		Path: bundle, Executable: filepath.Join(bundle, "Contents", "MacOS", nativeHostExecutable),
 		CDHash: cdhash, BundleID: bundleID,
 	}, nil
 }

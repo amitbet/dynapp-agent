@@ -121,6 +121,7 @@ type Server struct {
 	nativeListener        net.Listener
 	nativeConns           map[net.Conn]struct{}
 	nativeInstallMu       sync.Mutex
+	nativeUpgradeStop     chan struct{}
 	nativeAskMu           sync.Mutex
 	nativeAsks            map[string]*nativeAsk
 	automation            nativeAutomation

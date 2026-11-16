@@ -426,6 +426,7 @@ func (s *Server) handleNativeAppsRPC(ctx context.Context, request message) (any,
 		if !ok {
 			return nil, errors.New("this app is not installed as a native app")
 		}
+		app, _ = s.upgradeNativeHost(app)
 		if err := nativeLaunch(app, s.nativeEndpoint()); err != nil {
 			return nil, err
 		}

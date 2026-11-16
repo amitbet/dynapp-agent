@@ -598,6 +598,7 @@ func (s *Server) automationApps() []map[string]any {
 
 func (s *Server) automationLaunch(ctx context.Context, app NativeApp, request automationRequest) (any, error) {
 	if s.automationControl(app.StoreID) == nil {
+		app, _ = s.upgradeNativeHost(app)
 		if err := nativeLaunch(app, s.nativeEndpoint()); err != nil {
 			return nil, err
 		}

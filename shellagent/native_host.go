@@ -164,10 +164,13 @@ func (s *Server) startNativeHost() {
 		log.Printf("DynApp Shell agent: native app endpoint unavailable: %v", err)
 		return
 	}
+	stop := make(chan struct{})
 	s.mu.Lock()
 	s.nativeListener = listener
+	s.nativeUpgradeStop = stop
 	s.mu.Unlock()
 	s.startAutomation()
+	s.startNativeHostUpgrades(stop)
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -188,6 +191,10 @@ func (s *Server) stopNativeHost() {
 	s.mu.Lock()
 	listener := s.nativeListener
 	s.nativeListener = nil
+	if s.nativeUpgradeStop != nil {
+		close(s.nativeUpgradeStop)
+		s.nativeUpgradeStop = nil
+	}
 	conns := s.nativeConns
 	s.nativeConns = nil
 	s.mu.Unlock()

@@ -18,4 +18,11 @@ CI compiles the host on the macOS runner and uploads `native-macos-host` for
 source validation. For an intentional host change made from another platform,
 commit that artifact as `dynapp-app-host` before cutting the agent release.
 Release builds continue to embed the committed bytes; a routine CI build does
-not replace the binary in existing installed apps.
+not change them.
+
+When the embedded host differs from the one in an installed bundle (compared
+with code signatures stripped), the agent rewrites that bundle's host once the
+app is not running (`native_host_upgrade.go`): at startup, every five minutes,
+and before an agent-initiated launch. Every other bundle file is kept, the
+bundle is signed ad hoc again, and the new cdhash is recorded. That is when the
+camera, microphone and Local Network prompts come back.

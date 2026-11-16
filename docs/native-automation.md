@@ -35,10 +35,10 @@ coding agent ── CLI or MCP ──▶ automation socket ──▶ dynapp-shel
 - Any process running as the user can already read the agent's state, so
   consent protects against surprise, not against malware running as the user.
 
-Hosts installed before this feature do not advertise it; `enable` asks to
-install the app again from Dyner. On macOS a reinstall copies the new host
-binary, so camera, microphone and Local Network grants for that app are asked
-again.
+Hosts installed before this feature do not advertise it. On macOS the agent
+replaces an older host in an installed bundle once the app has quit (and
+before `launch`), so quitting and reopening the app is enough; camera,
+microphone and Local Network grants for that app are then asked again.
 
 ## Command line
 
