@@ -264,6 +264,9 @@ func (s *Server) serveNativeConnection(conn net.Conn) {
 	switch hello.Purpose {
 	case "control":
 		s.serveNativeControl(ctx, socket, app, hello.Features)
+		// The control channel closes when the app quits: upgrade an outdated
+		// host before the user reopens it from Finder or the Dock.
+		go s.upgradeNativeHostAfterQuit(app.StoreID)
 	case "app", "":
 		auth, err := s.authorizeNativeApp(ctx, socket, app)
 		if err != nil {

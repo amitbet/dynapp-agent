@@ -22,7 +22,8 @@ not change them.
 
 When the embedded host differs from the one in an installed bundle (compared
 with code signatures stripped), the agent rewrites that bundle's host once the
-app is not running (`native_host_upgrade.go`): at startup, every five minutes,
+app is not running (`native_host_upgrade.go`): at startup, right after the app
+quits (its control channel closes), every five minutes,
 and before an agent-initiated launch. Every other bundle file is kept, the
 bundle is signed ad hoc again, and the new cdhash is recorded. That is when the
 camera, microphone and Local Network prompts come back.

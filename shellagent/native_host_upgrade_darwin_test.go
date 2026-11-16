@@ -117,10 +117,15 @@ func TestNativeHostUpgradeWaitsForRunningApp(t *testing.T) {
 	if current, _ := server.nativeApp(app.StoreID); current.CDHash != app.CDHash || !nativeHostOutdated(current) {
 		t.Fatal("a running app's bundle was rewritten")
 	}
+	done := make(chan struct{})
+	go func() { server.upgradeNativeHostAfterQuit(app.StoreID); close(done) }()
+	time.Sleep(300 * time.Millisecond)
 	_ = process.Process.Kill()
 	_ = process.Wait()
-	if waiting := server.upgradeNativeHosts(); waiting != 0 {
-		t.Fatalf("waiting after quit = %d", waiting)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the upgrade after quit did not finish")
 	}
 	if current, _ := server.nativeApp(app.StoreID); nativeHostOutdated(current) {
 		t.Fatal("the bundle was not upgraded after the app quit")

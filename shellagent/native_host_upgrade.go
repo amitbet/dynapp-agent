@@ -56,6 +56,28 @@ func (s *Server) upgradeNativeHost(app NativeApp) (NativeApp, bool) {
 	return current, true
 }
 
+// nativeHostQuitWait bounds how long the agent waits for a host process to
+// exit after its control channel closed.
+var nativeHostQuitWait = 15 * time.Second
+
+// upgradeNativeHostAfterQuit upgrades an app's outdated host as soon as its
+// process has exited. A closed control channel can also mean an agent restart
+// or a host reconnect, so it gives up while the app keeps running.
+func (s *Server) upgradeNativeHostAfterQuit(storeID string) {
+	app, ok := s.nativeApp(storeID)
+	if !ok || !nativeHostOutdated(app) {
+		return
+	}
+	deadline := time.Now().Add(nativeHostQuitWait)
+	for nativeAppRunning(app) {
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	s.upgradeNativeHost(app)
+}
+
 // startNativeHostUpgrades runs upgrades now and then periodically until stop
 // closes, retrying apps that were open on the previous pass.
 func (s *Server) startNativeHostUpgrades(stop <-chan struct{}) {
