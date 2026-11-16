@@ -112,3 +112,21 @@ func TestPermissionAskableHonoursDontAsk(t *testing.T) {
 		t.Fatal("without a user action nothing may prompt or grant")
 	}
 }
+
+func TestRevokeRemovesTheAppGrantForEveryBrowserKey(t *testing.T) {
+	origin := "https://amitbet-commander.dynapp.io"
+	key := func(id string) BrowserIdentity {
+		return BrowserIdentity{KeyID: id, Origin: origin, StoreID: "amit-bet/commander", Capabilities: []string{"fs.list"}, ApprovedAt: 1}
+	}
+	other := BrowserIdentity{KeyID: "k-other", Origin: "https://amitbet-notes.dynapp.io", StoreID: "amit-bet/notes", Capabilities: []string{"fs.list"}, ApprovedAt: 1}
+	agent := &Server{Config: Config{BrowserIdentities: []BrowserIdentity{key("k1"), key("k2"), key("k3"), other}}}
+	if _, err := agent.revokeGrant(map[string]any{"keyId": "k2", "origin": origin, "storeId": "amit-bet/commander"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findApprovedAppGrant(agent.Config.BrowserIdentities, origin, "amit-bet/commander"); ok {
+		t.Fatalf("a revoked app grant must not be reusable by another key: %#v", agent.Config.BrowserIdentities)
+	}
+	if len(agent.Config.BrowserIdentities) != 1 || agent.Config.BrowserIdentities[0].KeyID != "k-other" {
+		t.Fatalf("other apps' grants must stay: %#v", agent.Config.BrowserIdentities)
+	}
+}

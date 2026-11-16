@@ -592,10 +592,23 @@ func (s *Server) revokeGrant(args map[string]any) (any, error) {
 	if !ok {
 		return nil, errors.New("no grant matches that identity")
 	}
+	// A grant belongs to the app, not to one browser key: a new key for the
+	// same hosted app reuses any approved grant (findApprovedAppGrant). So
+	// revoking an app grant removes it for every key of that app, or the
+	// revoked browser would reconnect and copy it back from another key.
+	sameApp := func(existing BrowserIdentity) bool {
+		if existing.KeyID == keyID && existing.Origin == origin && existing.StoreID == storeID {
+			return true
+		}
+		return storeID != "" && !identity.Authority && !existing.Authority && !existing.Shared &&
+			existing.StoreID == storeID && sameIdentityOrigin(existing.Origin, origin)
+	}
 	s.mu.Lock()
 	kept := make([]BrowserIdentity, 0, len(s.Config.BrowserIdentities))
+	removed := []BrowserIdentity{}
 	for _, existing := range s.Config.BrowserIdentities {
-		if existing.KeyID == keyID && existing.Origin == origin && existing.StoreID == storeID {
+		if sameApp(existing) {
+			removed = append(removed, existing)
 			continue
 		}
 		kept = append(kept, existing)
@@ -607,9 +620,11 @@ func (s *Server) revokeGrant(args map[string]any) (any, error) {
 	if stateDir != "" {
 		_ = SaveConfig(stateDir, snapshot)
 	}
-	s.closeSocketsBoundTo(identity, closePairingDeclined, "Pairing revoked")
+	for _, gone := range removed {
+		s.closeSocketsBoundTo(gone, closePairingDeclined, "Pairing revoked")
+	}
 	go s.notifyPermissionsChanged()
-	return map[string]any{"ok": true}, nil
+	return map[string]any{"ok": true, "revoked": len(removed)}, nil
 }
 
 func stringSliceHas(values []string, needle string) bool {
