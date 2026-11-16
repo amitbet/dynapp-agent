@@ -5,8 +5,11 @@ package winhost
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/jchv/go-webview2/pkg/edge"
@@ -24,6 +27,7 @@ var (
 	procDestroyWindow   = user32.NewProc("DestroyWindow")
 	procDefWindowProc   = user32.NewProc("DefWindowProcW")
 	procIsWindow        = user32.NewProc("IsWindow")
+	procUpdateWindow    = user32.NewProc("UpdateWindow")
 )
 
 const (
@@ -41,6 +45,7 @@ const (
 )
 
 type permissionPage struct {
+	loaded   atomic.Bool
 	hwnd     uintptr
 	owner    uintptr
 	chromium *edge.Chromium
@@ -132,8 +137,26 @@ func (h *host) askPermissionPage(page string) (permissionPageResult, error) {
 	if err := <-failed; err != nil {
 		return permissionPageResult{}, err
 	}
-	return <-prompt.done, nil
+	// A page that never reports its size never rendered: close it and let
+	// the caller show the native checklist rather than leave a blank window.
+	go func() {
+		time.Sleep(permissionPageLoadTimeout)
+		if !prompt.loaded.Load() {
+			log.Printf("permission page: no response after %s, falling back", permissionPageLoadTimeout)
+			h.view.Dispatch(func() { prompt.finish(permissionPageResult{decision: permissionPageFailed}) })
+		}
+	}()
+	result := <-prompt.done
+	if result.decision == permissionPageFailed {
+		return permissionPageResult{}, errors.New("the permission page did not load")
+	}
+	return result, nil
 }
+
+const (
+	permissionPageLoadTimeout = 6 * time.Second
+	permissionPageFailed      = "failed"
+)
 
 func (p *permissionPage) open(h *host, page string) error {
 	if err := registerPermissionPageClass(); err != nil {
@@ -160,11 +183,22 @@ func (p *permissionPage) open(h *host, page string) error {
 	}
 	p.hwnd = hwnd
 	permissionPages.Store(hwnd, p)
+	// Same order as go-webview2's own windows: show the parent first, then
+	// attach WebView2. A controller created for a hidden parent can stay
+	// blank. The app window is disabled first so the prompt is modal.
+	_, _, _ = procEnableWindow.Call(p.owner, 0)
+	_, _, _ = procShowWindow.Call(hwnd, swShowNormal)
+	_, _, _ = procUpdateWindow.Call(hwnd)
+	_, _, _ = procSetForeground.Call(hwnd)
 	chromium := edge.NewChromium()
 	chromium.DataPath = h.webViewDataPath()
 	chromium.MessageCallback = p.message
+	chromium.NavigationCompletedCallback = func(_ *edge.ICoreWebView2, _ *edge.ICoreWebView2NavigationCompletedEventArgs) {
+		log.Printf("permission page: navigation completed")
+	}
 	if !chromium.Embed(hwnd) {
 		permissionPages.Delete(hwnd)
+		_, _, _ = procEnableWindow.Call(p.owner, 1)
 		_, _, _ = procDestroyWindow.Call(hwnd)
 		return errors.New("could not create the permission web view")
 	}
@@ -174,12 +208,15 @@ func (p *permissionPage) open(h *host, page string) error {
 		_ = settings.PutAreDevToolsEnabled(false)
 		_ = settings.PutIsStatusBarEnabled(false)
 	}
+	if controller := chromium.GetController(); controller != nil {
+		_ = controller.PutIsVisible(true)
+	}
 	chromium.Resize()
+	var client, frame struct{ Left, Top, Right, Bottom int32 }
+	_, _, _ = procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&client)))
+	_, _, _ = procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&frame)))
+	log.Printf("permission page: dpi %d, window %v, client %v, %d bytes", dpi, frame, client, len(page))
 	chromium.NavigateToString(page)
-	// Modal: the app window stays disabled until the user answers.
-	_, _, _ = procEnableWindow.Call(p.owner, 0)
-	_, _, _ = procShowWindow.Call(hwnd, swShowNormal)
-	_, _, _ = procSetForeground.Call(hwnd)
 	chromium.Focus()
 	return nil
 }
@@ -209,6 +246,7 @@ func (p *permissionPage) message(raw string) {
 	if json.Unmarshal([]byte(raw), &message) != nil || message.DynappPermission != 1 {
 		return
 	}
+	log.Printf("permission page: message decision=%q resize=%v", message.Decision, message.Resize)
 	switch message.Decision {
 	case "allow":
 		if message.Capabilities == nil {
@@ -221,6 +259,7 @@ func (p *permissionPage) message(raw string) {
 		return
 	}
 	if message.Resize > 0 {
+		p.loaded.Store(true)
 		p.fitHeight(message.Resize)
 	}
 }
