@@ -184,9 +184,9 @@ func (s *Server) ensureNativeCatalogApp() (map[string]any, error) {
 		Capabilities: declared, Declared: append([]string(nil), declared...),
 	}
 	if err == nil {
-		updated.Connect = manifest.app.Connect
+		updated.Connect, updated.ServerAPIs = manifest.app.Connect, manifest.app.ServerAPIs
 	} else {
-		updated.Connect = app.Connect
+		updated.Connect, updated.ServerAPIs = app.Connect, app.ServerAPIs
 	}
 	if installed && app.InstalledAt != 0 {
 		updated.InstalledAt = app.InstalledAt

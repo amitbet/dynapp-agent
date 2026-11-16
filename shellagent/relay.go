@@ -357,6 +357,7 @@ func relayGrantFor(identities []BrowserIdentity, hello message, subject sessionS
 	var matchedCapabilities []string
 	var targets []string
 	connect := map[string][]string{}
+	var serverAPIs []ServerAPI
 	for _, identity := range candidates {
 		if shared && !identity.Shared {
 			continue
@@ -370,6 +371,7 @@ func relayGrantFor(identities []BrowserIdentity, hello message, subject sessionS
 			connect[scheme] = unionStrings(connect[scheme], patterns)
 		}
 		targets = unionTargets(targets, identity.Targets)
+		serverAPIs = unionServerAPIs(serverAPIs, identity.ServerAPIs)
 		matched = true
 	}
 	if !matched {
@@ -395,6 +397,7 @@ func relayGrantFor(identities []BrowserIdentity, hello message, subject sessionS
 	auth.declared = auth.capabilities
 	if matched {
 		auth.connect = connect
+		auth.serverAPIs = serverAPIs
 	}
 	if shared || (!matched && subject.Shared) {
 		// A grantee reaches only its targets; without a matching identity it
@@ -411,6 +414,7 @@ func relayGrantFor(identities []BrowserIdentity, hello message, subject sessionS
 				auth.capabilities = normalizePermissionSet(intersectStrings(auth.capabilities, resolved.Declared))
 				auth.declared = resolved.Declared
 				auth.connect = resolved.Connect
+				auth.serverAPIs, auth.serverProbePorts = resolved.ServerAPIs, resolved.ServerProbePorts
 				auth.appName = resolved.Name
 			}
 		}

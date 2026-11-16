@@ -348,7 +348,7 @@ func (s *Server) authorizeNativeApp(ctx context.Context, socket *nativeFrameSock
 			outcome, dontAsk := decision.pending.Outcome()
 			updated, _ := s.nativeApp(app.StoreID)
 			updated = applyNativeDecision(updated, kind, ask, decision.granted, outcome, dontAsk)
-			updated.Connect = manifest.app.Connect
+			updated.Connect, updated.ServerAPIs = manifest.app.Connect, manifest.app.ServerAPIs
 			s.upsertNativeApp(updated)
 			go s.notifyPermissionsChanged()
 			app = updated

@@ -142,6 +142,9 @@ type resolvedApp struct {
 	Development bool
 	Declared    []string
 	Connect     map[string][]string
+	// ServerAPIs and ServerProbePorts come from `servers.connect`.
+	ServerAPIs       []ServerAPI
+	ServerProbePorts []int
 }
 
 func (s *Server) resolveApp(ctx context.Context, origin string, init directLocalInit) (resolvedApp, error) {
@@ -159,9 +162,11 @@ func (s *Server) resolveApp(ctx context.Context, origin string, init directLocal
 		if err != nil {
 			return resolvedApp{}, err
 		}
+		apis, ports := parseServerConnect(init.App.DeclaredPermissions)
 		return resolvedApp{
 			StoreID: storeID, Name: storeSlug(storeID), Development: true,
 			Declared: normalizePermissionList(init.App.DeclaredPermissions), Connect: connect,
+			ServerAPIs: apis, ServerProbePorts: ports,
 		}, nil
 	case originHosted:
 		return s.resolveHostedApp(ctx, config, origin, storeID)
@@ -315,7 +320,8 @@ func appFromDynerManifest(storeID string, detail map[string]any) (resolvedApp, e
 	if err != nil {
 		return resolvedApp{}, err
 	}
-	return resolvedApp{StoreID: storeID, Name: name, Declared: declared, Connect: connect}, nil
+	apis, ports := manifestServerConnect(manifest)
+	return resolvedApp{StoreID: storeID, Name: name, Declared: declared, Connect: connect, ServerAPIs: apis, ServerProbePorts: ports}, nil
 }
 
 // legacyHostedOriginMatches covers Dyner servers that do not yet return

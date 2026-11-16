@@ -111,7 +111,7 @@ var highPermissionPrefixes = []string{
 
 var mediumPermissionPrefixes = []string{
 	"fs.", "file.", "externalOpen.", "sessions.", "workspaces.", "remoteEnv.", "search.", "clipboard.",
-	"calendar.", "system.ports.", "net.", "web.", "drag.", "drop.", "dialog.open", "dialog.pick",
+	"calendar.", "system.ports.", "net.", "servers.", "web.", "drag.", "drop.", "dialog.open", "dialog.pick",
 }
 
 var dangerRank = map[string]int{"low": 0, "medium": 1, "high": 2, "very-high": 3}
@@ -149,7 +149,7 @@ func permissionGroupID(permission string) string {
 	case strings.HasPrefix(permission, "dialog.open"), strings.HasPrefix(permission, "dialog.save"),
 		strings.HasPrefix(permission, "file."), strings.HasPrefix(permission, "externalOpen."):
 		return "files"
-	case strings.HasPrefix(permission, "net."):
+	case strings.HasPrefix(permission, "net."), strings.HasPrefix(permission, "servers."):
 		return "network"
 	case strings.HasPrefix(permission, "workspaces."):
 		return "workspaces"

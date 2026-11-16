@@ -56,6 +56,8 @@ func (s *Server) handleRPC(socket protocolSocket, ctx context.Context, agents *a
 		result, err = s.handlePermissionsRPC(socket, request)
 	case "permissionRequest":
 		result, err = s.handlePermissionRequestRPC(ctx, request)
+	case "servers":
+		result, err = s.handleServersRPC(ctx, request)
 	default:
 		err = errors.New("unsupported Shell service")
 	}

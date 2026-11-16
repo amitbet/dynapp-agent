@@ -141,7 +141,7 @@ func (s *Server) continuePairedIdentity(ctx context.Context, socket protocolSock
 			if len(subtractStrings(declared, identity.Capabilities)) > 0 {
 				identity.Capabilities = unionStrings(identity.Capabilities, declared)
 				identity.Declared = unionStrings(identity.Declared, declared)
-				identity.Connect = resolved.Connect
+				identity.Connect, identity.ServerAPIs = resolved.Connect, resolved.ServerAPIs
 				changed = true
 			}
 		}
@@ -166,7 +166,7 @@ func (s *Server) continuePairedIdentity(ctx context.Context, socket protocolSock
 			if approval, ok := s.consumePreApproval(resolved.StoreID); ok {
 				identity.Capabilities = normalizePermissionSet(intersectStrings(approval.Capabilities, resolved.Declared))
 				identity.Declared = normalizePermissionSet(resolved.Declared)
-				identity.Connect = resolved.Connect
+				identity.Connect, identity.ServerAPIs = resolved.Connect, resolved.ServerAPIs
 				identity.ApprovedAt = time.Now().UnixMilli()
 				if identity.StoreID == "" {
 					identity.StoreID = resolved.StoreID
@@ -180,7 +180,7 @@ func (s *Server) continuePairedIdentity(ctx context.Context, socket protocolSock
 				s.startBrowserDelta(identity, resolved, subtractStrings(expanded, identity.Declared), config)
 				identity.Declared = expanded
 				if resolved.Connect != nil {
-					identity.Connect = resolved.Connect
+					identity.Connect, identity.ServerAPIs = resolved.Connect, resolved.ServerAPIs
 				}
 				changed = true
 				persist()
@@ -218,7 +218,7 @@ func (s *Server) pairUnknownIdentity(ctx context.Context, socket protocolSocket,
 		identity.StoreID = resolved.StoreID
 		identity.Capabilities = normalizePermissionSet(intersectStrings(approval.Capabilities, resolved.Declared))
 		identity.Declared = normalizePermissionSet(resolved.Declared)
-		identity.Connect = resolved.Connect
+		identity.Connect, identity.ServerAPIs = resolved.Connect, resolved.ServerAPIs
 		identity.ApprovedAt = time.Now().UnixMilli()
 		s.upsertBrowserIdentity(identity)
 		go s.notifyPermissionsChanged()
@@ -236,7 +236,7 @@ func (s *Server) pairUnknownIdentity(ctx context.Context, socket protocolSocket,
 		identity.StoreID = resolved.StoreID
 		identity.Capabilities = normalizePermissionSet(intersectStrings(existing.Capabilities, resolved.Declared))
 		identity.Declared = normalizePermissionSet(unionStrings(existing.Declared, resolved.Declared))
-		identity.Connect = resolved.Connect
+		identity.Connect, identity.ServerAPIs = resolved.Connect, resolved.ServerAPIs
 		identity.ApprovedAt = time.Now().UnixMilli()
 		s.upsertBrowserIdentity(identity)
 		go s.notifyPermissionsChanged()
@@ -247,7 +247,7 @@ func (s *Server) pairUnknownIdentity(ctx context.Context, socket protocolSocket,
 		identity.StoreID = resolved.StoreID
 		identity.Capabilities = normalizePermissionSet(resolved.Declared)
 		identity.Declared = normalizePermissionSet(resolved.Declared)
-		identity.Connect = resolved.Connect
+		identity.Connect, identity.ServerAPIs = resolved.Connect, resolved.ServerAPIs
 		identity.ApprovedAt = time.Now().UnixMilli()
 		s.upsertBrowserIdentity(identity)
 		return authForIdentity(config, identity, &resolved), directLocalOK
@@ -273,7 +273,7 @@ func (s *Server) pairUnknownIdentity(ctx context.Context, socket protocolSocket,
 	identity.StoreID = resolved.StoreID
 	identity.Capabilities = normalizePermissionSet(intersectStrings(granted, resolved.Declared))
 	identity.Declared = normalizePermissionSet(resolved.Declared)
-	identity.Connect = resolved.Connect
+	identity.Connect, identity.ServerAPIs = resolved.Connect, resolved.ServerAPIs
 	identity.ApprovedAt = time.Now().UnixMilli()
 	s.upsertBrowserIdentity(identity)
 	go s.notifyPermissionsChanged()
@@ -288,17 +288,20 @@ func (s *Server) recordAuthorityIdentity(ctx context.Context, config Config, ide
 	catalogID := config.catalogAppID()
 	var declared []string
 	var connect map[string][]string
+	var serverAPIs []ServerAPI
 	if resolved, err := s.resolveManifestApp(ctx, config, catalogID); err == nil {
-		declared, connect = resolved.Declared, resolved.Connect
+		declared, connect, serverAPIs = resolved.Declared, resolved.Connect, resolved.ServerAPIs
 	} else if init.App != nil {
 		declared = normalizePermissionList(init.App.DeclaredPermissions)
 		connect, _ = connectFromInit(init.App.Connect)
+		serverAPIs, _ = parseServerConnect(init.App.DeclaredPermissions)
 	}
 	identity.Authority = true
 	identity.StoreID = catalogID
 	identity.Capabilities = unionStrings(declared, []string{permissionsManage})
 	identity.Declared = append([]string(nil), identity.Capabilities...)
 	identity.Connect = connect
+	identity.ServerAPIs = serverAPIs
 	identity.ApprovedAt = time.Now().UnixMilli()
 	s.upsertBrowserIdentity(identity)
 	go s.notifyPermissionsChanged()
@@ -311,6 +314,8 @@ func authForIdentity(config Config, identity BrowserIdentity, app *resolvedApp) 
 	declared := append([]string(nil), identity.Capabilities...)
 	effective := append([]string(nil), identity.Capabilities...)
 	connect := identity.Connect
+	serverAPIs := identity.ServerAPIs
+	var probePorts []int
 	storeID := identity.StoreID
 	appName := storeSlug(storeID)
 	development := false
@@ -318,6 +323,7 @@ func authForIdentity(config Config, identity BrowserIdentity, app *resolvedApp) 
 		declared = append([]string(nil), app.Declared...)
 		effective = intersectStrings(identity.Capabilities, app.Declared)
 		connect = app.Connect
+		serverAPIs, probePorts = app.ServerAPIs, app.ServerProbePorts
 		if storeID == "" {
 			storeID = app.StoreID
 		}
@@ -342,6 +348,7 @@ func authForIdentity(config Config, identity BrowserIdentity, app *resolvedApp) 
 		development:  development,
 		ok:           true,
 	}
+	auth.serverAPIs, auth.serverProbePorts = serverAPIs, probePorts
 	if identity.Shared {
 		auth.scoped = true
 		auth.targets = normalizeTargets(identity.Targets)

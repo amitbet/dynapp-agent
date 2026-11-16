@@ -43,6 +43,7 @@ type NativeApp struct {
 	Capabilities []string            `json:"capabilities"`
 	Declared     []string            `json:"declared,omitempty"`
 	Connect      map[string][]string `json:"connect,omitempty"`
+	ServerAPIs   []ServerAPI         `json:"serverApis,omitempty"`
 	// Denied holds permissions the user explicitly refused. They are not
 	// asked again at launch, but a user action that needs one, or the
 	// "Permissions needed" chip, can still ask. DontAsk silences even that
@@ -218,6 +219,8 @@ func authForNative(config Config, app NativeApp, resolved *resolvedApp) socketAu
 	declared := normalizePermissionSet(app.Declared)
 	effective := intersectStrings(app.Capabilities, declared)
 	connect := app.Connect
+	serverAPIs := app.ServerAPIs
+	var probePorts []int
 	name := app.Name
 	if resolved != nil {
 		declared = append([]string(nil), resolved.Declared...)
@@ -226,6 +229,7 @@ func authForNative(config Config, app NativeApp, resolved *resolvedApp) socketAu
 		}
 		effective = intersectStrings(app.Capabilities, declared)
 		connect = resolved.Connect
+		serverAPIs, probePorts = resolved.ServerAPIs, resolved.ServerProbePorts
 		if resolved.Name != "" {
 			name = resolved.Name
 		}
@@ -240,7 +244,7 @@ func authForNative(config Config, app NativeApp, resolved *resolvedApp) socketAu
 	if environmentID == "" {
 		environmentID = "local"
 	}
-	return socketAuthentication{
+	auth := socketAuthentication{
 		environment:  map[string]any{"id": environmentID, "name": "This device", "endpoint": nil, "state": "connected", "source": "local", "capabilities": effective},
 		capabilities: effective,
 		stored:       append([]string(nil), app.Capabilities...),
@@ -253,6 +257,8 @@ func authForNative(config Config, app NativeApp, resolved *resolvedApp) socketAu
 		ok:           true,
 		native:       true,
 	}
+	auth.serverAPIs, auth.serverProbePorts = serverAPIs, probePorts
+	return auth
 }
 
 func nativeGrantPayload(app NativeApp) map[string]any {
@@ -481,7 +487,7 @@ func (s *Server) installNativeApp(ctx context.Context, args map[string]any) (any
 	app := NativeApp{
 		StoreID: storeID, Name: manifest.app.Name, Origin: manifest.origin, URL: startURL,
 		Path: result.Path, Executable: result.Executable, CDHash: result.CDHash, BundleID: result.BundleID,
-		InstalledAt: time.Now().UnixMilli(), Connect: manifest.app.Connect, ApprovedAt: time.Now().UnixMilli(),
+		InstalledAt: time.Now().UnixMilli(), Connect: manifest.app.Connect, ServerAPIs: manifest.app.ServerAPIs, ApprovedAt: time.Now().UnixMilli(),
 		Capabilities: normalizePermissionSet(intersectStrings(requested, declared)),
 		Declared:     normalizePermissionSet(declared),
 		Orientation:  manifest.orientation,

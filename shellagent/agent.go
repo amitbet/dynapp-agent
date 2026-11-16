@@ -104,6 +104,10 @@ type Server struct {
 	promises           map[string]*clipboardPromise
 	promiseBridge      *filePromiseBridge
 	testWebSocket      bool
+
+	// servers is the Phase 3a discovery state and verify cache.
+	servers serverRegistry
+
 	// autoApprovePairings lets in-process tests skip the authority decision;
 	// production never sets it.
 	autoApprovePairings   bool
@@ -215,6 +219,10 @@ type socketAuthentication struct {
 	// native marks a page socket of an installed native app; its host can
 	// ask the user for a missing permission in the app's own window.
 	native bool
+	// serverAPIs are the APIs the app's `servers.connect` permission
+	// declares (Phase 3a); serverProbePorts are its probe ports.
+	serverAPIs       []ServerAPI
+	serverProbePorts []int
 }
 
 func (auth socketAuthentication) allows(required string) bool {
@@ -247,6 +255,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("/.well-known/dynapp-direct-local", s.handleDirectLocalInfo)
 	mux.HandleFunc("/external-open", s.handleExternalOpenHTTP)
+	mux.HandleFunc("/v1/servers/announce", s.handleServersAnnounce)
 	s.registerSettingsHandlers(mux)
 	return mux
 }
@@ -847,7 +856,7 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 		case "process":
 			processes.Handle(processRequest(request))
 		case "rpc":
-			if required := rpcCapability(request); !s.ensureCapability(ctx, &authentication, required, request.UserAction) {
+			if required := s.rpcCapabilityFor(request); !s.ensureCapability(ctx, &authentication, required, request.UserAction) {
 				rpcError(connection, ctx, request, s.refusal(&authentication, required, ""))
 				continue
 			}
@@ -972,6 +981,21 @@ func filesystemCapability(method string) string {
 	}
 	return "fs." + method
 }
+
+// rpcCapabilityFor is rpcCapability, except that an HTTP request to a
+// recently verified server the app may reach through servers.connect needs
+// no net.protocol grant (Phase 3a "HTTP to servers").
+func (s *Server) rpcCapabilityFor(request message) string {
+	if request.Service == "http" && request.Method == "request" {
+		if parsed, err := url.Parse(stringValue(objectArg(request.Args, 0)["url"])); err == nil {
+			if _, ok := s.serverHTTPTarget(request.auth, parsed); ok {
+				return ""
+			}
+		}
+	}
+	return rpcCapability(request)
+}
+
 func rpcCapability(request message) string {
 	switch request.Service {
 	case "screen":
@@ -1029,6 +1053,8 @@ func rpcCapability(request message) string {
 	case "permissionRequest":
 		// Any app may ask for its own declared permissions; the user decides.
 		return ""
+	case "servers":
+		return serversRPCCapability(request)
 	default:
 		return request.Service
 	}
@@ -1198,6 +1224,7 @@ func protocolFeatures(version int, carriers ...carrierCapabilities) map[string]b
 	}
 	return map[string]bool{
 		"httpBinaryBody":      true,
+		"servers":             true,
 		"multiplexedChannels": true,
 		"reliableStreams":     carrier.reliableStreams,
 		"datagrams":           carrier.datagrams,

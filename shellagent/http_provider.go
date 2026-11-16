@@ -140,11 +140,21 @@ func (s *Server) handleHTTPRPCBody(ctx context.Context, request message, binaryB
 	}
 	namedHosts := scopedNamedHosts(request.auth)
 	patterns, err := httpAllowlistFor(request, parsed.Scheme, options)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		err = assertHTTPTargetAllowed(parsed, patterns, namedHosts...)
 	}
-	if err := assertHTTPTargetAllowed(parsed, patterns, namedHosts...); err != nil {
-		return nil, err
+	// Phase 3a "HTTP to servers": outside the connect list, a recently
+	// verified server providing a declared API may be reached, and every
+	// redirect hop must stay on that address.
+	serverAddress, serverScheme := "", ""
+	if err != nil {
+		address, ok := s.serverHTTPTarget(request.auth, parsed)
+		if !ok || request.Method != "request" {
+			return nil, err
+		}
+		serverAddress, serverScheme = address, strings.ToLower(parsed.Scheme)
+		patterns = nil
+		namedHosts = append(namedHosts, parsed.Hostname())
 	}
 	if request.Method == "download" {
 		if err := s.requireCapability(ctx, request, "fs.writeBase64", "http.download requires fs.writeBase64"); err != nil {
@@ -200,6 +210,12 @@ func (s *Server) handleHTTPRPCBody(ctx context.Context, request message, binaryB
 			}
 			if scoped && !scopedHTTPTargetAllowed(request.auth, req.URL) {
 				return errors.New(errNotShared)
+			}
+			if serverAddress != "" {
+				if !sameServerTarget(req.URL, serverAddress, serverScheme) {
+					return errors.New("HTTP redirect leaves the verified server")
+				}
+				return nil
 			}
 			return assertHTTPTargetAllowed(req.URL, patterns, namedHosts...)
 		},

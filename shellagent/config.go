@@ -133,6 +133,8 @@ type BrowserIdentity struct {
 	StoreID string `json:"storeId,omitempty"`
 	// Connect holds the approved HTTP connect allowlist per scheme.
 	Connect map[string][]string `json:"connect,omitempty"`
+	// ServerAPIs are the APIs the app's `servers.connect` declares.
+	ServerAPIs []ServerAPI `json:"serverApis,omitempty"`
 	// ApprovedAt is the local approval time in Unix milliseconds. Zero means
 	// the identity came from Dyner and is replaced on every sync.
 	ApprovedAt int64 `json:"approvedAt,omitempty"`

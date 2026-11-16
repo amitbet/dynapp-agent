@@ -90,6 +90,7 @@ func combineDynerIdentities(browser, shared []BrowserIdentity) ([]BrowserIdentit
 		identity.StoreID = ""
 		identity.Declared = nil
 		identity.Connect = nil
+		identity.ServerAPIs = nil
 		identity.Capabilities = normalizePermissionSet(intersectStrings(identity.Capabilities, sharedCapabilityCeiling))
 		identity.Targets = normalizeTargets(identity.Targets)
 		if identity.UserID == "" || identity.Validate() != nil {
@@ -231,6 +232,12 @@ func sharedScopeError(auth *socketAuthentication, request message) string {
 		if request.Service == "http" && request.Method == "request" {
 			parsed, err := url.Parse(stringValue(objectArg(request.Args, 0)["url"]))
 			if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && scopedHTTPTargetAllowed(auth, parsed) {
+				return ""
+			}
+		}
+		// Phase 3a: a grantee may verify a server at one of its targets.
+		if request.Service == "servers" && request.Method == "verify" {
+			if address := parseTarget(stringValue(objectArg(request.Args, 0)["address"])); address != "" && scopedServerAddressAllowed(auth, address) {
 				return ""
 			}
 		}
