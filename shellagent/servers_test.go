@@ -328,8 +328,15 @@ func TestServersRPCSocketGating(t *testing.T) {
 		t.Fatal("more than four ports must be refused")
 	}
 	result, err = call(owner, "list", nil)
-	if err != nil || len(result.(map[string]any)["servers"].([]serverEntry)) != 1 {
+	if err != nil || len(result.(map[string]any)["servers"].([]serverEntry)) != 1 || result.(map[string]any)["environmentId"] != "" {
 		t.Fatalf("owner list = %#v, %v", result, err)
+	}
+	agent.Config.EnvironmentID = "env_123"
+	for _, method := range []string{"list", "discover"} {
+		result, err = call(owner, method, map[string]any{})
+		if err != nil || result.(map[string]any)["environmentId"] != "env_123" {
+			t.Fatalf("%s environment id = %#v, %v", method, result, err)
+		}
 	}
 }
 

@@ -511,7 +511,7 @@ func (s *Server) handleServersRPC(ctx context.Context, request message) (any, er
 		if auth != nil && auth.scoped {
 			return nil, errors.New(errNotShared)
 		}
-		return map[string]any{"servers": s.servers.list()}, nil
+		return s.serversResult(), nil
 	case "discover":
 		if auth != nil && auth.scoped {
 			return nil, errors.New(errNotShared)
@@ -524,7 +524,7 @@ func (s *Server) handleServersRPC(ctx context.Context, request message) (any, er
 			ports = auth.serverProbePorts
 		}
 		s.discoverServers(ctx, ports)
-		return map[string]any{"servers": s.servers.list()}, nil
+		return s.serversResult(), nil
 	case "verify":
 		address := parseTarget(stringValue(options["address"]))
 		instanceID := strings.TrimSpace(stringValue(options["instanceId"]))
@@ -823,4 +823,14 @@ func unionServerAPIs(left, right []ServerAPI) []ServerAPI {
 		}
 	}
 	return result
+}
+
+// serversResult is the list/discover result. environmentId is this agent's
+// Dyner environment ("" when not enrolled), so a browser on the local
+// connection can register a server against the right environment.
+func (s *Server) serversResult() map[string]any {
+	s.mu.Lock()
+	environmentID := s.Config.EnvironmentID
+	s.mu.Unlock()
+	return map[string]any{"environmentId": environmentID, "servers": s.servers.list()}
 }
