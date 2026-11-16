@@ -77,18 +77,32 @@ through vtable slot 4), the reflection in `chromiumOf`/`unexportedField` into
 In Dyner → Permissions, revoke the app's grant (`native:<owner/slug>`), then
 start the app.
 
-- [ ] One native dialog lists all groups as checkboxes with risk levels.
-      Select a row to read its summary and app-provided reasons below the list.
+- [ ] A permission window opens over the app window (not the old grey
+      checklist). It lists every group with a risk label, the summary and the
+      app's quoted reasons, and follows light/dark mode.
+- [ ] The app window is disabled while it is open, and the prompt is centered
+      on it. Check readability and sizing at 100%, 150%, and 200% scaling.
 - [ ] Suggested ordinary groups start checked; very-high groups (for example
-      Secrets) start unchecked and can be selected individually.
-- [ ] The list scrolls when there are many groups. Long descriptions scroll
-      in the details area. Check readability at 100%, 150%, and 200% scaling.
-- [ ] Tab and arrow keys navigate; Space toggles the selected checkbox.
-      Return defaults to **Don't Allow**; Escape and the close button cancel.
-- [ ] **Allow selected** is disabled for the first second. After that it saves
-      exactly the checked groups, including an explicitly empty selection.
-- [ ] Update the app to request additional permissions: one checklist appears
-      with the new groups, and previously granted access remains intact.
+      Secrets) start unchecked.
+- [ ] Tab moves between checkboxes and buttons; Space toggles a checkbox.
+      **Allow** is disabled for the first second.
+- [ ] Escape, Return on a checkbox, and the window's close button all
+      *dismiss*: the app opens with nothing new, and the next launch asks
+      again. After three dismissals in a row the launch prompt stops.
+- [ ] **Don't Allow** is remembered: the next launch does not ask.
+- [ ] Update the app to request additional permissions: one prompt appears
+      with only the new groups, and previously granted access remains intact.
+- [ ] Use a feature that needs a permission you refused (for example a file
+      action), by clicking in the app: a "needs your permission" prompt for
+      that group appears with a **Don't ask again** box. Allow it: the action
+      completes without retrying.
+- [ ] Refuse it with **Don't ask again**: the next click does not ask, and
+      the app's **Permissions needed** chip does not list it.
+- [ ] Trigger a refusal without a click (for example on load): no prompt,
+      and a **Permissions needed** chip appears in the title bar. Clicking it
+      asks for the listed permissions.
+- [ ] If WebView2 cannot create the prompt, the host log says "permission
+      page unavailable" and the old checklist appears instead.
 - [ ] The decision shows up in Dyner → Permissions.
 
 ## 7. Without the agent, and uninstall

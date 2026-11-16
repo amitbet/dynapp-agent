@@ -175,7 +175,9 @@ func TestNativePairingIsAskedInTheAppWindow(t *testing.T) {
 		t.Fatalf("hello = %#v", hello)
 	}
 	app, _ := agent.nativeApp("amit-bet/notes")
-	if app.ApprovedAt == 0 || strings.Join(app.Declared, ",") != "fs.exec,fs.readText,net.protocol.https" || strings.Join(app.Capabilities, ",") != "fs.readText" {
+	// Unchecked groups are explicit refusals: not asked at launch again, but
+	// still askable from the "Permissions needed" chip.
+	if app.ApprovedAt == 0 || strings.Join(app.Declared, ",") != "fs.readText" || strings.Join(app.Denied, ",") != "fs.exec,net.protocol.https" || strings.Join(app.Capabilities, ",") != "fs.readText" {
 		t.Fatalf("stored grant = %#v", app)
 	}
 	if len(app.Connect["https"]) != 1 {
@@ -194,15 +196,32 @@ func TestNativeDeltaAsksOnlyNewPermissionsAndRemembersADecline(t *testing.T) {
 	if request["kind"] != "delta" || strings.Join(groupPermissionsOf(request), ",") != "fs.exec,net.protocol.https" {
 		t.Fatalf("delta request = %#v", request)
 	}
+	// A host that predates the decision field sends null for every non-allow:
+	// that is a dismissal, so the next launch asks again.
 	writeNative(t, host, map[string]any{"type": "native-host-permission-decision", "requestId": request["requestId"], "capabilities": nil})
 	ready := readNative(t, host)
 	if strings.Join(anyStrings(ready["capabilities"]), ",") != "fs.readText" {
+		t.Fatalf("ready after dismissal = %#v", ready)
+	}
+	again := dialNative(t, agent, app.StoreID, "app")
+	request = readNative(t, again)
+	if request["kind"] != "delta" {
+		t.Fatalf("reconnect after dismissal must ask again = %#v", request)
+	}
+	if stored, _ := agent.nativeApp(app.StoreID); stored.Dismissals != 1 || len(stored.Denied) != 0 {
+		t.Fatalf("dismissal stored = %#v", stored)
+	}
+	// An explicit Don't Allow is remembered, so a reconnect is not asked.
+	writeNative(t, again, map[string]any{"type": "native-host-permission-decision", "requestId": request["requestId"], "capabilities": nil, "decision": "deny"})
+	if ready := readNative(t, again); ready["type"] != "native-host-ready" {
 		t.Fatalf("ready after decline = %#v", ready)
 	}
-	// The declined permissions count as reviewed, so a reconnect is not asked.
-	again := dialNative(t, agent, app.StoreID, "app")
-	if frame := readNative(t, again); frame["type"] != "native-host-ready" {
+	third := dialNative(t, agent, app.StoreID, "app")
+	if frame := readNative(t, third); frame["type"] != "native-host-ready" {
 		t.Fatalf("reconnect after decline = %#v", frame)
+	}
+	if stored, _ := agent.nativeApp(app.StoreID); stored.Dismissals != 0 || strings.Join(stored.Denied, ",") != "fs.exec,net.protocol.https" {
+		t.Fatalf("decline stored = %#v", stored)
 	}
 }
 
@@ -507,5 +526,115 @@ func TestNativeDropFilesChecksCurrentGrant(t *testing.T) {
 	server.Config.NativeApps[0].Capabilities = nil
 	if _, err := server.validateNativeDropFiles("owner/allowed", []string{path}); err == nil {
 		t.Fatal("revoked grant still received paths")
+	}
+}
+
+// readNativeUntil reads page frames until one matches, returning the frames
+// seen on the way.
+func readNativeUntil(t *testing.T, socket *nativeFrameSocket, done func(map[string]any) bool) (map[string]any, []map[string]any) {
+	t.Helper()
+	var seen []map[string]any
+	for attempt := 0; attempt < 20; attempt++ {
+		frame := readNative(t, socket)
+		if done(frame) {
+			return frame, seen
+		}
+		seen = append(seen, frame)
+	}
+	t.Fatalf("no matching frame among %#v", seen)
+	return nil, nil
+}
+
+func startNativePageAndControl(t *testing.T, app NativeApp) (*Server, *nativeFrameSocket, *nativeFrameSocket) {
+	t.Helper()
+	agent, _ := nativeTestAgent(t, app)
+	page := dialNative(t, agent, app.StoreID, "app")
+	if frame := readNative(t, page); frame["type"] != "native-host-ready" {
+		t.Fatalf("page ready = %#v", frame)
+	}
+	writeNative(t, page, map[string]any{"type": "hello", "protocol": ProtocolVersion})
+	hello := readNative(t, page)
+	if features, _ := hello["features"].(map[string]any); features["permissionPrompt"] != true {
+		t.Fatalf("native hello must advertise permissionPrompt: %#v", hello["features"])
+	}
+	control := dialNative(t, agent, app.StoreID, "control")
+	if ready := readNative(t, control); ready["type"] != "native-host-ready" {
+		t.Fatalf("control ready = %#v", ready)
+	}
+	return agent, page, control
+}
+
+func TestNativeCallAfterUserActionAsksAndContinues(t *testing.T) {
+	app := notesNativeApp()
+	app.ApprovedAt = time.Now().UnixMilli()
+	app.Capabilities = []string{"fs.readText"}
+	app.Declared = []string{"fs.readText"}
+	app.Denied = []string{"fs.exec", "net.protocol.https"}
+	agent, page, control := startNativePageAndControl(t, app)
+
+	// Without a user action the call is refused with a structured refusal and
+	// nothing is asked (a prompt would hold the call, so the error proves it).
+	writeNative(t, page, map[string]any{"type": "exec", "id": "quiet", "command": "echo hi"})
+	refusal, _ := readNativeUntil(t, page, func(frame map[string]any) bool { return frame["id"] == "quiet" })
+	if refusal["type"] != "exec-error" || refusal["code"] != "permission-required" || refusal["permission"] != "fs.exec" || refusal["askable"] != true {
+		t.Fatalf("quiet refusal = %#v", refusal)
+	}
+
+	// Right after a click the agent asks in the app window; allowing lets the
+	// same call run.
+	writeNative(t, page, map[string]any{"type": "exec", "id": "clicked", "command": "echo hi", "userAction": true})
+	request := readNative(t, control)
+	page2, _ := request["page"].(string)
+	if request["type"] != "native-host-permission-request" || request["kind"] != "delta" || !strings.Contains(page2, `"kind":"required"`) || !strings.Contains(page2, `"focus":["execute"]`) {
+		t.Fatalf("required prompt = %#v", request["kind"])
+	}
+	writeNative(t, control, map[string]any{"type": "native-host-permission-decision", "requestId": request["requestId"], "decision": "allow", "capabilities": []string{"fs.exec"}})
+	result, seen := readNativeUntil(t, page, func(frame map[string]any) bool {
+		return frame["id"] == "clicked" && (frame["type"] == "exec-exit" || frame["type"] == "exec-error")
+	})
+	if result["type"] != "exec-exit" {
+		t.Fatalf("call after allow = %#v (seen %#v)", result, seen)
+	}
+	stored, _ := agent.nativeApp(app.StoreID)
+	if !stringSliceHas(stored.Capabilities, "fs.exec") || stringSliceHas(stored.Denied, "fs.exec") || !stringSliceHas(stored.Capabilities, "fs.readText") {
+		t.Fatalf("stored after allow = %#v", stored)
+	}
+}
+
+func TestNativeDontAskAgainStopsAskingButChipCanStillReview(t *testing.T) {
+	app := notesNativeApp()
+	app.ApprovedAt = time.Now().UnixMilli()
+	app.Capabilities = []string{"fs.readText"}
+	app.Declared = []string{"fs.readText"}
+	app.Denied = []string{"fs.exec", "net.protocol.https"}
+	agent, page, control := startNativePageAndControl(t, app)
+
+	writeNative(t, page, map[string]any{"type": "rpc", "id": "p1", "service": "permissionRequest", "method": "request", "args": []any{map[string]any{"permissions": []string{"fs.exec"}}}})
+	request := readNative(t, control)
+	writeNative(t, control, map[string]any{"type": "native-host-permission-decision", "requestId": request["requestId"], "decision": "deny", "dontAsk": true, "capabilities": nil})
+	result, _ := readNativeUntil(t, page, func(frame map[string]any) bool { return frame["id"] == "p1" })
+	if value, _ := result["result"].(map[string]any); result["type"] != "rpc-result" || value["granted"] != false {
+		t.Fatalf("request after deny = %#v", result)
+	}
+	stored, _ := agent.nativeApp(app.StoreID)
+	if !stringSliceHas(stored.DontAsk, "fs.exec") {
+		t.Fatalf("dont ask not stored: %#v", stored)
+	}
+	// A later click does not ask, and the refusal is no longer askable.
+	writeNative(t, page, map[string]any{"type": "exec", "id": "again", "command": "echo hi", "userAction": true})
+	refusal, _ := readNativeUntil(t, page, func(frame map[string]any) bool { return frame["id"] == "again" })
+	if refusal["type"] != "exec-error" || refusal["askable"] != false {
+		t.Fatalf("refusal after don't ask again = %#v", refusal)
+	}
+	// The user can still turn it on from Permissions…, which clears it.
+	writeNative(t, control, map[string]any{"type": "native-host-review", "id": "r1"})
+	review := readNative(t, control)
+	writeNative(t, control, map[string]any{"type": "native-host-permission-decision", "requestId": review["requestId"], "decision": "allow", "capabilities": []string{"fs.readText", "fs.exec"}})
+	if done := readNative(t, control); done["type"] != "native-host-review-result" || done["changed"] != true {
+		t.Fatalf("review = %#v", done)
+	}
+	stored, _ = agent.nativeApp(app.StoreID)
+	if stringSliceHas(stored.DontAsk, "fs.exec") || !stringSliceHas(stored.Capabilities, "fs.exec") {
+		t.Fatalf("review must clear don't ask again: %#v", stored)
 	}
 }

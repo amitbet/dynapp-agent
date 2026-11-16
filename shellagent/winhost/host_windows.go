@@ -809,21 +809,26 @@ func (h *host) prompt(frame map[string]any, conn *frameConn) {
 		if appName == "" {
 			appName = h.options.Name
 		}
-		var capabilities []string
-		var decided bool
-		var err error = errors.New("no permission page")
+		var result permissionPageResult
+		err := errors.New("no permission page")
 		if page, _ := frame["page"].(string); page != "" {
-			capabilities, decided, err = h.askPermissionPage(page)
+			result, err = h.askPermissionPage(page)
 			if err != nil {
 				log.Printf("permission page unavailable, using the native checklist: %v", err)
 			}
 		}
 		if err != nil {
-			capabilities, decided = askPermissions(h.hwnd, kind, appName, origin, groups)
+			// The checklist cannot tell Don't Allow from closing the
+			// window, so neither is recorded as a refusal.
+			capabilities, decided := askPermissions(h.hwnd, kind, appName, origin, groups)
+			result = permissionPageResult{decision: "dismissed"}
+			if decided {
+				result = permissionPageResult{decision: "allow", capabilities: capabilities}
+			}
 		}
-		reply := map[string]any{"type": "native-host-permission-decision", "requestId": requestID, "capabilities": nil}
-		if decided {
-			reply["capabilities"] = capabilities
+		reply := map[string]any{"type": "native-host-permission-decision", "requestId": requestID, "capabilities": nil, "decision": result.decision, "dontAsk": result.dontAsk}
+		if result.decision == "allow" {
+			reply["capabilities"] = result.capabilities
 		}
 		_ = conn.writeJSON(reply)
 	}()

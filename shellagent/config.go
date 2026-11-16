@@ -137,6 +137,10 @@ type BrowserIdentity struct {
 	// decided. Permissions declared later are requested as a delta; ones the
 	// authority deliberately left unchecked are not asked again.
 	Declared []string `json:"declared,omitempty"`
+	// Denied and DontAsk mirror NativeApp: explicit refusals, and refusals
+	// the user asked never to be asked about again.
+	Denied  []string `json:"denied,omitempty"`
+	DontAsk []string `json:"dontAsk,omitempty"`
 	// Authority marks the Dyner client identity that decides permissions.
 	Authority bool `json:"authority,omitempty"`
 	// Client is a short, non-secret description of the browser that holds

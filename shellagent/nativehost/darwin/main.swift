@@ -199,11 +199,8 @@ final class PageSocket {
         ready = true
         host.deliver(["sid": sid, "event": "open"])
       case "native-host-permission-request":
-        host.presentPermissionRequest(frame) { [weak self] capabilities in
-          self?.connection.sendJSON([
-            "type": "native-host-permission-decision", "requestId": frame["requestId"] ?? "",
-            "capabilities": capabilities.map { $0 as Any } ?? NSNull(),
-          ])
+        host.presentPermissionRequest(frame) { [weak self] answer in
+          self?.connection.sendJSON(answer.frame(requestID: frame["requestId"]))
         }
       case "native-host-error":
         host.deliver(["sid": sid, "event": "error", "error": frame["error"] ?? "The DynApp agent refused the connection"])
@@ -280,7 +277,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   var sockets: [String: PageSocket] = [:]
   var popups: [NSWindow] = []
   var pendingReviews: [String: String] = [:]
-  var permissionQueue: [(frame: [String: Any], reply: ([String]?) -> Void)] = []
+  var permissionQueue: [(frame: [String: Any], reply: (PermissionAnswer) -> Void)] = []
   var shownRequests = Set<String>()
   var permissionSheetOpen = false
   var permissionPage: PermissionPageSheet?
@@ -385,11 +382,8 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
           self.agentOrigin = (frame["origin"] as? String) ?? ""
           self.loadPage(bootstrap: frame["bootstrapScript"] as? String, url: url)
         case "native-host-permission-request":
-          self.presentPermissionRequest(frame) { capabilities in
-            connection.sendJSON([
-              "type": "native-host-permission-decision", "requestId": frame["requestId"] ?? "",
-              "capabilities": capabilities.map { $0 as Any } ?? NSNull(),
-            ])
+          self.presentPermissionRequest(frame) { answer in
+            connection.sendJSON(answer.frame(requestID: frame["requestId"]))
           }
         case "native-host-open-files-result":
           if let error = frame["error"] as? String {
@@ -577,7 +571,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     if changed { webView?.reload() }
   }
 
-  func presentPermissionRequest(_ frame: [String: Any], reply: @escaping ([String]?) -> Void) {
+  func presentPermissionRequest(_ frame: [String: Any], reply: @escaping (PermissionAnswer) -> Void) {
     guard let requestID = frame["requestId"] as? String, !shownRequests.contains(requestID) else { return }
     shownRequests.insert(requestID)
     permissionQueue.append((frame, reply))
@@ -588,8 +582,8 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     guard !permissionSheetOpen, !permissionQueue.isEmpty, let window else { return }
     let (frame, reply) = permissionQueue.removeFirst()
     permissionSheetOpen = true
-    let done: ([String]?) -> Void = { [weak self] capabilities in
-      reply(capabilities)
+    let done: (PermissionAnswer) -> Void = { [weak self] answer in
+      reply(answer)
       self?.permissionSheetOpen = false
       self?.showNextPermissionRequest()
     }
@@ -598,9 +592,9 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     // The agent's permission page, shared with the Windows host. Agents that
     // predate it send only "groups"; the native alert below draws those.
     if let page = frame["page"] as? String, !page.isEmpty {
-      let sheet = PermissionPageSheet(page: page) { [weak self] capabilities in
+      let sheet = PermissionPageSheet(page: page) { [weak self] answer in
         self?.permissionPage = nil
-        done(capabilities)
+        done(answer)
       }
       permissionPage = sheet
       sheet.present(on: window)
@@ -687,9 +681,9 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
         for (checkbox, permissions) in checkboxes where checkbox.state == .on {
           capabilities.append(contentsOf: permissions)
         }
-        done(capabilities)
+        done(PermissionAnswer(decision: "allow", capabilities: capabilities))
       } else {
-        done(nil)
+        done(PermissionAnswer(decision: "deny"))
       }
     }
   }
@@ -1259,6 +1253,21 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
 /// is launched with DYNAPP_HOST_SNAPSHOT for UI checks.
 // MARK: - Permission page
 
+/// One answer to a permission prompt. "dismissed" (Escape, a crashed page)
+/// is not a refusal: the agent asks again later.
+struct PermissionAnswer {
+  var decision: String
+  var capabilities: [String]? = nil
+  var dontAsk = false
+
+  func frame(requestID: Any?) -> [String: Any] {
+    [
+      "type": "native-host-permission-decision", "requestId": requestID ?? "",
+      "capabilities": capabilities.map { $0 as Any } ?? NSNull(), "decision": decision, "dontAsk": dontAsk,
+    ]
+  }
+}
+
 /// Shows the agent's permission page as a sheet on the app window. The page
 /// runs in its own WKWebView with a non-persistent store; only its main frame
 /// can post to "dynappPermission", and it cannot navigate anywhere. The app's
@@ -1267,11 +1276,11 @@ final class PermissionPageSheet: NSObject, WKNavigationDelegate, WKUIDelegate {
   static let width: CGFloat = 500
   private let panel: NSPanel
   private let webView: WKWebView
-  private var finish: (([String]?) -> Void)?
+  private var finish: ((PermissionAnswer) -> Void)?
   private weak var parent: NSWindow?
   private var shown = false
 
-  init(page: String, finish: @escaping ([String]?) -> Void) {
+  init(page: String, finish: @escaping (PermissionAnswer) -> Void) {
     self.finish = finish
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = .nonPersistent()
@@ -1325,12 +1334,14 @@ final class PermissionPageSheet: NSObject, WKNavigationDelegate, WKUIDelegate {
       show()
       return
     }
-    if (message["decision"] as? Bool) == true {
-      complete(message["capabilities"] as? [String])
+    if let decision = message["decision"] as? String, ["allow", "deny", "dismissed"].contains(decision) {
+      complete(PermissionAnswer(
+        decision: decision, capabilities: decision == "allow" ? (message["capabilities"] as? [String]) ?? [] : nil,
+        dontAsk: (message["dontAsk"] as? Bool) ?? false))
     }
   }
 
-  private func complete(_ capabilities: [String]?) {
+  private func complete(_ answer: PermissionAnswer) {
     guard let finish else { return }
     self.finish = nil
     webView.configuration.userContentController.removeScriptMessageHandler(forName: "dynappPermission")
@@ -1339,7 +1350,7 @@ final class PermissionPageSheet: NSObject, WKNavigationDelegate, WKUIDelegate {
     } else {
       panel.orderOut(nil)
     }
-    finish(capabilities)
+    finish(answer)
   }
 
   func webView(
@@ -1356,7 +1367,7 @@ final class PermissionPageSheet: NSObject, WKNavigationDelegate, WKUIDelegate {
     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
   ) -> WKWebView? { nil }
 
-  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { complete(nil) }
+  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { complete(PermissionAnswer(decision: "dismissed")) }
 }
 
 /// Holds the sheet weakly: WKUserContentController retains its handlers.

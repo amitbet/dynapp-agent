@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,69 @@ var nativePermissionPromptTemplate string
 
 // requiredPermissionTimeout bounds how long a call waits for the user.
 const requiredPermissionTimeout = 5 * time.Minute
+
+// maxLaunchDismissals is how many launch prompts in a row may be closed
+// without an answer before the agent stops asking at launch. The request then
+// waits in the app's "Permissions needed" chip.
+const maxLaunchDismissals = 3
+
+// launchPermissionAsk decides what a native app's launch prompt asks for.
+// Explicit refusals and "Don't ask again" are not asked at launch; a prompt
+// that was only dismissed comes back, up to maxLaunchDismissals times.
+func launchPermissionAsk(app NativeApp, declared []string) (string, []string) {
+	if app.Dismissals >= maxLaunchDismissals {
+		return "", nil
+	}
+	if app.ApprovedAt == 0 {
+		ask := normalizePermissionSet(subtractStrings(declared, app.DontAsk))
+		if len(ask) == 0 && len(declared) > 0 {
+			return "", nil
+		}
+		return "pairing", ask
+	}
+	fresh := subtractStrings(declared, unionStrings(unionStrings(app.Declared, app.Denied), unionStrings(app.DontAsk, app.Capabilities)))
+	if len(fresh) == 0 {
+		return "", nil
+	}
+	return "delta", normalizePermissionSet(fresh)
+}
+
+// applyNativeDecision stores one answer about ask. Allow grants the checked
+// permissions and refuses the unchecked ones; deny refuses all of ask;
+// dismissed changes nothing except the dismissal count. A grant clears a
+// permission's refusal and "Don't ask again".
+func applyNativeDecision(app NativeApp, kind string, ask, granted []string, outcome string, dontAsk bool) NativeApp {
+	ask = normalizePermissionSet(ask)
+	if outcome == decisionDismissed {
+		if kind == "pairing" || kind == "delta" {
+			app.Dismissals++
+		}
+		return app
+	}
+	app.Dismissals = 0
+	granted = normalizePermissionSet(intersectStrings(granted, ask))
+	refused := ask
+	if outcome == decisionAllow {
+		refused = subtractStrings(ask, granted)
+		if kind == "pairing" || kind == "review" {
+			app.Capabilities = granted
+		} else {
+			app.Capabilities = normalizePermissionSet(unionStrings(app.Capabilities, granted))
+		}
+		app.Declared = normalizePermissionSet(unionStrings(app.Declared, granted))
+	} else if kind == "pairing" {
+		app.Capabilities = []string{}
+	}
+	app.Denied = normalizePermissionSet(subtractStrings(unionStrings(app.Denied, refused), granted))
+	app.DontAsk = normalizePermissionSet(subtractStrings(app.DontAsk, granted))
+	if dontAsk {
+		app.DontAsk = normalizePermissionSet(unionStrings(app.DontAsk, refused))
+	}
+	if app.ApprovedAt == 0 {
+		app.ApprovedAt = time.Now().UnixMilli()
+	}
+	return app
+}
 
 // nativePermissionPage fills the prompt template. json.Marshal escapes <, >
 // and &, so the request cannot end the script element it is written into.
@@ -59,8 +123,8 @@ func nativePermissionRequestFrame(requestID, kind, appName, origin string, group
 	return frame
 }
 
-// permissionDemand is one in-flight "this call needs more access" decision,
-// shared by every call that needs the same group of the same app.
+// permissionDemand is one in-flight prompt for a group of one app, shared by
+// every call that waits for it.
 type permissionDemand struct {
 	done    chan struct{}
 	granted []string
@@ -69,16 +133,17 @@ type permissionDemand struct {
 type permissionDemands struct {
 	mu       sync.Mutex
 	inflight map[string]*permissionDemand
-	// declined remembers groups the user refused while the agent runs, so a
-	// retrying app cannot keep raising the prompt.
-	declined map[string]bool
+	// asked remembers groups this agent run already prompted for after a
+	// user action, so a retrying app cannot keep raising the prompt. The
+	// "Permissions needed" chip asks regardless.
+	asked map[string]bool
 }
 
 func (s *Server) demands() *permissionDemands {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.permissionDemandState == nil {
-		s.permissionDemandState = &permissionDemands{inflight: map[string]*permissionDemand{}, declined: map[string]bool{}}
+		s.permissionDemandState = &permissionDemands{inflight: map[string]*permissionDemand{}, asked: map[string]bool{}}
 	}
 	return s.permissionDemandState
 }
@@ -93,118 +158,170 @@ func permissionGroupOf(permission string) string {
 	return permission
 }
 
-// ensureCapability is the one place a refused call can turn into a prompt.
-// It returns true when auth now holds required. Only a permission the app's
-// manifest declares can be asked for; the manifest stays the ceiling.
-//
-// For a native app the user answers in the app's own window and the call
-// continues. For a browser app the decision belongs to Dyner: the agent
-// registers a pending request and the call is refused for now.
-func (s *Server) ensureCapability(ctx context.Context, auth *socketAuthentication, required string) bool {
-	if auth == nil || required == "" {
-		return true
+// permissionRequiredError is a refusal the runtime can act on: Askable means
+// the app declares the permission and the user has not said "Don't ask
+// again", so the "Permissions needed" chip can offer it.
+type permissionRequiredError struct {
+	Permission string
+	Askable    bool
+	text       string
+}
+
+func (e *permissionRequiredError) Error() string { return e.text }
+
+// fields are added to the refusal frame next to "error".
+func (e *permissionRequiredError) fields() map[string]any {
+	return map[string]any{"code": "permission-required", "permission": e.Permission, "askable": e.Askable}
+}
+
+// refusal builds the structured refusal for a permission auth lacks.
+func (s *Server) refusal(auth *socketAuthentication, required, text string) *permissionRequiredError {
+	if text == "" {
+		text = permissionDeniedError(required)
 	}
-	if socketAllows(auth.capabilities, required) {
-		return true
-	}
-	if auth.scoped || auth.storeID == "" || required == permissionsManage || !stringSliceHas(auth.declared, required) {
+	return &permissionRequiredError{Permission: required, Askable: s.permissionAskable(auth, required), text: text}
+}
+
+// permissionAskable reports whether the user can still be asked for required.
+func (s *Server) permissionAskable(auth *socketAuthentication, required string) bool {
+	if auth == nil || auth.scoped || auth.storeID == "" || required == permissionsManage || !stringSliceHas(auth.declared, required) {
 		return false
 	}
 	if auth.native {
-		return s.ensureNativeCapability(ctx, auth, required)
+		app, ok := s.nativeApp(auth.storeID)
+		return ok && !stringSliceHas(app.DontAsk, required)
 	}
-	if auth.keyID != "" {
-		s.requestBrowserCapability(auth, required)
+	if auth.keyID == "" {
+		return false
+	}
+	identity, ok := s.findIdentity(auth.keyID, auth.origin, auth.storeID)
+	return ok && !identity.Shared && !stringSliceHas(identity.DontAsk, required)
+}
+
+// ensureCapability is the one place a refused call can turn into a prompt.
+// It returns true when auth holds required, possibly after asking.
+//
+// A grant made meanwhile (another window, Dyner, Permissions…) is picked up
+// silently. A native app asks in its own window only when the call follows a
+// user action (the runtime marks those frames), once per group per agent run;
+// the call then continues with the answer. Everything else is refused with a
+// structured refusal that the runtime's "Permissions needed" chip offers.
+func (s *Server) ensureCapability(ctx context.Context, auth *socketAuthentication, required string, userAction bool) bool {
+	if auth == nil || required == "" || socketAllows(auth.capabilities, required) {
+		return true
+	}
+	if !s.permissionAskable(auth, required) && !(auth != nil && auth.native) {
+		return false
+	}
+	if auth.native {
+		if app, ok := s.nativeApp(auth.storeID); ok && socketAllows(intersectStrings(app.Capabilities, auth.declared), required) {
+			s.widenSocketGrant(auth, app.Capabilities)
+			return true
+		}
+		if !userAction || !s.permissionAskable(auth, required) {
+			return false
+		}
+		granted, _ := s.promptNativeGroup(ctx, auth, []string{required}, true)
+		return socketAllows(granted, required) && socketAllows(auth.capabilities, required)
+	}
+	if identity, ok := s.findIdentity(auth.keyID, auth.origin, auth.storeID); ok && socketAllows(intersectStrings(identity.Capabilities, auth.declared), required) {
+		s.widenSocketGrant(auth, identity.Capabilities)
+		return true
 	}
 	return false
 }
 
 // requireCapability is ensureCapability for handlers that only hold the
-// request: crossovers such as http.download needing fs.writeBase64.
-func (s *Server) requireCapability(ctx context.Context, request message, required string) bool {
-	if request.auth == nil {
-		return true
+// request, such as http.download needing fs.writeBase64. It returns nil or
+// the structured refusal.
+func (s *Server) requireCapability(ctx context.Context, request message, required, text string) error {
+	if request.auth == nil || s.ensureCapability(ctx, request.auth, required, request.UserAction) {
+		return nil
 	}
-	return s.ensureCapability(ctx, request.auth, required)
+	return s.refusal(request.auth, required, text)
 }
 
-func (s *Server) ensureNativeCapability(ctx context.Context, auth *socketAuthentication, required string) bool {
+// promptNativeGroup asks a native app's user about the declared, ungranted
+// permissions in the groups of wanted, in the app's window, and returns what
+// was granted. onceThisRun limits automatic prompts to one per group per
+// agent run; the chip passes false.
+func (s *Server) promptNativeGroup(ctx context.Context, auth *socketAuthentication, wanted []string, onceThisRun bool) ([]string, error) {
 	app, ok := s.nativeApp(auth.storeID)
 	if !ok {
-		return false
+		return nil, errors.New("this app is no longer installed")
 	}
-	// Granted meanwhile (another window, Dyner, the Permissions menu).
-	if socketAllows(app.Capabilities, required) {
+	groups := map[string]bool{}
+	for _, permission := range wanted {
+		groups[permissionGroupOf(permission)] = true
+	}
+	ask := []string{}
+	for _, permission := range auth.declared {
+		if permission == permissionsManage || socketAllows(app.Capabilities, permission) {
+			continue
+		}
+		if stringSliceHas(wanted, permission) || groups[permissionGroupOf(permission)] {
+			ask = append(ask, permission)
+		}
+	}
+	ask = normalizePermissionSet(ask)
+	if len(ask) == 0 {
 		s.widenSocketGrant(auth, app.Capabilities)
-		return true
+		return intersectStrings(app.Capabilities, wanted), nil
 	}
-	group := permissionGroupOf(required)
-	key := auth.storeID + "\x00" + group
+	focus := []string{}
+	for group := range groups {
+		focus = append(focus, group)
+	}
+	key := auth.storeID + "\x00" + strings.Join(normalizePermissionSet(focus), ",")
 	state := s.demands()
 	state.mu.Lock()
-	if state.declined[key] {
+	if onceThisRun && state.asked[key] {
 		state.mu.Unlock()
-		return false
+		return nil, nil
 	}
 	demand := state.inflight[key]
 	owner := demand == nil
 	if owner {
 		demand = &permissionDemand{done: make(chan struct{})}
 		state.inflight[key] = demand
+		state.asked[key] = true
 	}
 	state.mu.Unlock()
 	if owner {
-		granted, approved := s.askNativeRequired(ctx, app, auth, group, required)
-		demand.granted = granted
+		demand.granted = s.askNativeRequired(ctx, app, auth, ask, focus)
 		state.mu.Lock()
 		delete(state.inflight, key)
-		if !approved || !socketAllows(granted, required) {
-			state.declined[key] = true
-		}
 		state.mu.Unlock()
 		close(demand.done)
 	} else {
 		select {
 		case <-demand.done:
 		case <-ctx.Done():
-			return false
+			return nil, ctx.Err()
 		}
-	}
-	if !socketAllows(demand.granted, required) {
-		return false
 	}
 	if updated, ok := s.nativeApp(auth.storeID); ok {
 		s.widenSocketGrant(auth, updated.Capabilities)
 	}
-	return true
+	return demand.granted, nil
 }
 
-// askNativeRequired shows the prompt for the declared, ungranted permissions
-// in required's group and stores the answer.
-func (s *Server) askNativeRequired(ctx context.Context, app NativeApp, auth *socketAuthentication, group, required string) ([]string, bool) {
-	ask := []string{}
-	for _, permission := range auth.declared {
-		if permission == permissionsManage || socketAllows(app.Capabilities, permission) {
-			continue
-		}
-		if permission == required || permissionGroupOf(permission) == group {
-			ask = append(ask, permission)
-		}
-	}
-	ask = normalizePermissionSet(ask)
+// askNativeRequired shows the prompt in the app's window and stores the
+// answer. It returns the newly granted permissions.
+func (s *Server) askNativeRequired(ctx context.Context, app NativeApp, auth *socketAuthentication, ask, focus []string) []string {
 	control := s.nativeControl(app.StoreID)
-	if control == nil || len(ask) == 0 {
-		return nil, false
-	}
-	pending, err := s.registerPending(&pendingRequest{
-		Kind: "required", AppName: auth.appName, StoreID: app.StoreID, Origin: app.Origin, Declared: ask,
-	})
-	if err != nil {
-		return nil, false
+	if control == nil {
+		return nil
 	}
 	name := auth.appName
 	if name == "" {
 		name = app.Name
+	}
+	pending, err := s.registerPending(&pendingRequest{
+		Kind: "required", AppName: name, StoreID: app.StoreID, Origin: app.Origin, Declared: ask,
+	})
+	if err != nil {
+		return nil
 	}
 	reasons := map[string]string{}
 	s.mu.Lock()
@@ -216,33 +333,30 @@ func (s *Server) askNativeRequired(ctx context.Context, app NativeApp, auth *soc
 	}
 	cancel()
 	groups := nativePermissionGroups(ask, app.Capabilities, reasons)
-	if !send(control.socket, ctx, nativePermissionRequestFrame(pending.ID, "required", name, app.Origin, groups, []string{group})) {
+	if !send(control.socket, ctx, nativePermissionRequestFrame(pending.ID, "required", name, app.Origin, groups, focus)) {
 		s.unregisterPending(pending.ID)
-		return nil, false
+		return nil
 	}
 	waitCtx, stop := context.WithTimeout(ctx, requiredPermissionTimeout)
 	defer stop()
-	granted, approved := s.awaitDecision(waitCtx, pending)
-	if !approved || !pending.wasResolved() {
-		return nil, false
+	granted, _ := s.awaitDecision(waitCtx, pending)
+	if !pending.wasResolved() {
+		return nil
 	}
-	granted = normalizePermissionSet(intersectStrings(granted, ask))
-	if len(granted) == 0 {
-		return granted, true
-	}
+	outcome, dontAsk := pending.Outcome()
 	updated, ok := s.nativeApp(app.StoreID)
 	if !ok {
-		return nil, false
+		return nil
 	}
-	updated.Capabilities = normalizePermissionSet(unionStrings(updated.Capabilities, granted))
-	updated.Declared = normalizePermissionSet(unionStrings(updated.Declared, ask))
-	if updated.ApprovedAt == 0 {
-		updated.ApprovedAt = time.Now().UnixMilli()
-	}
+	before := updated.Capabilities
+	updated = applyNativeDecision(updated, "required", ask, granted, outcome, dontAsk)
 	s.upsertNativeApp(updated)
 	go s.notifyPermissionsChanged()
-	go s.pushCapabilities(updated.StoreID, nativeKeyID(updated.StoreID), updated.Capabilities)
-	return granted, true
+	added := subtractStrings(updated.Capabilities, before)
+	if len(added) > 0 {
+		go s.pushCapabilities(updated.StoreID, nativeKeyID(updated.StoreID), updated.Capabilities)
+	}
+	return added
 }
 
 // widenSocketGrant adds stored grants to a live socket, inside its declared
@@ -280,59 +394,57 @@ func (s *Server) pushCapabilities(storeID, keyID string, stored []string) {
 	}
 }
 
-// requestBrowserCapability registers one pending "required" request for a
-// browser app and lets Dyner decide it. It never blocks the call.
-func (s *Server) requestBrowserCapability(auth *socketAuthentication, required string) {
-	group := permissionGroupOf(required)
-	key := "browser\x00" + auth.keyID + "\x00" + auth.storeID + "\x00" + group
-	state := s.demands()
-	state.mu.Lock()
-	if state.declined[key] || state.inflight[key] != nil {
-		state.mu.Unlock()
-		return
+// requestBrowserPermissions registers one pending Dyner request for the
+// declared, ungranted permissions in the groups of wanted. The runtime opens
+// the review page from the "Permissions needed" chip; the decision is applied
+// to the identity and pushed to the app's pages.
+func (s *Server) requestBrowserPermissions(auth *socketAuthentication, wanted []string) (*pendingRequest, error) {
+	identity, ok := s.findIdentity(auth.keyID, auth.origin, auth.storeID)
+	if !ok || identity.Shared {
+		return nil, errors.New("this app has no permission grant on this computer")
 	}
-	demand := &permissionDemand{done: make(chan struct{})}
-	state.inflight[key] = demand
-	state.mu.Unlock()
+	groups := map[string]bool{}
+	for _, permission := range wanted {
+		groups[permissionGroupOf(permission)] = true
+	}
 	ask := []string{}
 	for _, permission := range auth.declared {
-		if permission == permissionsManage || socketAllows(auth.capabilities, permission) {
+		if permission == permissionsManage || socketAllows(identity.Capabilities, permission) {
 			continue
 		}
-		if permission == required || permissionGroupOf(permission) == group {
+		if stringSliceHas(wanted, permission) || groups[permissionGroupOf(permission)] {
 			ask = append(ask, permission)
 		}
 	}
-	finish := func(declined bool) {
-		state.mu.Lock()
-		delete(state.inflight, key)
-		if declined {
-			state.declined[key] = true
-		}
-		state.mu.Unlock()
-		close(demand.done)
+	ask = normalizePermissionSet(ask)
+	if len(ask) == 0 {
+		return nil, nil
 	}
+	state := s.permissions()
+	state.mu.Lock()
+	for _, existing := range state.pending {
+		if existing.Kind == "required" && existing.StoreID == auth.storeID && existing.Origin == auth.origin && sameCapabilitySet(existing.Declared, ask) && existing.ExpiresAt.After(time.Now()) {
+			state.mu.Unlock()
+			return existing, nil
+		}
+	}
+	state.mu.Unlock()
 	pending, err := s.registerPending(&pendingRequest{
 		Kind: "required", AppName: auth.appName, StoreID: auth.storeID, Origin: auth.origin,
-		Development: auth.development, Declared: normalizePermissionSet(ask),
+		Development: auth.development, Declared: ask,
 	})
 	if err != nil {
-		finish(false)
-		return
+		return nil, err
 	}
-	s.mu.Lock()
-	config := s.Config
-	s.mu.Unlock()
-	s.announcePending(auth.keyID, auth.storeID, config, pending)
 	keyID, storeID, origin := auth.keyID, auth.storeID, auth.origin
 	go func() {
 		granted, approved := s.awaitDecision(context.Background(), pending)
-		resolved := pending.wasResolved()
-		if approved && len(granted) > 0 {
-			s.applyBrowserGrant(keyID, origin, storeID, granted)
+		if !pending.wasResolved() {
+			return
 		}
-		finish(resolved && (!approved || !stringSliceHas(granted, required)))
+		s.applyBrowserDecision(keyID, origin, storeID, ask, granted, approved)
 	}()
+	return pending, nil
 }
 
 // announcePending tells the app's open pages that Dyner has a request to
@@ -357,24 +469,31 @@ func (s *Server) announcePending(keyID, storeID string, config Config, pending *
 	}
 }
 
-// applyBrowserGrant adds a Dyner decision to a browser identity and pushes
-// the new set to its open pages.
-func (s *Server) applyBrowserGrant(keyID, origin, storeID string, granted []string) {
+// applyBrowserDecision stores a Dyner decision about ask on a browser
+// identity and pushes the new grant to the app's pages. Unchecked permissions
+// count as refused; a grant clears a refusal and "Don't ask again".
+func (s *Server) applyBrowserDecision(keyID, origin, storeID string, ask, granted []string, approved bool) {
 	identity, ok := s.findIdentity(keyID, origin, storeID)
 	if !ok {
 		return
 	}
+	granted = normalizePermissionSet(intersectStrings(granted, ask))
+	refused := subtractStrings(ask, granted)
 	identity.Capabilities = normalizePermissionSet(unionStrings(identity.Capabilities, granted))
 	identity.Declared = normalizePermissionSet(unionStrings(identity.Declared, granted))
+	identity.Denied = normalizePermissionSet(subtractStrings(unionStrings(identity.Denied, refused), granted))
+	identity.DontAsk = normalizePermissionSet(subtractStrings(identity.DontAsk, granted))
 	s.upsertBrowserIdentity(identity)
 	go s.notifyPermissionsChanged()
-	s.pushCapabilities(storeID, keyID, identity.Capabilities)
+	if approved && len(granted) > 0 {
+		s.pushCapabilities(storeID, keyID, identity.Capabilities)
+	}
 }
 
 // startBrowserDelta asks Dyner about permissions an app update added since
 // this browser identity was approved. The app keeps running meanwhile.
 func (s *Server) startBrowserDelta(identity BrowserIdentity, resolved resolvedApp, fresh []string, config Config) {
-	fresh = normalizePermissionSet(subtractStrings(fresh, []string{permissionsManage}))
+	fresh = normalizePermissionSet(subtractStrings(fresh, unionStrings([]string{permissionsManage}, unionStrings(identity.Denied, identity.DontAsk))))
 	if len(fresh) == 0 || s.autoApprovePairings {
 		return
 	}
@@ -392,8 +511,8 @@ func (s *Server) startBrowserDelta(identity BrowserIdentity, resolved resolvedAp
 	}()
 	go func() {
 		granted, approved := s.awaitDecision(context.Background(), pending)
-		if approved && len(granted) > 0 {
-			s.applyBrowserGrant(identity.KeyID, identity.Origin, identity.StoreID, granted)
+		if pending.wasResolved() {
+			s.applyBrowserDecision(identity.KeyID, identity.Origin, identity.StoreID, fresh, granted, approved)
 		}
 	}()
 }
@@ -428,6 +547,65 @@ func (s *Server) routeNativeDecision(storeID string, frame nativeHostFrame) bool
 	if pending == nil || pending.StoreID != storeID {
 		return true
 	}
-	pending.resolve(intersectStrings(frame.Capabilities, pending.Declared), frame.Capabilities != nil)
+	granted, outcome := hostDecision(frame)
+	pending.resolveWith(intersectStrings(granted, pending.Declared), outcome, frame.DontAsk)
+	return true
+}
+
+// handlePermissionRequestRPC implements `permissionRequest.request`: the
+// runtime's "Permissions needed" chip (or the app) asks for declared
+// permissions it lacks. A native app's user answers in the app's window; a
+// browser app gets a pending Dyner request to open. Permissions the user
+// marked "Don't ask again" are not asked.
+func (s *Server) handlePermissionRequestRPC(ctx context.Context, request message) (any, error) {
+	auth := request.auth
+	if auth == nil || auth.scoped || auth.storeID == "" {
+		return nil, errors.New("permission requests need an app connection")
+	}
+	if request.Method != "request" {
+		return nil, errors.New("unsupported permissionRequest method")
+	}
+	wanted := []string{}
+	for _, permission := range stringList(objectArg(request.Args, 0)["permissions"]) {
+		if !socketAllows(auth.capabilities, permission) && s.permissionAskable(auth, permission) {
+			wanted = append(wanted, permission)
+		}
+	}
+	wanted = normalizePermissionSet(wanted)
+	result := func() map[string]any {
+		return map[string]any{"capabilities": auth.capabilities, "granted": len(wanted) > 0 && allAllowed(auth.capabilities, wanted)}
+	}
+	if len(wanted) == 0 {
+		return result(), nil
+	}
+	if auth.native {
+		if _, err := s.promptNativeGroup(ctx, auth, wanted, false); err != nil {
+			return nil, err
+		}
+		return result(), nil
+	}
+	pending, err := s.requestBrowserPermissions(auth, wanted)
+	if err != nil {
+		return nil, err
+	}
+	out := result()
+	if pending != nil {
+		s.mu.Lock()
+		config := s.Config
+		s.mu.Unlock()
+		out["pending"] = map[string]any{
+			"requestId": pending.ID, "reviewUrl": config.reviewURL(pending.ID),
+			"expiresInMs": time.Until(pending.ExpiresAt).Milliseconds(),
+		}
+	}
+	return out, nil
+}
+
+func allAllowed(capabilities, wanted []string) bool {
+	for _, permission := range wanted {
+		if !socketAllows(capabilities, permission) {
+			return false
+		}
+	}
 	return true
 }

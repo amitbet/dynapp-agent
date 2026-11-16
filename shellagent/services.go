@@ -605,8 +605,8 @@ func (s *Server) handleFileSearchRPC(ctx context.Context, request message) (any,
 		}
 		return out, nil
 	case "configure", "rebuild":
-		if !s.requireCapability(ctx, request, "fs.list") {
-			return nil, errors.New("configuring search roots requires fs.list")
+		if err := s.requireCapability(ctx, request, "fs.list", "configuring search roots requires fs.list"); err != nil {
+			return nil, err
 		}
 		return s.rebuildSearch(objectArg(request.Args, 0))
 	case "repair":
@@ -615,8 +615,8 @@ func (s *Server) handleFileSearchRPC(ctx context.Context, request message) (any,
 	case "cancel":
 		return false, nil
 	case "open", "reveal":
-		if !s.requireCapability(ctx, request, "fs.openPath") {
-			return nil, errors.New("opening search results requires fs.openPath")
+		if err := s.requireCapability(ctx, request, "fs.openPath", "opening search results requires fs.openPath"); err != nil {
+			return nil, err
 		}
 		if len(request.Args) < 1 {
 			return nil, errors.New("file path is required")

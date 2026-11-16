@@ -127,6 +127,9 @@ type nativeHostFrame struct {
 	ID           string   `json:"id,omitempty"`
 	RequestID    string   `json:"requestId,omitempty"`
 	Capabilities []string `json:"capabilities"`
+	// Decision is "allow", "deny" or "dismissed"; older hosts omit it.
+	Decision string `json:"decision,omitempty"`
+	DontAsk  bool   `json:"dontAsk,omitempty"`
 }
 
 // nativeAsk is one permission decision shared by every connection of an app
@@ -325,29 +328,16 @@ func (s *Server) authorizeNativeApp(ctx context.Context, socket *nativeFrameSock
 		return authForNative(config, app, &manifest.app), nil
 	}
 	declared := normalizePermissionSet(subtractStrings(manifest.app.Declared, []string{permissionsManage}))
-	kind, ask := "", []string(nil)
-	if app.ApprovedAt == 0 {
-		kind, ask = "pairing", declared
-	} else if fresh := subtractStrings(declared, app.Declared); len(fresh) > 0 {
-		kind, ask = "delta", normalizePermissionSet(fresh)
-	}
+	kind, ask := launchPermissionAsk(app, declared)
 	if kind != "" && len(ask) > 0 {
 		decision, err := s.awaitNativeDecision(ctx, socket, app, manifest, kind, ask)
 		if err != nil {
 			return socketAuthentication{}, err
 		}
 		if decision.decided {
+			outcome, dontAsk := decision.pending.Outcome()
 			updated, _ := s.nativeApp(app.StoreID)
-			granted := intersectStrings(decision.granted, ask)
-			if kind == "pairing" {
-				updated.Capabilities = normalizePermissionSet(granted)
-			} else {
-				updated.Capabilities = normalizePermissionSet(unionStrings(updated.Capabilities, granted))
-			}
-			updated.Declared = normalizePermissionSet(unionStrings(updated.Declared, declared))
-			if updated.ApprovedAt == 0 {
-				updated.ApprovedAt = time.Now().UnixMilli()
-			}
+			updated = applyNativeDecision(updated, kind, ask, decision.granted, outcome, dontAsk)
 			updated.Connect = manifest.app.Connect
 			s.upsertNativeApp(updated)
 			go s.notifyPermissionsChanged()
@@ -406,8 +396,8 @@ func (s *Server) awaitNativeDecision(ctx context.Context, socket *nativeFrameSoc
 		case data := <-frames:
 			var frame nativeHostFrame
 			if json.Unmarshal(data, &frame) == nil && frame.Type == "native-host-permission-decision" && frame.RequestID == shared.pending.ID {
-				approved := frame.Capabilities != nil
-				shared.pending.resolve(intersectStrings(frame.Capabilities, shared.pending.Declared), approved)
+				granted, outcome := hostDecision(frame)
+				shared.pending.resolveWith(intersectStrings(granted, shared.pending.Declared), outcome, frame.DontAsk)
 			}
 		case err := <-readErr:
 			return nil, err
@@ -618,19 +608,19 @@ func (s *Server) reviewNativeApp(ctx context.Context, socket *nativeFrameSocket,
 			s.routeNativeDecision(storeID, frame)
 			continue
 		}
-		if frame.Capabilities == nil {
+		// Cancel and closing the review sheet change nothing.
+		chosen, outcome := hostDecision(frame)
+		if outcome != decisionAllow {
 			return map[string]any{"changed": false, "capabilities": normalizePermissionSet(app.Capabilities)}, nil, nil
 		}
-		granted := normalizePermissionSet(intersectStrings(frame.Capabilities, declared))
+		previous := normalizePermissionSet(app.Capabilities)
+		app = applyNativeDecision(app, "review", declared, chosen, decisionAllow, false)
+		granted := app.Capabilities
 		if app.Authority {
 			granted = unionStrings(granted, []string{permissionsManage})
+			app.Capabilities = granted
 		}
-		changed := !sameCapabilitySet(granted, app.Capabilities)
-		app.Capabilities = granted
-		app.Declared = normalizePermissionSet(unionStrings(app.Declared, declared))
-		if app.ApprovedAt == 0 {
-			app.ApprovedAt = time.Now().UnixMilli()
-		}
+		changed := !sameCapabilitySet(granted, previous)
 		s.upsertNativeApp(app)
 		result := map[string]any{"changed": changed, "capabilities": granted}
 		if changed {

@@ -119,6 +119,8 @@
   .hint { padding: 10px 22px 0; color: var(--faint); font-size: 11.5px; }
   footer { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 22px 18px; align-items: center; }
   footer .spacer { flex: 1; }
+  .dont-ask { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
+  .dont-ask input { margin: 0; }
   .select-all { color: var(--accent); background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
   .select-all:focus-visible { outline: 3px solid var(--focus); border-radius: 3px; }
   button.action {
@@ -152,6 +154,7 @@
   <div class="hint" id="hint"></div>
   <footer>
     <button type="button" class="select-all" id="select-all" hidden></button>
+    <label class="dont-ask" id="dont-ask-wrap" hidden><input type="checkbox" id="dont-ask"> Don't ask again</label>
     <span class="spacer"></span>
     <button type="button" class="action" id="deny"></button>
     <button type="button" class="action primary" id="allow" disabled></button>
@@ -178,10 +181,14 @@
       }
     } catch (error) { /* the host is gone */ }
   }
-  function finish(capabilities) {
+  // decision is "allow", "deny" (the Don't Allow button) or "dismissed"
+  // (Escape or Return without a button). Only "deny" is remembered as a
+  // refusal; a dismissed prompt comes back later.
+  function finish(decision, capabilities) {
     if (finished) return;
     finished = true;
-    post({ decision: true, capabilities });
+    const dontAsk = decision === "deny" && document.getElementById("dont-ask").checked;
+    post({ decision, capabilities: decision === "allow" ? capabilities : null, dontAsk });
   }
 
   const text = (id, value) => { document.getElementById(id).textContent = value; };
@@ -198,17 +205,27 @@
     text("lead", "This version of " + appName + " asks for new permissions. Choose the ones to allow.");
   } else if (kind === "required") {
     text("title", appName + " needs your permission");
-    text("lead", "What you just did in " + appName + " needs access it doesn't have yet.");
+    text("lead", appName + " can't do this until you allow the access below.");
   } else {
     text("title", "Allow " + appName + " to use this computer?");
     text("lead", "Choose what " + appName + " may do. Everything else stays off.");
   }
   text("origin", request.origin || "");
   document.getElementById("origin").hidden = !request.origin;
-  text("hint", "You can change this later from " + menuPath + ".");
+  text("hint", (kind === "review"
+    ? "Unchecked items stay off. "
+    : "If you don't allow something, " + appName + " keeps working without that feature. ")
+    + "You can change this later from " + menuPath + ".");
+  if (kind === "required") document.getElementById("dont-ask-wrap").hidden = false;
   text("deny", denyLabel);
   text("allow", allowLabel);
 
+  const riskMeaning = {
+    "low": "Can't change or read your personal files.",
+    "medium": "Can read or change things you could also do yourself in this app.",
+    "high": "Can affect files, programs or the network beyond this app. Allow it only if you trust " + appName + ".",
+    "very-high": "Can reach passwords, keys or control of this computer. Off unless you turn it on.",
+  };
   const list = document.getElementById("groups");
   const boxes = [];
   groups.forEach((group, index) => {
@@ -233,6 +250,7 @@
     const risk = document.createElement("span");
     risk.className = "risk " + danger;
     risk.textContent = danger.replace("-", " ") + " risk";
+    risk.title = riskMeaning[danger];
     line.append(title, risk);
     if (focus.has(group.id)) {
       const needed = document.createElement("span");
@@ -282,14 +300,14 @@
 
   const deny = document.getElementById("deny");
   const allow = document.getElementById("allow");
-  deny.addEventListener("click", () => finish(null));
+  deny.addEventListener("click", () => finish("deny", null));
   allow.addEventListener("click", () => {
     if (allow.disabled) return;
     const selected = [];
     for (const { box, group } of boxes) {
       if (box.checked && Array.isArray(group.permissions)) selected.push(...group.permissions);
     }
-    finish(selected);
+    finish("allow", selected);
   });
   // A click that was aimed at the app must not land on Allow.
   setTimeout(() => { allow.disabled = false; }, 1000);
@@ -297,11 +315,12 @@
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      finish(null);
+      finish("dismissed", null);
     } else if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) {
-      // Return without a focused button is the safe answer.
+      // Return without a focused button never allows, and it is not a
+      // decision either: the prompt comes back later.
       event.preventDefault();
-      finish(null);
+      finish("dismissed", null);
     }
   });
   document.addEventListener("contextmenu", (event) => event.preventDefault());

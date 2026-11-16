@@ -458,7 +458,9 @@ func TestDangerousPermissionWithoutGrantReturnsReviewHint(t *testing.T) {
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
 	sendRequest(t, ctx, app, map[string]any{"type": "exec", "id": "exec", "file": "/bin/echo"})
-	if reply := receive(t, ctx, app); reply["type"] != "exec-error" || reply["error"] != "Permission fs.execFile is not granted for this app. Review it in Dyner → Permissions." {
+	// The refusal is structured so the runtime's "Permissions needed" chip
+	// can offer the declared permission.
+	if reply := receive(t, ctx, app); reply["type"] != "exec-error" || reply["code"] != "permission-required" || reply["permission"] != "fs.execFile" || reply["askable"] != true || reply["error"] != "Permission fs.execFile is not granted for this app. Review it in Dyner → Permissions." {
 		t.Fatalf("exec without grant = %#v", reply)
 	}
 	sendRequest(t, ctx, app, map[string]any{"type": "exec", "id": "shell", "command": "echo hi"})

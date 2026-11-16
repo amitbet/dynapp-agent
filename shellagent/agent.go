@@ -612,12 +612,15 @@ func (s *Server) bridgeDeferralDeadline(limit time.Duration) time.Time {
 }
 
 type message struct {
-	Type      string          `json:"type"`
-	ID        string          `json:"id,omitempty"`
-	Protocol  json.RawMessage `json:"protocol,omitempty"`
-	Local     bool            `json:"local,omitempty"`
-	TokenHash string          `json:"tokenHash,omitempty"`
-	Token     string          `json:"token,omitempty"`
+	Type string `json:"type"`
+	// UserAction marks a frame the runtime sent right after a click, key
+	// press or drop; a missing permission may then be asked for at once.
+	UserAction bool            `json:"userAction,omitempty"`
+	ID         string          `json:"id,omitempty"`
+	Protocol   json.RawMessage `json:"protocol,omitempty"`
+	Local      bool            `json:"local,omitempty"`
+	TokenHash  string          `json:"tokenHash,omitempty"`
+	Token      string          `json:"token,omitempty"`
 	// KeyID and App let a relay hello name the browser identity and app so
 	// the agent can intersect the synced grant with the manifest.
 	KeyID string          `json:"keyId,omitempty"`
@@ -823,8 +826,8 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 			send(connection, ctx, map[string]any{"type": "pong", "id": request.ID, "now": time.Now().UnixMilli()})
 		case "fs":
 			required := filesystemCapability(request.Method)
-			if !s.ensureCapability(ctx, &authentication, required) {
-				sendError(connection, ctx, request.ID, permissionDeniedError(required))
+			if !s.ensureCapability(ctx, &authentication, required, request.UserAction) {
+				sendRefusal(connection, ctx, "fs-error", request, s.refusal(&authentication, required, ""))
 				continue
 			}
 			s.handleFilesystem(connection, ctx, request, body)
@@ -833,16 +836,16 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 			if request.Command != "" {
 				required = "fs.exec"
 			}
-			if !s.ensureCapability(ctx, &authentication, required) {
-				send(connection, ctx, map[string]any{"type": "exec-error", "id": request.ID, "error": permissionDeniedError(required)})
+			if !s.ensureCapability(ctx, &authentication, required, request.UserAction) {
+				sendRefusal(connection, ctx, "exec-error", request, s.refusal(&authentication, required, ""))
 				continue
 			}
 			s.handleExec(connection, ctx, processes, request)
 		case "process":
 			processes.Handle(processRequest(request))
 		case "rpc":
-			if required := rpcCapability(request); !s.ensureCapability(ctx, &authentication, required) {
-				rpcError(connection, ctx, request, errors.New(permissionDeniedError(required)))
+			if required := rpcCapability(request); !s.ensureCapability(ctx, &authentication, required, request.UserAction) {
+				rpcError(connection, ctx, request, s.refusal(&authentication, required, ""))
 				continue
 			}
 			if request.Service == "tray" || request.Service == "globalShortcut" || request.Service == "screen" || request.Service == "dropTarget" {
@@ -863,8 +866,8 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 			}
 			s.handleRPC(connection, ctx, agents, request, body)
 		case "net":
-			if !socketAllows(authentication.capabilities, "net."+request.ProtocolName+".connect") && !socketAllows(authentication.capabilities, "net.protocol."+request.ProtocolName) && !s.ensureCapability(ctx, &authentication, networkCapability(request.ProtocolName)) {
-				sendError(connection, ctx, request.ID, permissionDeniedError(networkCapability(request.ProtocolName)))
+			if !socketAllows(authentication.capabilities, "net."+request.ProtocolName+".connect") && !socketAllows(authentication.capabilities, "net.protocol."+request.ProtocolName) && !s.ensureCapability(ctx, &authentication, networkCapability(request.ProtocolName), request.UserAction) {
+				sendRefusal(connection, ctx, "fs-error", request, s.refusal(&authentication, networkCapability(request.ProtocolName), ""))
 				continue
 			}
 			s.handleNetwork(connection, ctx, bridges, request, body)
@@ -1020,6 +1023,9 @@ func rpcCapability(request message) string {
 		return "remoteEnv.manage"
 	case "permissions":
 		return permissionsManage
+	case "permissionRequest":
+		// Any app may ask for its own declared permissions; the user decides.
+		return ""
 	default:
 		return request.Service
 	}
@@ -1203,6 +1209,14 @@ func protocolString(value json.RawMessage) string {
 	return text
 }
 
+// sendRefusal sends a permission refusal as frameType with its structured
+// fields (code, permission, askable) next to the usual error text.
+func sendRefusal(c protocolSocket, ctx context.Context, frameType string, request message, refusal *permissionRequiredError) {
+	frame := refusal.fields()
+	frame["type"], frame["id"], frame["error"] = frameType, request.ID, refusal.Error()
+	send(c, ctx, frame)
+}
+
 func sendError(c protocolSocket, ctx context.Context, id, text string) {
 	send(c, ctx, map[string]any{"type": "fs-error", "id": id, "error": text})
 }
@@ -1268,8 +1282,8 @@ func (s *Server) handleFilesystemChannel(ctx context.Context, channel protocolSo
 		sendError(channel, ctx, request.ID, errNotShared)
 		return
 	}
-	if !s.ensureCapability(ctx, &authentication, filesystemCapability(request.Method)) {
-		sendError(channel, ctx, request.ID, permissionDeniedError(filesystemCapability(request.Method)))
+	if !s.ensureCapability(ctx, &authentication, filesystemCapability(request.Method), request.UserAction) {
+		sendRefusal(channel, ctx, "fs-error", request, s.refusal(&authentication, filesystemCapability(request.Method), ""))
 		return
 	}
 	if authentication.storeID != "" {

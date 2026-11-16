@@ -9,7 +9,14 @@ func rpcResult(socket protocolSocket, ctx context.Context, request message, resu
 	send(socket, ctx, map[string]any{"type": "rpc-result", "id": request.ID, "service": request.Service, "result": result})
 }
 func rpcError(socket protocolSocket, ctx context.Context, request message, err error) {
-	send(socket, ctx, map[string]any{"type": "rpc-error", "id": request.ID, "service": request.Service, "error": err.Error()})
+	frame := map[string]any{"type": "rpc-error", "id": request.ID, "service": request.Service, "error": err.Error()}
+	var refusal *permissionRequiredError
+	if errors.As(err, &refusal) {
+		for key, value := range refusal.fields() {
+			frame[key] = value
+		}
+	}
+	send(socket, ctx, frame)
 }
 func (s *Server) handleRPC(socket protocolSocket, ctx context.Context, agents *agentService, request message, body []byte) {
 	var result any
@@ -47,6 +54,8 @@ func (s *Server) handleRPC(socket protocolSocket, ctx context.Context, agents *a
 		result, err = s.handleAppsRPC(ctx, request)
 	case "permissions":
 		result, err = s.handlePermissionsRPC(socket, request)
+	case "permissionRequest":
+		result, err = s.handlePermissionRequestRPC(ctx, request)
 	default:
 		err = errors.New("unsupported Shell service")
 	}

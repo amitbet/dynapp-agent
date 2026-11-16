@@ -43,6 +43,16 @@ type NativeApp struct {
 	Capabilities []string            `json:"capabilities"`
 	Declared     []string            `json:"declared,omitempty"`
 	Connect      map[string][]string `json:"connect,omitempty"`
+	// Denied holds permissions the user explicitly refused. They are not
+	// asked again at launch, but a user action that needs one, or the
+	// "Permissions needed" chip, can still ask. DontAsk silences even that
+	// until the user grants it from Permissions… or Dyner.
+	Denied  []string `json:"denied,omitempty"`
+	DontAsk []string `json:"dontAsk,omitempty"`
+	// Dismissals counts launch prompts closed without an answer in a row.
+	// After maxLaunchDismissals the launch prompt stops and the request waits
+	// in the app's "Permissions needed" chip.
+	Dismissals int `json:"dismissals,omitempty"`
 	// ApprovedAt is zero until the user has made a decision.
 	ApprovedAt int64 `json:"approvedAt,omitempty"`
 	// Authority marks a native install of the Dyner catalog.
@@ -254,8 +264,9 @@ func nativeGrantPayload(app NativeApp) map[string]any {
 		"keyId": nativeKeyID(app.StoreID), "origin": app.Origin, "storeId": app.StoreID, "appName": app.Name,
 		"capabilities": capabilities, "approvedAt": app.ApprovedAt, "authority": app.Authority,
 		"declared": normalizePermissionSet(app.Declared),
-		"client":   BrowserClient{Platform: runtime.GOOS, Mode: "native", Label: "Installed app"},
-		"native":   true,
+		"denied":   nonNilPermissions(app.Denied), "dontAsk": nonNilPermissions(app.DontAsk),
+		"client": BrowserClient{Platform: runtime.GOOS, Mode: "native", Label: "Installed app"},
+		"native": true,
 	}
 }
 
@@ -514,7 +525,7 @@ func (s *Server) uninstallNativeApp(args map[string]any) (any, error) {
 	return map[string]any{"removed": true}, nil
 }
 
-func (s *Server) updateNativeGrant(storeID string, requested []string) (any, error) {
+func (s *Server) updateNativeGrant(storeID string, requested []string, dontAsk []string, dontAskSet bool) (any, error) {
 	app, ok := s.nativeApp(storeID)
 	if !ok {
 		return nil, errors.New("no grant matches that identity")
@@ -530,6 +541,12 @@ func (s *Server) updateNativeGrant(storeID string, requested []string) (any, err
 	}
 	app.Capabilities = normalizePermissionSet(requested)
 	app.Declared = unionStrings(ceiling, app.Capabilities)
+	app.Denied = normalizePermissionSet(subtractStrings(app.Denied, app.Capabilities))
+	if dontAskSet {
+		app.DontAsk = normalizePermissionSet(dontAsk)
+	}
+	app.DontAsk = normalizePermissionSet(subtractStrings(app.DontAsk, app.Capabilities))
+	app.Dismissals = 0
 	if app.ApprovedAt == 0 {
 		app.ApprovedAt = time.Now().UnixMilli()
 	}
@@ -548,6 +565,7 @@ func (s *Server) revokeNativeGrant(storeID string) (any, error) {
 	}
 	app.Capabilities = []string{}
 	app.Declared = nil
+	app.Denied, app.DontAsk, app.Dismissals = nil, nil, 0
 	app.ApprovedAt = 0
 	if app.Authority {
 		app.Capabilities = []string{permissionsManage}

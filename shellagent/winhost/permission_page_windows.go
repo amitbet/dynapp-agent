@@ -48,9 +48,12 @@ type permissionPage struct {
 	once     sync.Once
 }
 
+// permissionPageResult is one answer: decision is "allow", "deny" or
+// "dismissed" (window closed, Escape). Only allow carries capabilities.
 type permissionPageResult struct {
 	capabilities []string
-	decided      bool
+	decision     string
+	dontAsk      bool
 }
 
 var (
@@ -62,7 +65,7 @@ var (
 			page := value.(*permissionPage)
 			switch message {
 			case wmClose:
-				page.finish(nil, false)
+				page.finish(permissionPageResult{decision: "dismissed"})
 				return 0
 			case wmSize:
 				if page.chromium != nil {
@@ -110,9 +113,9 @@ func registerPermissionPageClass() error {
 // user's answer. It runs off the UI thread; window work is dispatched to it.
 // An error means the page could not be shown and the caller should fall back
 // to the native checklist.
-func (h *host) askPermissionPage(page string) ([]string, bool, error) {
+func (h *host) askPermissionPage(page string) (permissionPageResult, error) {
 	if h.view == nil || h.hwnd == 0 {
-		return nil, false, errors.New("the app window is not ready")
+		return permissionPageResult{}, errors.New("the app window is not ready")
 	}
 	prompt := &permissionPage{owner: h.hwnd, done: make(chan permissionPageResult, 1)}
 	failed := make(chan error, 1)
@@ -127,10 +130,9 @@ func (h *host) askPermissionPage(page string) ([]string, bool, error) {
 		h.view.Dispatch(func() {})
 	})
 	if err := <-failed; err != nil {
-		return nil, false, err
+		return permissionPageResult{}, err
 	}
-	result := <-prompt.done
-	return result.capabilities, result.decided, nil
+	return <-prompt.done, nil
 }
 
 func (p *permissionPage) open(h *host, page string) error {
@@ -198,20 +200,24 @@ func (p *permissionPage) centered(width, height int) (int, int) {
 // message handles posts from the page: its content height, then the answer.
 func (p *permissionPage) message(raw string) {
 	var message struct {
-		DynappPermission int       `json:"dynappPermission"`
-		Resize           float64   `json:"resize"`
-		Decision         bool      `json:"decision"`
-		Capabilities     *[]string `json:"capabilities"`
+		DynappPermission int      `json:"dynappPermission"`
+		Resize           float64  `json:"resize"`
+		Decision         string   `json:"decision"`
+		Capabilities     []string `json:"capabilities"`
+		DontAsk          bool     `json:"dontAsk"`
 	}
 	if json.Unmarshal([]byte(raw), &message) != nil || message.DynappPermission != 1 {
 		return
 	}
-	if message.Decision {
+	switch message.Decision {
+	case "allow":
 		if message.Capabilities == nil {
-			p.finish(nil, false)
-		} else {
-			p.finish(*message.Capabilities, true)
+			message.Capabilities = []string{}
 		}
+		p.finish(permissionPageResult{decision: "allow", capabilities: message.Capabilities})
+		return
+	case "deny", "dismissed":
+		p.finish(permissionPageResult{decision: message.Decision, dontAsk: message.DontAsk && message.Decision == "deny"})
 		return
 	}
 	if message.Resize > 0 {
@@ -241,7 +247,7 @@ func (p *permissionPage) fitHeight(css float64) {
 }
 
 // finish runs on the UI thread (window procedure or page message).
-func (p *permissionPage) finish(capabilities []string, decided bool) {
+func (p *permissionPage) finish(result permissionPageResult) {
 	p.once.Do(func() {
 		// Re-enable the owner first so Windows activates it, not another app.
 		_, _, _ = procEnableWindow.Call(p.owner, 1)
@@ -252,7 +258,7 @@ func (p *permissionPage) finish(capabilities []string, decided bool) {
 			}
 		}
 		_, _, _ = procSetForeground.Call(p.owner)
-		p.done <- permissionPageResult{capabilities: capabilities, decided: decided}
+		p.done <- result
 	})
 }
 

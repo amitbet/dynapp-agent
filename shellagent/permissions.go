@@ -45,19 +45,36 @@ type pendingRequest struct {
 	Declared  []string
 	CreatedAt time.Time
 	ExpiresAt time.Time
-	decision  chan []string // nil slice means denied
+	decision  chan []string // nil slice means not allowed
 	once      sync.Once
 	resolved  atomic.Bool
+	// outcome is decisionAllow, decisionDeny or decisionDismissed once
+	// resolved; dontAsk is the prompt's "Don't ask again" box.
+	outcome string
+	dontAsk bool
 }
 
-// wasResolved reports whether someone decided the request, as opposed to it
-// expiring or its socket going away.
-func (p *pendingRequest) wasResolved() bool { return p.resolved.Load() }
+const (
+	decisionAllow     = "allow"
+	decisionDeny      = "deny"
+	decisionDismissed = "dismissed"
+)
 
-func (p *pendingRequest) resolve(granted []string, approved bool) {
+// Outcome reports how a resolved request was answered.
+func (p *pendingRequest) Outcome() (string, bool) {
+	if !p.resolved.Load() {
+		return decisionDismissed, false
+	}
+	return p.outcome, p.dontAsk
+}
+
+// resolveWith records a host answer. Only "allow" grants anything; a
+// dismissed prompt (closed, Escape) is not a refusal.
+func (p *pendingRequest) resolveWith(granted []string, outcome string, dontAsk bool) {
 	p.once.Do(func() {
+		p.outcome, p.dontAsk = outcome, dontAsk
 		p.resolved.Store(true)
-		if !approved {
+		if outcome != decisionAllow {
 			p.decision <- nil
 			return
 		}
@@ -66,6 +83,38 @@ func (p *pendingRequest) resolve(granted []string, approved bool) {
 		}
 		p.decision <- granted
 	})
+}
+
+// wasResolved reports whether someone decided the request, as opposed to it
+// expiring or its socket going away.
+func (p *pendingRequest) wasResolved() bool { return p.resolved.Load() }
+
+func (p *pendingRequest) resolve(granted []string, approved bool) {
+	if approved {
+		p.resolveWith(granted, decisionAllow, false)
+	} else {
+		p.resolveWith(nil, decisionDeny, false)
+	}
+}
+
+// hostDecision reads a host's answer. Hosts that predate the decision field
+// send capabilities: null for every non-allow, so null counts as dismissed.
+func hostDecision(frame nativeHostFrame) ([]string, string) {
+	switch frame.Decision {
+	case decisionAllow:
+		if frame.Capabilities == nil {
+			return []string{}, decisionAllow
+		}
+		return frame.Capabilities, decisionAllow
+	case decisionDeny:
+		return nil, decisionDeny
+	case decisionDismissed:
+		return nil, decisionDismissed
+	}
+	if frame.Capabilities == nil {
+		return nil, decisionDismissed
+	}
+	return frame.Capabilities, decisionAllow
 }
 
 // preApproval is a decision the Dyner catalog made before launching an app,
@@ -389,6 +438,7 @@ func grantPayload(identity BrowserIdentity) map[string]any {
 		"keyId": identity.KeyID, "origin": identity.Origin, "storeId": identity.StoreID, "appName": storeSlug(identity.StoreID),
 		"capabilities": capabilities, "approvedAt": identity.ApprovedAt, "authority": identity.Authority,
 		"declared": normalizePermissionSet(identity.Declared),
+		"denied":   nonNilPermissions(identity.Denied), "dontAsk": nonNilPermissions(identity.DontAsk),
 	}
 	if !identity.Client.Empty() {
 		payload["client"] = identity.Client
@@ -483,7 +533,8 @@ func (s *Server) updateGrant(args map[string]any) (any, error) {
 		if storeID == "" {
 			storeID = strings.TrimPrefix(keyID, nativeKeyPrefix)
 		}
-		return s.updateNativeGrant(storeID, requested)
+		dontAsk, dontAskSet := dontAskArg(args)
+		return s.updateNativeGrant(storeID, requested, dontAsk, dontAskSet)
 	}
 	identity, ok := s.findIdentity(keyID, origin, storeID)
 	if !ok {
@@ -512,6 +563,11 @@ func (s *Server) updateGrant(args map[string]any) (any, error) {
 	}
 	identity.Capabilities = normalizePermissionSet(requested)
 	identity.Declared = unionStrings(ceiling, identity.Capabilities)
+	identity.Denied = normalizePermissionSet(subtractStrings(identity.Denied, identity.Capabilities))
+	if dontAsk, set := dontAskArg(args); set {
+		identity.DontAsk = normalizePermissionSet(dontAsk)
+	}
+	identity.DontAsk = normalizePermissionSet(subtractStrings(identity.DontAsk, identity.Capabilities))
 	if identity.ApprovedAt == 0 {
 		identity.ApprovedAt = time.Now().UnixMilli()
 	}
@@ -563,4 +619,21 @@ func stringSliceHas(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// dontAskArg reads an optional `dontAsk` list from a grant update. Dyner sends
+// it to clear "Don't ask again" for a permission.
+func dontAskArg(args map[string]any) ([]string, bool) {
+	value, present := args["dontAsk"]
+	if !present || value == nil {
+		return nil, false
+	}
+	return stringList(value), true
+}
+
+func nonNilPermissions(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return normalizePermissionSet(values)
 }
