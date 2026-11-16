@@ -618,6 +618,15 @@ func (s *Server) revokeGrant(args map[string]any) (any, error) {
 		kept = append(kept, existing)
 	}
 	s.Config.BrowserIdentities = kept
+	// Pairings synced from Dyner come back on every sync unless remembered.
+	for _, gone := range removed {
+		if gone.ApprovedAt == 0 && !gone.Shared && !stringSliceHas(s.Config.RevokedBrowserKeys, revokedKey(gone)) {
+			s.Config.RevokedBrowserKeys = append(s.Config.RevokedBrowserKeys, revokedKey(gone))
+		}
+	}
+	if extra := len(s.Config.RevokedBrowserKeys) - maxRevokedBrowserKeys; extra > 0 {
+		s.Config.RevokedBrowserKeys = append([]string(nil), s.Config.RevokedBrowserKeys[extra:]...)
+	}
 	snapshot := s.Config
 	stateDir := s.StateDir
 	s.mu.Unlock()

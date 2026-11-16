@@ -136,10 +136,10 @@ func TestSyncParsesSharedIdentities(t *testing.T) {
 	// approvals, even if one somehow carries an approval time.
 	stale := shared
 	stale.ApprovedAt = 5
-	if merged := mergeSyncedIdentities([]BrowserIdentity{stale}, nil); len(merged) != 0 {
+	if merged := mergeSyncedIdentities([]BrowserIdentity{stale}, nil, nil); len(merged) != 0 {
 		t.Fatalf("shared identity survived a sync: %#v", merged)
 	}
-	if merged := mergeSyncedIdentities(nil, state.BrowserIdentities); len(merged) != 2 {
+	if merged := mergeSyncedIdentities(nil, state.BrowserIdentities, nil); len(merged) != 2 {
 		t.Fatalf("merge dropped synced identities: %#v", merged)
 	}
 }

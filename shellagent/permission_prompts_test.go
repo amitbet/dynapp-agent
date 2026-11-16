@@ -148,3 +148,31 @@ func TestRevokeAlsoRemovesLegacyGrantsOfThatOrigin(t *testing.T) {
 		t.Fatalf("other origins must stay: %#v", agent.Config.BrowserIdentities)
 	}
 }
+
+func TestRevokedSyncedPairingStaysRevokedAfterSync(t *testing.T) {
+	origin := "https://amitbet-commander.dynapp.io"
+	synced := func(id string) BrowserIdentity {
+		return BrowserIdentity{KeyID: id, Origin: origin, Capabilities: []string{"fs.list"}}
+	}
+	agent := &Server{Config: Config{BrowserIdentities: []BrowserIdentity{synced("k1"), synced("k2")}}}
+	if _, err := agent.revokeGrant(map[string]any{"keyId": "k1", "origin": origin}); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.Config.RevokedBrowserKeys) != 2 {
+		t.Fatalf("both synced pairings must be remembered as revoked: %v", agent.Config.RevokedBrowserKeys)
+	}
+	// Dyner still returns them on the next sync.
+	merged := mergeSyncedIdentities(agent.Config.BrowserIdentities, []BrowserIdentity{synced("k1"), synced("k2"), synced("k3")}, agent.Config.RevokedBrowserKeys)
+	if len(merged) != 1 || merged[0].KeyID != "k3" {
+		t.Fatalf("revoked synced pairings came back: %#v", merged)
+	}
+	// A locally approved grant is not remembered as revoked; it is local only.
+	local := BrowserIdentity{KeyID: "k9", Origin: origin, StoreID: "amit-bet/commander", Capabilities: []string{"fs.list"}, ApprovedAt: 5}
+	agent.Config.BrowserIdentities = []BrowserIdentity{local}
+	if _, err := agent.revokeGrant(map[string]any{"keyId": "k9", "origin": origin, "storeId": "amit-bet/commander"}); err != nil {
+		t.Fatal(err)
+	}
+	if stringSliceHas(agent.Config.RevokedBrowserKeys, revokedKey(local)) {
+		t.Fatal("local grants need no revoked marker")
+	}
+}

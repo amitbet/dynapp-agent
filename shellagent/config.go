@@ -42,6 +42,9 @@ type Config struct {
 	HostedDeviceCredential string            `json:"hostedDeviceCredential,omitempty"`
 	HostedName             string            `json:"hostedName,omitempty"`
 	BrowserIdentities      []BrowserIdentity `json:"browserIdentities,omitempty"`
+	// RevokedBrowserKeys lists Dyner-synced browser pairings the user revoked
+	// here (revokedKey). Sync would otherwise restore them on the next pass.
+	RevokedBrowserKeys []string `json:"revokedBrowserKeys,omitempty"`
 	// AppDomain is the hosted app domain (`https://<owner>-<slug>.<appDomain>`).
 	// When empty it is derived from DynerBaseURL.
 	AppDomain string `json:"appDomain,omitempty"`

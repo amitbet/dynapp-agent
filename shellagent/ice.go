@@ -414,7 +414,7 @@ func (s *Server) authenticateICEHello(ctx context.Context, config Config, hello 
 	state, err := SyncRemoteEnvironmentState(refreshCtx, nil, config)
 	if err == nil {
 		s.mu.Lock()
-		s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, state.BrowserIdentities)
+		s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, state.BrowserIdentities, s.Config.RevokedBrowserKeys)
 		s.mu.Unlock()
 		grant = s.relayGrant(ctx, config, hello, subject)
 	}

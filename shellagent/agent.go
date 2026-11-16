@@ -465,7 +465,7 @@ func (s *Server) syncBrowserIdentitiesOnce(ctx context.Context) {
 		state.BrowserIdentities = nil
 	}
 	s.mu.Lock()
-	s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, state.BrowserIdentities)
+	s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, state.BrowserIdentities, s.Config.RevokedBrowserKeys)
 	snapshot := s.Config
 	s.mu.Unlock()
 	_ = SaveConfig(s.StateDir, snapshot)

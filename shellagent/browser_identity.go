@@ -112,7 +112,7 @@ func (s *Server) authenticateDirectLocal(ctx context.Context, socket protocolSoc
 	}
 	if fresh, err := SyncBrowserIdentities(ctx, nil, config); err == nil {
 		s.mu.Lock()
-		s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, fresh)
+		s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, fresh, s.Config.RevokedBrowserKeys)
 		merged := append([]BrowserIdentity(nil), s.Config.BrowserIdentities...)
 		s.mu.Unlock()
 		if identity, ok := matchDirectLocalIdentity(merged, init, proof, nonce, requestOrigin); ok {
@@ -435,14 +435,24 @@ func (s *Server) upsertBrowserIdentity(identity BrowserIdentity) {
 
 // mergeSyncedIdentities keeps locally approved identities and replaces the
 // Dyner-synced ones (including shared identities) with the fresh list.
-func mergeSyncedIdentities(existing, fresh []BrowserIdentity) []BrowserIdentity {
+// Synced pairings the user revoked on this machine stay out.
+func mergeSyncedIdentities(existing, fresh []BrowserIdentity, revoked []string) []BrowserIdentity {
 	merged := make([]BrowserIdentity, 0, len(existing)+len(fresh))
 	for _, identity := range existing {
 		if identity.ApprovedAt > 0 && !identity.Shared {
 			merged = append(merged, identity)
 		}
 	}
-	merged = append(merged, fresh...)
+	gone := map[string]bool{}
+	for _, key := range revoked {
+		gone[key] = true
+	}
+	for _, identity := range fresh {
+		if !identity.Shared && gone[revokedKey(identity)] {
+			continue
+		}
+		merged = append(merged, identity)
+	}
 	normalized, err := normalizeBrowserIdentities(merged)
 	if err != nil {
 		return merged
@@ -560,3 +570,10 @@ func intersectStrings(left, right []string) []string {
 	}
 	return result
 }
+
+// revokedKey identifies a synced pairing for RevokedBrowserKeys.
+func revokedKey(identity BrowserIdentity) string {
+	return identity.KeyID + " " + strings.TrimRight(strings.ToLower(identity.Origin), "/")
+}
+
+const maxRevokedBrowserKeys = 512
