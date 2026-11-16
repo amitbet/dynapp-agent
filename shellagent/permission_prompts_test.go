@@ -130,3 +130,21 @@ func TestRevokeRemovesTheAppGrantForEveryBrowserKey(t *testing.T) {
 		t.Fatalf("other apps' grants must stay: %#v", agent.Config.BrowserIdentities)
 	}
 }
+
+func TestRevokeAlsoRemovesLegacyGrantsOfThatOrigin(t *testing.T) {
+	origin := "https://amitbet-commander.dynapp.io"
+	legacy := func(id string) BrowserIdentity {
+		return BrowserIdentity{KeyID: id, Origin: origin, Capabilities: []string{"fs.list"}}
+	}
+	other := BrowserIdentity{KeyID: "k-other", Origin: "https://amitbet-notes.dynapp.io", Capabilities: []string{"fs.list"}}
+	agent := &Server{Config: Config{BrowserIdentities: []BrowserIdentity{legacy("k1"), legacy("k2"), legacy("k3"), other}}}
+	if _, err := agent.revokeGrant(map[string]any{"keyId": "k1", "origin": origin}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findApprovedAppGrant(agent.Config.BrowserIdentities, origin, "amit-bet/commander"); ok {
+		t.Fatalf("legacy grants of the origin must not survive a revoke: %#v", agent.Config.BrowserIdentities)
+	}
+	if len(agent.Config.BrowserIdentities) != 1 || agent.Config.BrowserIdentities[0].KeyID != "k-other" {
+		t.Fatalf("other origins must stay: %#v", agent.Config.BrowserIdentities)
+	}
+}

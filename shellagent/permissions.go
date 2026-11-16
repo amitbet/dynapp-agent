@@ -600,8 +600,12 @@ func (s *Server) revokeGrant(args map[string]any) (any, error) {
 		if existing.KeyID == keyID && existing.Origin == origin && existing.StoreID == storeID {
 			return true
 		}
-		return storeID != "" && !identity.Authority && !existing.Authority && !existing.Shared &&
-			existing.StoreID == storeID && sameIdentityOrigin(existing.Origin, origin)
+		// Older grants have no store id and are reused for any app of their
+		// origin, so they go with it (and a legacy row takes the origin's
+		// app grants with it). Hosted origins are per app.
+		return !identity.Authority && !existing.Authority && !existing.Shared &&
+			sameIdentityOrigin(existing.Origin, origin) &&
+			(existing.StoreID == storeID || existing.StoreID == "" || storeID == "")
 	}
 	s.mu.Lock()
 	kept := make([]BrowserIdentity, 0, len(s.Config.BrowserIdentities))
