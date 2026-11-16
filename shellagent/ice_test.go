@@ -50,7 +50,7 @@ func TestAuthenticateICEHelloRefreshesNewBrowserIdentity(t *testing.T) {
 		SchemaVersion: ConfigSchemaVersion, DynerBaseURL: server.URL, EnvironmentID: "env_test",
 		DeviceCredential: "env_test.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
 	}
-	grant := agent.authenticateICEHello(context.Background(), config, message{Type: "hello", Protocol: json.RawMessage("2"), KeyID: identity.KeyID})
+	grant := agent.authenticateICEHello(context.Background(), config, message{Type: "hello", Protocol: json.RawMessage("2"), KeyID: identity.KeyID}, sessionSubject{})
 	if !grant.ok || grant.keyID != identity.KeyID || !grant.allows("fs.home") {
 		t.Fatalf("refreshed grant = %#v", grant)
 	}

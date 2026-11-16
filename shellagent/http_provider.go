@@ -30,10 +30,16 @@ func httpAllowlistFor(request message, scheme string, options map[string]any) ([
 	return httpConnectPatterns(options["connect"], scheme)
 }
 
-// hostNamedByAllowlist reports whether a connect pattern names this exact
-// host. Only then may a loopback, link-local, or private address be reached.
-func hostNamedByAllowlist(hostname string, patterns []string) bool {
+// hostNamedByAllowlist reports whether a connect pattern (or one of the extra
+// named hosts) names this exact host. Only then may a loopback, link-local,
+// or private address be reached.
+func hostNamedByAllowlist(hostname string, patterns []string, namedHosts ...string) bool {
 	hostname = strings.ToLower(strings.Trim(hostname, "[]"))
+	for _, named := range namedHosts {
+		if strings.ToLower(strings.Trim(named, "[]")) == hostname {
+			return true
+		}
+	}
 	for _, pattern := range patterns {
 		parsed, err := url.Parse(pattern)
 		if err != nil {
@@ -66,12 +72,13 @@ func restrictedHostname(hostname string) bool {
 }
 
 // assertHTTPTargetAllowed applies the allowlist and the SSRF denylist to one
-// URL (initial request or redirect hop).
-func assertHTTPTargetAllowed(target *url.URL, patterns []string) error {
+// URL (initial request or redirect hop). namedHosts are hosts that count as
+// named for the private-address guard (a scoped socket's shared targets).
+func assertHTTPTargetAllowed(target *url.URL, patterns []string, namedHosts ...string) error {
 	if err := assertURLAllowedByHTTPConnect(target.String(), patterns); err != nil {
 		return err
 	}
-	if restrictedHostname(target.Hostname()) && !hostNamedByAllowlist(target.Hostname(), patterns) {
+	if restrictedHostname(target.Hostname()) && !hostNamedByAllowlist(target.Hostname(), patterns, namedHosts...) {
 		return fmt.Errorf("HTTP destination %s is a local or private address that the app did not declare", target.Hostname())
 	}
 	return nil
@@ -79,7 +86,7 @@ func assertHTTPTargetAllowed(target *url.URL, patterns []string) error {
 
 // safeHTTPTransport re-checks the resolved addresses at dial time so a public
 // hostname cannot resolve to a private address (DNS rebinding).
-func safeHTTPTransport(patterns []string) *http.Transport {
+func safeHTTPTransport(patterns []string, namedHosts ...string) *http.Transport {
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	return &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -94,7 +101,7 @@ func safeHTTPTransport(patterns []string) *http.Transport {
 			if err != nil {
 				return nil, err
 			}
-			named := hostNamedByAllowlist(host, patterns)
+			named := hostNamedByAllowlist(host, patterns, namedHosts...)
 			var last error
 			for _, candidate := range addresses {
 				if restrictedDialIP(candidate.IP) && !named {
@@ -125,11 +132,18 @@ func (s *Server) handleHTTPRPCBody(ctx context.Context, request message, binaryB
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return nil, errors.New("HTTP URL is invalid")
 	}
+	// A scoped (shared) socket reaches only its targets: the initial URL and
+	// every redirect hop must be one of them, on top of the connect list.
+	scoped := request.auth != nil && request.auth.scoped
+	if scoped && (request.Method != "request" || !scopedHTTPTargetAllowed(request.auth, parsed)) {
+		return nil, errors.New(errNotShared)
+	}
+	namedHosts := scopedNamedHosts(request.auth)
 	patterns, err := httpAllowlistFor(request, parsed.Scheme, options)
 	if err != nil {
 		return nil, err
 	}
-	if err := assertHTTPTargetAllowed(parsed, patterns); err != nil {
+	if err := assertHTTPTargetAllowed(parsed, patterns, namedHosts...); err != nil {
 		return nil, err
 	}
 	if request.Method == "download" && !request.allows("fs.writeBase64") {
@@ -173,7 +187,7 @@ func (s *Server) handleHTTPRPCBody(ctx context.Context, request message, binaryB
 			httpRequest.Header.Set(key, stringValue(value))
 		}
 	}
-	transport := safeHTTPTransport(patterns)
+	transport := safeHTTPTransport(patterns, namedHosts...)
 	defer transport.CloseIdleConnections()
 	client := &http.Client{
 		Timeout:   timeout,
@@ -182,7 +196,10 @@ func (s *Server) handleHTTPRPCBody(ctx context.Context, request message, binaryB
 			if len(via) >= 10 {
 				return errors.New("too many HTTP redirects")
 			}
-			return assertHTTPTargetAllowed(req.URL, patterns)
+			if scoped && !scopedHTTPTargetAllowed(request.auth, req.URL) {
+				return errors.New(errNotShared)
+			}
+			return assertHTTPTargetAllowed(req.URL, patterns, namedHosts...)
 		},
 	}
 	response, err := client.Do(httpRequest)

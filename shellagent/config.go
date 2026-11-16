@@ -142,6 +142,16 @@ type BrowserIdentity struct {
 	// Client is a short, non-secret description of the browser that holds
 	// this key (name, OS, tab vs installed app). It is display-only.
 	Client BrowserClient `json:"client,omitempty"`
+	// UserID is the Dyner user that registered this key. A key bound to a
+	// user matches only sessions whose subject is unknown or that user.
+	UserID string `json:"userId,omitempty"`
+	// Shared marks a key another Dyner user registered through a share of
+	// this machine. It comes only from Dyner's sharedIdentities, is replaced
+	// on every sync and is never a local approval. Sockets authenticated
+	// with it are scoped to Targets.
+	Shared bool `json:"shared,omitempty"`
+	// Targets are the shared services' `host:port` addresses.
+	Targets []string `json:"targets,omitempty"`
 }
 
 // BrowserClient is what the Permissions list uses to tell one key from

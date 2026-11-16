@@ -270,6 +270,10 @@ func (s *Server) handleReliableChannel(ctx context.Context, channel protocolSock
 		return
 	}
 	if bind.Kind == "fs" {
+		if authentication.scoped {
+			sendError(channel, ctx, bind.ID, errNotShared)
+			return
+		}
 		s.handleFilesystemChannel(ctx, channel, bind, authentication)
 		return
 	}

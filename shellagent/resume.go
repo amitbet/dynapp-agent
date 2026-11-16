@@ -97,6 +97,10 @@ type sessionSocket struct {
 	cancel  context.CancelFunc
 	// capabilities is the enforced grant, reported again on resume.
 	capabilities []string
+	// scoped is the share scope of the socket that opened the session. The
+	// session keeps serving with that socket's authentication; a resume must
+	// come from an equally scoped carrier.
+	scoped bool
 
 	incoming  chan dataChannelMessage
 	datagrams chan []byte
@@ -154,6 +158,7 @@ func (s *Server) newSessionSocket(parent context.Context, auth socketAuthenticat
 		server: s, id: id, token: token, keyID: auth.keyID, storeID: auth.storeID,
 		grace: s.resumeGrace(), ctx: ctx, cancel: cancel,
 		capabilities: auth.capabilities,
+		scoped:       auth.scoped,
 		incoming:     make(chan dataChannelMessage, 256),
 		datagrams:    make(chan []byte, 256),
 	}
@@ -190,7 +195,7 @@ func (session *sessionSocket) authorize(token string, auth socketAuthentication)
 	if subtle.ConstantTimeCompare([]byte(session.token), []byte(token)) != 1 {
 		return false
 	}
-	return session.keyID == auth.keyID && session.storeID == auth.storeID
+	return session.keyID == auth.keyID && session.storeID == auth.storeID && session.scoped == auth.scoped
 }
 
 // attach makes socket the session's carrier. received is the number of

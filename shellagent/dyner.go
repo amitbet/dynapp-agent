@@ -23,7 +23,12 @@ type RelayConnection struct {
 	Protocol                int               `json:"protocol"`
 	AcceptedAuthTokenHashes []string          `json:"acceptedAuthTokenHashes"`
 	BrowserIdentities       []BrowserIdentity `json:"browserIdentities"`
-	Transport               struct {
+	// Phase 2b sharing. Older Dyner servers omit these fields, and the agent
+	// then keeps its pre-sharing behaviour (grantees are not admitted).
+	OwnerID          string            `json:"ownerId,omitempty"`
+	SharedIdentities []BrowserIdentity `json:"sharedIdentities,omitempty"`
+	AcceptedAccess   []acceptedAccess  `json:"acceptedAccess,omitempty"`
+	Transport        struct {
 		Kind          string `json:"kind"`
 		E2EEncryption bool   `json:"e2eEncryption"`
 		ShellEnabled  *bool  `json:"shellEnabled"`
@@ -109,7 +114,11 @@ func SyncBrowserIdentities(ctx context.Context, client *http.Client, config Conf
 // result. Pending ICE offers share this request with browser-key provisioning
 // so enrolled agents do not poll a second endpoint just for hole punching.
 type remoteEnvironmentState struct {
-	BrowserIdentities  []BrowserIdentity `json:"browserIdentities"`
+	OwnerID           string            `json:"ownerId,omitempty"`
+	BrowserIdentities []BrowserIdentity `json:"browserIdentities"`
+	// SharedIdentities are merged into BrowserIdentities (marked Shared) by
+	// SyncRemoteEnvironmentState; callers read BrowserIdentities only.
+	SharedIdentities   []BrowserIdentity `json:"sharedIdentities,omitempty"`
 	PendingICESessions []iceSession      `json:"pendingIceSessions"`
 	// RelayRequested is set while a browser that could not reach this machine
 	// directly is waiting for the relay socket to come up.
@@ -148,10 +157,11 @@ func SyncRemoteEnvironmentState(ctx context.Context, client *http.Client, config
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return remoteEnvironmentState{}, err
 	}
-	identities, err := normalizeBrowserIdentities(payload.BrowserIdentities)
+	identities, err := combineDynerIdentities(payload.BrowserIdentities, payload.SharedIdentities)
 	if err != nil {
 		return remoteEnvironmentState{}, err
 	}
 	payload.BrowserIdentities = identities
+	payload.SharedIdentities = nil
 	return payload, nil
 }

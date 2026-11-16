@@ -149,6 +149,17 @@ func (s *Server) continuePairedIdentity(ctx context.Context, socket protocolSock
 		return authForIdentity(config, identity, nil), directLocalOK
 	}
 	var app *resolvedApp
+	if identity.Shared {
+		// A grantee key is managed in Dyner: never apply a pre-approval or
+		// write it as a local grant. The socket is scoped to its targets.
+		if init.Version >= 2 && init.App != nil {
+			if resolved, err := s.resolveApp(ctx, requestOrigin, init); err == nil {
+				app = &resolved
+			}
+		}
+		persist()
+		return authForIdentity(config, identity, app), directLocalOK
+	}
 	if init.Version >= 2 && init.App != nil {
 		if resolved, err := s.resolveApp(ctx, requestOrigin, init); err == nil {
 			app = &resolved
@@ -313,7 +324,7 @@ func authForIdentity(config Config, identity BrowserIdentity, app *resolvedApp) 
 	if environmentID == "" {
 		environmentID = "local"
 	}
-	return socketAuthentication{
+	auth := socketAuthentication{
 		environment:  map[string]any{"id": environmentID, "name": "This device", "endpoint": nil, "state": "connected", "source": "local", "capabilities": effective},
 		capabilities: effective,
 		stored:       append([]string(nil), identity.Capabilities...),
@@ -326,6 +337,12 @@ func authForIdentity(config Config, identity BrowserIdentity, app *resolvedApp) 
 		development:  development,
 		ok:           true,
 	}
+	if identity.Shared {
+		auth.scoped = true
+		auth.targets = normalizeTargets(identity.Targets)
+		auth.subject = identity.UserID
+	}
+	return auth
 }
 
 func sameIdentityOrigin(left, right string) bool {
@@ -337,7 +354,7 @@ func findApprovedAppGrant(identities []BrowserIdentity, origin, storeID string) 
 	found := false
 	bestPriority := 0
 	for _, identity := range identities {
-		if identity.Authority || !sameIdentityOrigin(identity.Origin, origin) {
+		if identity.Authority || identity.Shared || !sameIdentityOrigin(identity.Origin, origin) {
 			continue
 		}
 		priority := 0
@@ -412,11 +429,11 @@ func (s *Server) upsertBrowserIdentity(identity BrowserIdentity) {
 }
 
 // mergeSyncedIdentities keeps locally approved identities and replaces the
-// Dyner-synced ones with the fresh list.
+// Dyner-synced ones (including shared identities) with the fresh list.
 func mergeSyncedIdentities(existing, fresh []BrowserIdentity) []BrowserIdentity {
 	merged := make([]BrowserIdentity, 0, len(existing)+len(fresh))
 	for _, identity := range existing {
-		if identity.ApprovedAt > 0 {
+		if identity.ApprovedAt > 0 && !identity.Shared {
 			merged = append(merged, identity)
 		}
 	}
@@ -434,7 +451,13 @@ func (s *Server) hasBrowserIdentity(auth socketAuthentication) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if auth.scoped && !sharedIdentityStillCovers(s.Config.BrowserIdentities, auth.keyID, auth.targets) {
+		return false
+	}
 	for _, identity := range s.Config.BrowserIdentities {
+		if identity.Shared != auth.scoped {
+			continue
+		}
 		if identity.KeyID == auth.keyID && identity.Origin == auth.origin && (identity.StoreID == "" || identity.StoreID == auth.storeID) && sameCapabilitySet(identity.Capabilities, auth.stored) {
 			return true
 		}
@@ -476,11 +499,15 @@ func normalizeBrowserIdentities(value []BrowserIdentity) ([]BrowserIdentity, err
 			return nil, err
 		}
 		key := identity.KeyID + "\n" + identity.Origin + "\n" + identity.StoreID
+		if identity.Shared {
+			key += "\nshared"
+		}
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
 		identity.Capabilities = append([]string(nil), identity.Capabilities...)
+		identity.Targets = append([]string(nil), identity.Targets...)
 		result = append(result, identity)
 	}
 	return result, nil

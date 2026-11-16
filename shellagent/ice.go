@@ -30,6 +30,9 @@ type iceSession struct {
 	Answer            *iceDescription   `json:"answer"`
 	BrowserCandidates []json.RawMessage `json:"browserCandidates"`
 	Expires           string            `json:"expiresAt"`
+	// BrowserUserID is the Dyner user that created the session (Phase 2b).
+	// It is the session subject for key binding; older Dyner omits it.
+	BrowserUserID string `json:"browserUserId,omitempty"`
 }
 
 // iceAnswerGatherWait bounds how long the answer waits for local candidate
@@ -399,8 +402,8 @@ func logICEError(id string, err error) {
 // an ICE session reaches the agent before the periodic identity snapshot that
 // contains its newly provisioned key. The signaling session proves account
 // access, but the data channel still opens only for an exact browser grant.
-func (s *Server) authenticateICEHello(ctx context.Context, config Config, hello message) socketAuthentication {
-	grant := s.relayGrant(ctx, config, hello)
+func (s *Server) authenticateICEHello(ctx context.Context, config Config, hello message, subject sessionSubject) socketAuthentication {
+	grant := s.relayGrant(ctx, config, hello, subject)
 	if grant.keyID != "" || strings.TrimSpace(hello.KeyID) == "" {
 		grant.ok = grant.keyID != ""
 		return grant
@@ -413,7 +416,7 @@ func (s *Server) authenticateICEHello(ctx context.Context, config Config, hello 
 		s.mu.Lock()
 		s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, state.BrowserIdentities)
 		s.mu.Unlock()
-		grant = s.relayGrant(ctx, config, hello)
+		grant = s.relayGrant(ctx, config, hello, subject)
 	}
 	grant.ok = grant.keyID != ""
 	if !grant.ok {
@@ -477,7 +480,7 @@ func (s *Server) answerICESession(ctx context.Context, config Config, session ic
 					if hello.Fragments {
 						fragments.Store(true)
 					}
-					return s.authenticateICEHello(connectionCtx, config, hello)
+					return s.authenticateICEHello(connectionCtx, config, hello, sessionSubject{UserID: strings.TrimSpace(session.BrowserUserID)})
 				}, carrierCapabilities{
 					reliableStreams: true, datagrams: datagrams, rawBridgeStreams: true, filesystemStreams: true, fragments: true,
 					portMapping: transport.helloPortMapping(), resumable: true,

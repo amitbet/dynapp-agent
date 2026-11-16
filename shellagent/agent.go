@@ -201,6 +201,13 @@ type socketAuthentication struct {
 	ok          bool
 	// installedPWA: the browser reported that the app runs installed.
 	installedPWA bool
+	// scoped marks a socket authenticated through a shared identity (Phase
+	// 2b). It may reach only targets (`host:port`), through the frame types
+	// sharedScopeError allows.
+	scoped  bool
+	targets []string
+	// subject is the Dyner user the carrier vouched for, when known.
+	subject string
 }
 
 func (auth socketAuthentication) allows(required string) bool {
@@ -678,6 +685,7 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 		closeCarrier(carrierSocket, ctx, websocket.StatusPolicyViolation, rejected)
 		return
 	}
+	authentication = s.applySharedScope(authentication)
 	requested := parseHelloSession(hello.Session)
 	if requested != nil && requested.Resume != "" {
 		s.resumeSession(ctx, carrierSocket, requested, negotiatedProtocol, authentication, carrier)
@@ -787,6 +795,13 @@ func (s *Server) serveAuthenticatedSocket(ctx context.Context, carrierSocket pro
 			request.AppID = authentication.storeID
 		}
 		request.auth = &authentication
+		// A socket authenticated through a shared identity reaches only its
+		// targets. This is the one dispatch check; the HTTP provider repeats
+		// it for redirect hops.
+		if denied := sharedScopeError(&authentication, request); denied != "" {
+			sendFrameError(connection, ctx, request, denied)
+			continue
+		}
 		switch request.Type {
 		case "ping":
 			send(connection, ctx, map[string]any{"type": "pong", "id": request.ID, "now": time.Now().UnixMilli()})
@@ -1231,6 +1246,10 @@ func (s *Server) handleFilesystemChannel(ctx context.Context, channel protocolSo
 	if err != nil || request.Type != "fs" || request.ID == "" || request.ID != bind.ID ||
 		(request.Method != "readChunk" && request.Method != "readChunkBinary" && request.Method != "writeChunk" && request.Method != "writeChunkBinary") {
 		sendError(channel, ctx, bind.ID, "Remote filesystem stream is invalid")
+		return
+	}
+	if authentication.scoped {
+		sendError(channel, ctx, request.ID, errNotShared)
 		return
 	}
 	if !socketAllows(authentication.capabilities, filesystemCapability(request.Method)) {

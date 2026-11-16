@@ -393,6 +393,10 @@ func grantPayload(identity BrowserIdentity) map[string]any {
 	if !identity.Client.Empty() {
 		payload["client"] = identity.Client
 	}
+	if identity.Shared {
+		payload["shared"] = true
+		payload["targets"] = append([]string{}, identity.Targets...)
+	}
 	return payload
 }
 
@@ -484,6 +488,11 @@ func (s *Server) updateGrant(args map[string]any) (any, error) {
 	identity, ok := s.findIdentity(keyID, origin, storeID)
 	if !ok {
 		return nil, errors.New("no grant matches that identity")
+	}
+	if identity.Shared {
+		// Grantee access is managed through the share in Dyner and must never
+		// become a local approval.
+		return nil, errors.New("shared access is managed in Dyner")
 	}
 	requested, present := capabilityArg(args)
 	if !present {

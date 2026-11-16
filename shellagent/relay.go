@@ -25,7 +25,7 @@ func (s *Server) runRelay(ctx context.Context, config Config) {
 	for ctx.Err() == nil {
 		connection, err := IssueRelayTicket(ctx, nil, config)
 		if err == nil {
-			if identities, normalizeErr := normalizeBrowserIdentities(connection.BrowserIdentities); normalizeErr == nil {
+			if identities, normalizeErr := combineDynerIdentities(connection.BrowserIdentities, connection.SharedIdentities); normalizeErr == nil {
 				s.mu.Lock()
 				s.Config.BrowserIdentities = identities
 				config.BrowserIdentities = identities
@@ -257,10 +257,7 @@ func (v *relayVirtualSocket) Close(code websocket.StatusCode, reason string) err
 
 func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, relay RelayConnection, config Config) {
 	socket.SetReadLimit(maxReadBytes + 512*1024)
-	accepted := make(map[string]bool, len(relay.AcceptedAuthTokenHashes))
-	for _, hash := range relay.AcceptedAuthTokenHashes {
-		accepted[strings.ToLower(hash)] = true
-	}
+	accepted, subjects := relayAcceptedAccess(relay)
 	e2ee := relay.Transport.E2EEncryption
 	hub := newRelayHub(ctx, socket)
 	defer hub.closeAll()
@@ -272,7 +269,7 @@ func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, 
 		if !accepted[candidate] {
 			return socketAuthentication{}
 		}
-		granted := s.relayGrant(ctx, config, hello)
+		granted := s.relayGrant(ctx, config, hello, subjects[candidate])
 		granted.environment = map[string]any{"id": config.EnvironmentID, "name": "This device", "endpoint": nil, "state": "connected", "source": "relay", "capabilities": granted.capabilities}
 		return granted
 	}
@@ -313,23 +310,25 @@ func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, 
 // Without an app block (or when Dyner cannot resolve it) the identity grant
 // alone applies. A hello that names no known identity is limited to what
 // every synced identity holds, so it never exceeds any authority decision.
-func (s *Server) relayGrant(ctx context.Context, config Config, hello message) socketAuthentication {
+func (s *Server) relayGrant(ctx context.Context, config Config, hello message, subject sessionSubject) socketAuthentication {
 	s.mu.Lock()
 	identities := append([]BrowserIdentity(nil), s.Config.BrowserIdentities...)
 	s.mu.Unlock()
-	return relayGrantFor(identities, hello, func(storeID string) (resolvedApp, bool) {
+	return relayGrantFor(identities, hello, subject, func(storeID string) (resolvedApp, bool) {
 		resolved, err := s.resolveManifestApp(ctx, config, storeID)
 		return resolved, err == nil
 	})
 }
 
-func relayGrantFor(identities []BrowserIdentity, hello message, resolve func(storeID string) (resolvedApp, bool)) socketAuthentication {
+// relayGrantFor binds a hello to the identities its key id names, subject to
+// the session subject (see identityMatchesSubject). A key that names shared
+// identities yields a socket scoped to their targets. A hello that names no
+// identity falls back to the intersection of every non-shared identity's
+// grant, except for a shared subject, which gets nothing.
+func relayGrantFor(identities []BrowserIdentity, hello message, subject sessionSubject, resolve func(storeID string) (resolvedApp, bool)) socketAuthentication {
 	var base []string
 	keyID := strings.TrimSpace(hello.KeyID)
-	matched := false
-	var matchedOrigin string
-	var matchedCapabilities []string
-	connect := map[string][]string{}
+	var candidates []BrowserIdentity
 	if keyID != "" {
 		for _, identity := range identities {
 			if identity.KeyID != keyID || identity.Authority {
@@ -338,29 +337,55 @@ func relayGrantFor(identities []BrowserIdentity, hello message, resolve func(sto
 			if identity.StoreID != "" && hello.App != nil && identity.StoreID != strings.TrimSpace(hello.App.StoreID) {
 				continue
 			}
-			base = unionStrings(base, identity.Capabilities)
-			if matchedOrigin == "" {
-				matchedOrigin = identity.Origin
-				matchedCapabilities = append([]string(nil), identity.Capabilities...)
+			if !identityMatchesSubject(identity, subject) {
+				continue
 			}
-			for scheme, patterns := range identity.Connect {
-				connect[scheme] = unionStrings(connect[scheme], patterns)
-			}
-			matched = true
+			candidates = append(candidates, identity)
 		}
+	}
+	// A key that is both shared and not (never expected) is treated as
+	// shared: the narrower grant wins.
+	shared := false
+	for _, identity := range candidates {
+		if identity.Shared {
+			shared = true
+			break
+		}
+	}
+	matched := false
+	var matchedOrigin string
+	var matchedCapabilities []string
+	var targets []string
+	connect := map[string][]string{}
+	for _, identity := range candidates {
+		if shared && !identity.Shared {
+			continue
+		}
+		base = unionStrings(base, identity.Capabilities)
+		if matchedOrigin == "" {
+			matchedOrigin = identity.Origin
+			matchedCapabilities = append([]string(nil), identity.Capabilities...)
+		}
+		for scheme, patterns := range identity.Connect {
+			connect[scheme] = unionStrings(connect[scheme], patterns)
+		}
+		targets = unionTargets(targets, identity.Targets)
+		matched = true
 	}
 	if !matched {
 		// Without a bound identity the HTTP handler keeps honoring the
 		// request's own connect list, as before.
 		keyID = ""
 	}
-	if !matched {
-		for index, identity := range identities {
-			if identity.Authority {
+	if !matched && !subject.Shared {
+		started := false
+		for _, identity := range identities {
+			if identity.Authority || identity.Shared {
 				continue
 			}
-			if index == 0 || base == nil {
+			if !started {
 				base = normalizePermissionSet(identity.Capabilities)
+				started = true
 				continue
 			}
 			base = intersectStrings(base, identity.Capabilities)
@@ -370,6 +395,13 @@ func relayGrantFor(identities []BrowserIdentity, hello message, resolve func(sto
 	auth.declared = auth.capabilities
 	if matched {
 		auth.connect = connect
+	}
+	if shared || (!matched && subject.Shared) {
+		// A grantee reaches only its targets; without a matching identity it
+		// is scoped to nothing at all.
+		auth.scoped = true
+		auth.targets = targets
+		auth.subject = subject.UserID
 	}
 	if hello.App != nil {
 		if storeID := strings.TrimSpace(hello.App.StoreID); validStoreID(storeID) {

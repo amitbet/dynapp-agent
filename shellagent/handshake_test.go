@@ -562,22 +562,22 @@ func TestRelayAndLANGrantsIntersectIdentityWithManifest(t *testing.T) {
 		return resolvedApp{}, false
 	}
 	// Named identity and resolvable manifest: identity ∩ manifest.
-	auth := relayGrantFor(identities, message{KeyID: "browser-a", App: &directLocalApp{StoreID: "owner/notes"}}, resolve)
+	auth := relayGrantFor(identities, message{KeyID: "browser-a", App: &directLocalApp{StoreID: "owner/notes"}}, sessionSubject{}, resolve)
 	if !reflect.DeepEqual(auth.capabilities, []string{"fs.exec", "fs.remote"}) || auth.storeID != "owner/notes" || auth.appName != "Notes" || auth.keyID != "browser-a" {
 		t.Fatalf("relay grant = %#v", auth)
 	}
 	// Unresolvable manifest: identity capabilities alone, identity connect list.
-	auth = relayGrantFor(identities, message{KeyID: "browser-a", App: &directLocalApp{StoreID: "owner/unknown"}}, resolve)
+	auth = relayGrantFor(identities, message{KeyID: "browser-a", App: &directLocalApp{StoreID: "owner/unknown"}}, sessionSubject{}, resolve)
 	if !reflect.DeepEqual(auth.capabilities, []string{"fs.exec", "fs.remote", "net.protocol.https"}) || len(auth.connect["https"]) != 1 {
 		t.Fatalf("relay grant without manifest = %#v", auth)
 	}
 	// No identity named: the common subset of every synced identity, never the
 	// authority's set and never the environment ceiling.
-	auth = relayGrantFor(identities, message{}, resolve)
+	auth = relayGrantFor(identities, message{}, sessionSubject{}, resolve)
 	if !reflect.DeepEqual(auth.capabilities, []string{"fs.remote"}) || auth.keyID != "" || auth.connect != nil {
 		t.Fatalf("relay grant without identity = %#v", auth)
 	}
-	if auth = relayGrantFor(nil, message{}, resolve); len(auth.capabilities) != 0 {
+	if auth = relayGrantFor(nil, message{}, sessionSubject{}, resolve); len(auth.capabilities) != 0 {
 		t.Fatalf("relay grant without identities = %#v", auth)
 	}
 	// LAN sockets go through authForIdentity: a Dyner-synced identity (no
