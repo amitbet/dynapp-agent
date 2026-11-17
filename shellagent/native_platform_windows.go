@@ -24,9 +24,9 @@ import (
 
 func nativePlatformName() string { return "windows" }
 
-// Windows native apps stay behind an explicit opt-in until they have been
-// verified on real machines (Server.nativeAvailable).
-func nativeRequiresOptIn() bool { return true }
+// Windows native apps have been verified on real machines and are on by
+// default (Server.nativeAvailable).
+func nativeRequiresOptIn() bool { return false }
 
 func nativeSupported() (bool, string) {
 	if _, err := webView2RuntimeVersion(); err != nil {

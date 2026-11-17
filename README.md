@@ -47,12 +47,8 @@ and starts at sign-in):
 irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install-user.ps1 | iex
 ```
 
-To also turn on the native Windows apps preview, use the wrapper instead (it
-runs `install-user.ps1` with `DYNAPP_NATIVE_APPS=1` and keeps that setting):
-
-```powershell
-irm https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/install-native-apps.ps1 | iex
-```
+Native desktop apps are on by default. The older `install-native-apps.ps1`
+wrapper still works and installs the same thing.
 
 The per-user installers replace an existing machine service automatically
 (one UAC prompt, via `scripts/remove-service.ps1`), because both would serve the
@@ -262,12 +258,11 @@ Dyner calls the authority-only `apps` RPC methods `nativeSupport`,
   recorded. Rebuild the host only for real changes (see its README): a new
   binary makes installed apps ask macOS for camera, microphone, and Local
   Network access again.
-- **Windows (preview):** each app gets Start menu and desktop shortcuts that run
+- **Windows:** each app gets Start menu and desktop shortcuts that run
   `dynapp-shell-agent.exe app --id <owner/slug>` in a WebView2 window with its
-  own AppUserModelID. It stays off until `DYNAPP_NATIVE_APPS=1` is set for the
-  agent or `nativeAppsEnabled` is `true` in its config, so an agent update
-  changes nothing on Windows machines that have not opted in. The
-  [Windows test plan](docs/native-apps-windows-test.md) lists what to verify.
+  own AppUserModelID. It needs the Microsoft Edge WebView2 Runtime. The
+  [Windows test plan](docs/native-apps-windows-test.md) lists what to verify
+  after host changes.
 
 macOS bundle icons use the hosted maskable PNG and the macOS rounded icon
 grid, keeping the glyph at its original size to match Chrome-installed PWAs.

@@ -59,8 +59,9 @@ type Config struct {
 	// A damaged entry is dropped on load and never blocks the rest of the
 	// configuration (see NativeAppList.UnmarshalJSON).
 	NativeApps NativeAppList `json:"nativeApps,omitempty"`
-	// NativeAppsEnabled opts in to native apps where they are still in
-	// preview (Windows). DYNAPP_NATIVE_APPS=1 does the same.
+	// NativeAppsEnabled opts in to native apps on a platform that is still in
+	// preview (nativeRequiresOptIn). DYNAPP_NATIVE_APPS=1 does the same. No
+	// platform needs it today; older Windows installs may still carry it.
 	NativeAppsEnabled bool `json:"nativeAppsEnabled,omitempty"`
 }
 

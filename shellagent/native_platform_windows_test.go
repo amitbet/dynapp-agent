@@ -40,14 +40,10 @@ func TestWindowsAppIdentityAndNames(t *testing.T) {
 	}
 }
 
-func TestWindowsNativeAppsNeedAnOptIn(t *testing.T) {
+func TestWindowsNativeAppsNeedNoOptIn(t *testing.T) {
 	t.Setenv("DYNAPP_NATIVE_APPS", "")
 	server := &Server{}
-	if supported, reason := server.nativeAvailable(); supported || !strings.Contains(reason, "preview") {
-		t.Fatalf("without opt-in: %v %q", supported, reason)
-	}
-	server.Config.NativeAppsEnabled = true
 	if _, reason := server.nativeAvailable(); strings.Contains(reason, "preview") {
-		t.Fatalf("opt-in was ignored: %q", reason)
+		t.Fatalf("native apps still gated: %q", reason)
 	}
 }

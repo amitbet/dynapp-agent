@@ -1,10 +1,10 @@
 # Native apps on Windows: test plan
 
-The Windows native-app host has only been cross-compiled and unit-tested
-off Windows. It stays off unless the agent runs with `DYNAPP_NATIVE_APPS=1`
-or `"nativeAppsEnabled": true` in its `config.json`. Run this plan on a real
-Windows 10 or 11 machine before turning it on by default (`nativeRequiresOptIn`
-in `shellagent/native_platform_windows.go`).
+Native apps are on by default on Windows. Run this plan on a real Windows 10
+or 11 machine after changing the Windows host (`shellagent/winhost/`) or the
+Windows platform code (`shellagent/native_platform_windows.go`). The
+`DYNAPP_NATIVE_APPS=1` steps below are left over from the preview and are
+harmless.
 
 The macOS side is covered by `go test -tags nativee2e ./shellagent/`; the
 contract is `docs/native-host.md` in the dynapp repository.
