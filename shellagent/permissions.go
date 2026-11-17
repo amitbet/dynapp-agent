@@ -478,7 +478,14 @@ func (s *Server) decidePermissions(args map[string]any) (any, error) {
 		granted = intersectStrings(requested, pending.Declared)
 		sort.Strings(granted)
 	}
-	pending.resolve(granted, approved)
+	if approved {
+		pending.resolve(granted, true)
+	} else {
+		// Dyner's prompt offers "Don't ask again" with Don't Allow, as the
+		// native prompt does.
+		dontAsk, _ := args["dontAsk"].(bool)
+		pending.resolveWith(nil, decisionDeny, dontAsk)
+	}
 	return map[string]any{"ok": true, "id": id, "approved": approved, "granted": granted}, nil
 }
 

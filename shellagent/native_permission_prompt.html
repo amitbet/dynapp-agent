@@ -10,6 +10,11 @@
   show this page in their own web view, separate from the app's page, with a
   message channel that only this page can reach. The agent fills in the
   request object below; the page never loads anything else.
+
+  Browser apps get the same prompt from Dyner (a page cannot be trusted to
+  ask for itself). Its wording lives in dynapp's
+  shared/permissions/promptCopy.js: keep the titles, leads, labels and hint
+  below in step with it.
 -->
 <style>
   :root {

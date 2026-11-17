@@ -442,7 +442,8 @@ func (s *Server) requestBrowserPermissions(auth *socketAuthentication, wanted []
 		if !pending.wasResolved() {
 			return
 		}
-		s.applyBrowserDecision(keyID, origin, storeID, ask, granted, approved)
+		_, dontAsk := pending.Outcome()
+		s.applyBrowserDecision(keyID, origin, storeID, ask, granted, approved, dontAsk)
 	}()
 	return pending, nil
 }
@@ -471,8 +472,9 @@ func (s *Server) announcePending(keyID, storeID string, config Config, pending *
 
 // applyBrowserDecision stores a Dyner decision about ask on a browser
 // identity and pushes the new grant to the app's pages. Unchecked permissions
-// count as refused; a grant clears a refusal and "Don't ask again".
-func (s *Server) applyBrowserDecision(keyID, origin, storeID string, ask, granted []string, approved bool) {
+// count as refused; a grant clears a refusal and "Don't ask again". dontAsk
+// (with a refusal) stops the app from raising the request again.
+func (s *Server) applyBrowserDecision(keyID, origin, storeID string, ask, granted []string, approved, dontAsk bool) {
 	identity, ok := s.findIdentity(keyID, origin, storeID)
 	if !ok {
 		return
@@ -482,6 +484,9 @@ func (s *Server) applyBrowserDecision(keyID, origin, storeID string, ask, grante
 	identity.Capabilities = normalizePermissionSet(unionStrings(identity.Capabilities, granted))
 	identity.Declared = normalizePermissionSet(unionStrings(identity.Declared, granted))
 	identity.Denied = normalizePermissionSet(subtractStrings(unionStrings(identity.Denied, refused), granted))
+	if dontAsk && !approved {
+		identity.DontAsk = unionStrings(identity.DontAsk, ask)
+	}
 	identity.DontAsk = normalizePermissionSet(subtractStrings(identity.DontAsk, granted))
 	s.upsertBrowserIdentity(identity)
 	go s.notifyPermissionsChanged()
@@ -512,7 +517,8 @@ func (s *Server) startBrowserDelta(identity BrowserIdentity, resolved resolvedAp
 	go func() {
 		granted, approved := s.awaitDecision(context.Background(), pending)
 		if pending.wasResolved() {
-			s.applyBrowserDecision(identity.KeyID, identity.Origin, identity.StoreID, fresh, granted, approved)
+			_, dontAsk := pending.Outcome()
+			s.applyBrowserDecision(identity.KeyID, identity.Origin, identity.StoreID, fresh, granted, approved, dontAsk)
 		}
 	}()
 }
