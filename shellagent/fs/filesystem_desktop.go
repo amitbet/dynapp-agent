@@ -2,6 +2,7 @@ package fs
 
 import (
 	"archive/zip"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/amitbet/dynapp-agent/internal/agentutil"
 )
@@ -55,6 +57,52 @@ const macTrashScript = `on run argv
  tell application "Finder" to delete targetFiles
 end run`
 
+// windowsTrashScript recycles the given paths. PowerShell's -Command does
+// not pass trailing argv as $args (it appends them to the script text), so
+// the paths are embedded as single-quoted literals instead.
+func windowsTrashScript(paths []string) string {
+	quoted := make([]string, len(paths))
+	for i, path := range paths {
+		quoted[i] = "'" + strings.ReplaceAll(path, "'", "''") + "'"
+	}
+	return "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; " +
+		"Add-Type -AssemblyName Microsoft.VisualBasic; " +
+		"foreach ($target in @(" + strings.Join(quoted, ",") + ")) { " +
+		"if ((Get-Item -LiteralPath $target).PSIsContainer) " +
+		"{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($target,'OnlyErrorDialogs','SendToRecycleBin')} " +
+		"else {[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($target,'OnlyErrorDialogs','SendToRecycleBin')} }"
+}
+
+// windowsTrashBatches keeps each encoded command well under the 32,767
+// character Windows command-line limit (UTF-16 then base64 is ~2.7x).
+func windowsTrashBatches(paths []string) [][]string {
+	const maxScriptChars = 8000
+	batches := [][]string{}
+	current, size := []string{}, 0
+	for _, path := range paths {
+		if len(current) > 0 && size+len(path)+3 > maxScriptChars {
+			batches = append(batches, current)
+			current, size = []string{}, 0
+		}
+		current = append(current, path)
+		size += len(path) + 3
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
+}
+
+// encodePowerShellCommand returns the base64 UTF-16LE form -EncodedCommand takes.
+func encodePowerShellCommand(script string) string {
+	units := utf16.Encode([]rune(script))
+	raw := make([]byte, len(units)*2)
+	for i, unit := range units {
+		raw[2*i], raw[2*i+1] = byte(unit), byte(unit>>8)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
 func trashPath(path string) error {
 	return trashPaths([]string{path})
 }
@@ -74,9 +122,13 @@ func trashPaths(paths []string) error {
 		}
 		return nil
 	case "windows":
-		script := `Add-Type -AssemblyName Microsoft.VisualBasic; foreach ($target in $args) { if ((Get-Item -LiteralPath $target).PSIsContainer) {[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($target,'OnlyErrorDialogs','SendToRecycleBin')} else {[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($target,'OnlyErrorDialogs','SendToRecycleBin')} }`
-		args := append([]string{"-NoProfile", "-NonInteractive", "-Command", script}, paths...)
-		return exec.Command("powershell.exe", args...).Run()
+		for _, batch := range windowsTrashBatches(paths) {
+			output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodePowerShellCommand(windowsTrashScript(batch))).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("move to Recycle Bin: %w: %s", err, strings.TrimSpace(string(output)))
+			}
+		}
+		return nil
 	default:
 		for _, candidate := range [][]string{{"gio", "trash"}, {"trash-put"}} {
 			if _, err := exec.LookPath(candidate[0]); err == nil {
