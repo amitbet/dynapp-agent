@@ -302,10 +302,13 @@ func TestServersRPCSocketGating(t *testing.T) {
 	if _, err := call(undeclared, "verify", verify); err == nil {
 		t.Fatal("verify needs a servers.connect declaration")
 	}
-	// Owners and members list and discover; grantees never need the grant.
-	owner := &socketAuthentication{ok: true, capabilities: []string{serversPermission}, serverAPIs: scoped.serverAPIs}
-	if serversRPCCapability(message{Service: "servers", auth: owner}) != serversPermission || serversRPCCapability(message{Service: "servers", auth: scoped}) != "" {
+	// No one needs a granted capability: the declaration is the opt-in.
+	owner := &socketAuthentication{ok: true, serverAPIs: scoped.serverAPIs}
+	if serversRPCCapability(message{Service: "servers", auth: owner}) != "" || serversRPCCapability(message{Service: "servers", auth: scoped}) != "" {
 		t.Fatal("servers capability mapping is wrong")
+	}
+	if _, err := call(&socketAuthentication{ok: true}, "list", nil); err == nil {
+		t.Fatal("an owner app without a servers.connect declaration must be refused")
 	}
 	agent.servers.mdnsBrowse = func(context.Context) []serverCandidate { return nil }
 	agent.servers.probeHosts = func() []net.IP { return []net.IP{net.ParseIP("127.0.0.1").To4()} }
@@ -397,10 +400,16 @@ func TestHTTPToVerifiedServers(t *testing.T) {
 	if _, err := get(owner([]ServerAPI{{API: testServerAPI, Min: 2, Max: 3}}), "/data"); err == nil {
 		t.Fatal("a server outside the declared version range must be refused")
 	}
+	// The signed-in user is the principal; no per-machine grant is needed.
 	ungranted := owner(apis)
-	ungranted.capabilities = []string{"net.protocol.http"}
-	if _, err := get(ungranted, "/data"); err == nil {
-		t.Fatal("an owner socket without servers.connect must be refused")
+	ungranted.capabilities = nil
+	if result, err := get(ungranted, "/data"); err != nil || result["text"] != "server:/data" {
+		t.Fatalf("an owner app that declares the API = %#v, %v", result, err)
+	}
+	unauthenticated := owner(apis)
+	unauthenticated.ok = false
+	if _, err := get(unauthenticated, "/data"); err == nil {
+		t.Fatal("an unauthenticated socket must be refused")
 	}
 	if _, err := get(owner(apis), "/redirect-away"); err == nil || !strings.Contains(err.Error(), "verified server") {
 		t.Fatalf("redirect off the verified address error = %v", err)

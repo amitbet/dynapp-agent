@@ -466,8 +466,10 @@ func (s *Server) serverHTTPTarget(auth *socketAuthentication, target *url.URL) (
 	if auth == nil || len(auth.serverAPIs) == 0 {
 		return "", false
 	}
-	// A grantee's share is its grant; anyone else needs servers.connect.
-	if !auth.scoped && !socketAllows(auth.capabilities, serversPermission) {
+	// The signed-in user is the principal: the server authorizes that user
+	// (owner, member or grantee), and the app's manifest declaration of the
+	// server API is its opt-in. There is no separate per-machine app grant.
+	if !auth.ok {
 		return "", false
 	}
 	host, port, ok := httpURLTarget(target)
@@ -491,18 +493,13 @@ func sameServerTarget(target *url.URL, address, scheme string) bool {
 	return ok && strings.EqualFold(target.Scheme, scheme) && targetKey(host, port) == address
 }
 
-func serversRPCCapability(request message) string {
-	if request.auth != nil && request.auth.scoped {
-		// A grantee cannot hold servers.connect; the handler checks the
-		// manifest declaration and the share targets instead.
-		return ""
-	}
-	return serversPermission
-}
+// serversRPCCapability needs no granted capability: the handler checks the
+// manifest's servers.connect declaration (and, for a grantee, the share).
+func serversRPCCapability(message) string { return "" }
 
 func (s *Server) handleServersRPC(ctx context.Context, request message) (any, error) {
 	auth := request.auth
-	if auth != nil && auth.scoped && len(auth.serverAPIs) == 0 {
+	if auth == nil || !auth.ok || len(auth.serverAPIs) == 0 {
 		return nil, errors.New("the app does not declare servers.connect")
 	}
 	options := objectArg(request.Args, 0)
