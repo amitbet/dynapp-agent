@@ -158,6 +158,24 @@ func permissionGroupOf(permission string) string {
 	return permission
 }
 
+// appIdentity finds the identity that holds this app's grant for a browser
+// key. A browser reaching this machine through Dyner (relay, WebRTC) is
+// known only by the pairing Dyner synced, which names no app; this app's
+// grant then starts from that pairing, and a decision stores it under the
+// app (see applyBrowserDecision).
+func (s *Server) appIdentity(keyID, origin, storeID string) (BrowserIdentity, bool) {
+	if identity, ok := s.findIdentity(keyID, origin, storeID); ok || storeID == "" {
+		return identity, ok
+	}
+	synced, ok := s.findIdentity(keyID, origin, "")
+	if !ok || synced.Authority || synced.Shared {
+		return BrowserIdentity{}, false
+	}
+	synced.StoreID = storeID
+	synced.ApprovedAt = 0
+	return synced, true
+}
+
 // permissionRequiredError is a refusal the runtime can act on: Askable means
 // the app declares the permission and the user has not said "Don't ask
 // again", so the "Permissions needed" chip can offer it.
@@ -194,7 +212,7 @@ func (s *Server) permissionAskable(auth *socketAuthentication, required string) 
 	if auth.keyID == "" {
 		return false
 	}
-	identity, ok := s.findIdentity(auth.keyID, auth.origin, auth.storeID)
+	identity, ok := s.appIdentity(auth.keyID, auth.origin, auth.storeID)
 	return ok && !identity.Shared && !stringSliceHas(identity.DontAsk, required)
 }
 
@@ -224,7 +242,7 @@ func (s *Server) ensureCapability(ctx context.Context, auth *socketAuthenticatio
 		granted, _ := s.promptNativeGroup(ctx, auth, []string{required}, true)
 		return socketAllows(granted, required) && socketAllows(auth.capabilities, required)
 	}
-	if identity, ok := s.findIdentity(auth.keyID, auth.origin, auth.storeID); ok && socketAllows(intersectStrings(identity.Capabilities, auth.declared), required) {
+	if identity, ok := s.appIdentity(auth.keyID, auth.origin, auth.storeID); ok && socketAllows(intersectStrings(identity.Capabilities, auth.declared), required) {
 		s.widenSocketGrant(auth, identity.Capabilities)
 		return true
 	}
@@ -399,7 +417,7 @@ func (s *Server) pushCapabilities(storeID, keyID string, stored []string) {
 // the review page from the "Permissions needed" chip; the decision is applied
 // to the identity and pushed to the app's pages.
 func (s *Server) requestBrowserPermissions(auth *socketAuthentication, wanted []string) (*pendingRequest, error) {
-	identity, ok := s.findIdentity(auth.keyID, auth.origin, auth.storeID)
+	identity, ok := s.appIdentity(auth.keyID, auth.origin, auth.storeID)
 	if !ok || identity.Shared {
 		return nil, errors.New("this app has no permission grant on this computer")
 	}
@@ -475,7 +493,7 @@ func (s *Server) announcePending(keyID, storeID string, config Config, pending *
 // count as refused; a grant clears a refusal and "Don't ask again". dontAsk
 // (with a refusal) stops the app from raising the request again.
 func (s *Server) applyBrowserDecision(keyID, origin, storeID string, ask, granted []string, approved, dontAsk bool) {
-	identity, ok := s.findIdentity(keyID, origin, storeID)
+	identity, ok := s.appIdentity(keyID, origin, storeID)
 	if !ok {
 		return
 	}
@@ -488,6 +506,11 @@ func (s *Server) applyBrowserDecision(keyID, origin, storeID string, ask, grante
 		identity.DontAsk = unionStrings(identity.DontAsk, ask)
 	}
 	identity.DontAsk = normalizePermissionSet(subtractStrings(identity.DontAsk, granted))
+	if identity.ApprovedAt == 0 {
+		// A decision about a Dyner-synced pairing is kept as this app's own
+		// approval, which the next identity sync leaves in place.
+		identity.ApprovedAt = time.Now().UnixMilli()
+	}
 	s.upsertBrowserIdentity(identity)
 	go s.notifyPermissionsChanged()
 	if approved && len(granted) > 0 {

@@ -74,3 +74,57 @@ func TestDynerRefusalWithoutDontAskStaysAskable(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A browser reaching this machine through Dyner is known only by the pairing
+// Dyner synced, which names no app. Its app can still ask, and the grant
+// outlives the next identity sync.
+func TestSyncedPairingCanAskAndKeepsTheGrantAcrossSyncs(t *testing.T) {
+	agent := newTestServer(t)
+	agent.autoApprovePairings = false
+	synced := BrowserIdentity{KeyID: "key-1", Origin: "https://amitbet-formfuel.dynapp.io", Capabilities: []string{"fs.readText"}}
+	agent.mu.Lock()
+	agent.Config.BrowserIdentities = mergeSyncedIdentities(nil, []BrowserIdentity{synced}, nil)
+	agent.mu.Unlock()
+	auth := &socketAuthentication{
+		keyID: synced.KeyID, origin: synced.Origin, storeID: "amit-bet/formfuel", appName: "Form & Fuel",
+		declared: []string{"fs.readText", "servers.connect"}, capabilities: []string{"fs.readText"},
+	}
+	if !agent.permissionAskable(auth, "servers.connect") {
+		t.Fatal("servers.connect should be askable for a synced pairing")
+	}
+	pending, err := agent.requestBrowserPermissions(auth, []string{"servers.connect"})
+	if err != nil || pending == nil {
+		t.Fatalf("request = %#v, %v", pending, err)
+	}
+	if _, err := agent.decidePermissions(map[string]any{"id": pending.ID, "capabilities": []any{"servers.connect"}}); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stored, ok := agent.findIdentity(synced.KeyID, synced.Origin, "amit-bet/formfuel")
+		if ok && stringSliceHas(stored.Capabilities, "servers.connect") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("grant was not stored for the app")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	agent.mu.Lock()
+	agent.Config.BrowserIdentities = mergeSyncedIdentities(agent.Config.BrowserIdentities, []BrowserIdentity{synced}, nil)
+	identities := append([]BrowserIdentity(nil), agent.Config.BrowserIdentities...)
+	agent.mu.Unlock()
+	hello := message{KeyID: synced.KeyID, App: &directLocalApp{StoreID: "amit-bet/formfuel"}}
+	grant := relayGrantFor(identities, hello, sessionSubject{}, func(string) (resolvedApp, bool) {
+		return resolvedApp{Declared: []string{"fs.readText", "servers.connect"}}, true
+	})
+	if !socketAllows(grant.capabilities, "servers.connect") {
+		t.Fatalf("relay grant after sync = %v", grant.capabilities)
+	}
+}
+
+func TestAgentAdvertisesServersConnect(t *testing.T) {
+	if !stringSliceHas(DefaultListenerCapabilities(), "servers.connect") {
+		t.Fatal("Dyner clamps remote grants to the advertised ceiling; servers.connect must be in it")
+	}
+}
