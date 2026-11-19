@@ -32,7 +32,7 @@ func TestRelayGrantForSharedKeyBinding(t *testing.T) {
 	member := sessionSubject{UserID: "u_member"}
 	guest := sessionSubject{UserID: "u_guest", Shared: true}
 	unknown := sessionSubject{}
-	fallback := []string{"fs.remote"} // owner ∩ member ∩ legacy; never the guest's
+	var fallback []string // an unmatched key gets nothing: no inheriting from other pairings
 	cases := []struct {
 		name         string
 		key          string

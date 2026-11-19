@@ -308,8 +308,7 @@ func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, 
 // relayGrant computes a relay socket's capabilities: the synced browser
 // identity's grant intersected with the manifest of the app the hello names.
 // Without an app block (or when Dyner cannot resolve it) the identity grant
-// alone applies. A hello that names no known identity is limited to what
-// every synced identity holds, so it never exceeds any authority decision.
+// alone applies. A hello that names no known identity gets nothing.
 func (s *Server) relayGrant(ctx context.Context, config Config, hello message, subject sessionSubject) socketAuthentication {
 	s.mu.Lock()
 	identities := append([]BrowserIdentity(nil), s.Config.BrowserIdentities...)
@@ -323,8 +322,7 @@ func (s *Server) relayGrant(ctx context.Context, config Config, hello message, s
 // relayGrantFor binds a hello to the identities its key id names, subject to
 // the session subject (see identityMatchesSubject). A key that names shared
 // identities yields a socket scoped to their targets. A hello that names no
-// identity falls back to the intersection of every non-shared identity's
-// grant, except for a shared subject, which gets nothing.
+// identity gets no capabilities at all.
 func relayGrantFor(identities []BrowserIdentity, hello message, subject sessionSubject, resolve func(storeID string) (resolvedApp, bool)) socketAuthentication {
 	var base []string
 	keyID := strings.TrimSpace(hello.KeyID)
@@ -379,20 +377,9 @@ func relayGrantFor(identities []BrowserIdentity, hello message, subject sessionS
 		// request's own connect list, as before.
 		keyID = ""
 	}
-	if !matched && !subject.Shared {
-		started := false
-		for _, identity := range identities {
-			if identity.Authority || identity.Shared {
-				continue
-			}
-			if !started {
-				base = normalizePermissionSet(identity.Capabilities)
-				started = true
-				continue
-			}
-			base = intersectStrings(base, identity.Capabilities)
-		}
-	}
+	// An app with no grant on this machine gets nothing: it never inherits
+	// what other apps' pairings hold. It can still ask (permissionRequest
+	// needs no capability), and the owner decides in Dyner.
 	auth := socketAuthentication{capabilities: normalizePermissionSet(base), keyID: keyID, origin: matchedOrigin, stored: normalizePermissionSet(matchedCapabilities), ok: true}
 	auth.declared = auth.capabilities
 	if matched {

@@ -573,10 +573,10 @@ func TestRelayAndLANGrantsIntersectIdentityWithManifest(t *testing.T) {
 	if !reflect.DeepEqual(auth.capabilities, []string{"fs.exec", "fs.remote", "net.protocol.https"}) || len(auth.connect["https"]) != 1 {
 		t.Fatalf("relay grant without manifest = %#v", auth)
 	}
-	// No identity named: the common subset of every synced identity, never the
-	// authority's set and never the environment ceiling.
+	// No identity named: nothing at all. An app never inherits what other
+	// apps' pairings hold; it asks, and the owner decides in Dyner.
 	auth = relayGrantFor(identities, message{}, sessionSubject{}, resolve)
-	if !reflect.DeepEqual(auth.capabilities, []string{"fs.remote"}) || auth.keyID != "" || auth.connect != nil {
+	if len(auth.capabilities) != 0 || auth.keyID != "" || auth.connect != nil {
 		t.Fatalf("relay grant without identity = %#v", auth)
 	}
 	if auth = relayGrantFor(nil, message{}, sessionSubject{}, resolve); len(auth.capabilities) != 0 {
