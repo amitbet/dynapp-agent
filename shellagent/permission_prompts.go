@@ -89,6 +89,11 @@ func applyNativeDecision(app NativeApp, kind string, ask, granted []string, outc
 // nativePermissionPage fills the prompt template. json.Marshal escapes <, >
 // and &, so the request cannot end the script element it is written into.
 func nativePermissionPage(kind, appName, origin string, groups []map[string]any, focus []string) string {
+	return nativePermissionPageWith(kind, appName, origin, groups, focus, nil)
+}
+
+// nativePermissionPageWith adds fields such as "machine" to the request.
+func nativePermissionPageWith(kind, appName, origin string, groups []map[string]any, focus []string, extra map[string]any) string {
 	platform := "darwin"
 	if name := nativePlatformName(); name == "windows" || name == "linux" {
 		platform = name
@@ -96,10 +101,17 @@ func nativePermissionPage(kind, appName, origin string, groups []map[string]any,
 	if focus == nil {
 		focus = []string{}
 	}
-	payload, err := json.Marshal(map[string]any{
+	request := map[string]any{}
+	for key, value := range extra {
+		request[key] = value
+	}
+	for key, value := range map[string]any{
 		"kind": kind, "appName": appName, "origin": origin, "groups": groups,
 		"focus": focus, "platform": platform,
-	})
+	} {
+		request[key] = value
+	}
+	payload, err := json.Marshal(request)
 	if err != nil {
 		return ""
 	}
@@ -590,6 +602,9 @@ func (s *Server) handlePermissionRequestRPC(ctx context.Context, request message
 	auth := request.auth
 	if auth == nil || auth.scoped || auth.storeID == "" {
 		return nil, errors.New("permission requests need an app connection")
+	}
+	if request.Method == "remote" {
+		return s.handleRemotePermissionRPC(ctx, request)
 	}
 	if request.Method != "request" {
 		return nil, errors.New("unsupported permissionRequest method")
