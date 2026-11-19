@@ -24,6 +24,7 @@ Version: ${version}
 Section: utils
 Priority: optional
 Architecture: ${debarch}
+Suggests: dynapp-app-host
 Maintainer: DynApp <amit.bet@gmail.com>
 Homepage: https://github.com/amitbet/dynapp-agent
 Description: Local DynApp agent

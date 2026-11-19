@@ -199,7 +199,9 @@
   const text = (id, value) => { document.getElementById(id).textContent = value; };
   const menuPath = platform === "windows"
     ? "the window menu (Alt+Space) › Permissions…"
-    : appName + " › Permissions… in the menu bar";
+    : request.platform === "linux"
+      ? "Permissions… in the ☰ menu of the title bar"
+      : appName + " › Permissions… in the menu bar";
   const denyLabel = kind === "review" ? "Cancel" : "Don't Allow";
   const allowLabel = kind === "review" ? "Save" : (groups.length > 1 ? "Allow Selected" : "Allow");
   if (kind === "review") {

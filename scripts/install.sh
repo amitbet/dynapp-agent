@@ -57,6 +57,48 @@ file_sha256() {
   fi
 }
 
+# want_app_host: the Linux app host (native desktop apps) needs GTK and
+# WebKitGTK, so it is installed on desktops only. DYNAPP_APP_HOST=1 forces it,
+# DYNAPP_APP_HOST=0 skips it.
+want_app_host() {
+  [ "$(uname -s)" = Linux ] || return 1
+  case "${DYNAPP_APP_HOST:-}" in
+    1 | yes | true) return 0 ;;
+    0 | no | false) return 1 ;;
+  esac
+  [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
+}
+
+# download_verified <tag> <asset> <dir>: downloads a release asset and its
+# checksum, and fails unless they match.
+download_verified() {
+  curl -fsSL "https://github.com/${REPO}/releases/download/$1/$2" -o "$3/$2"
+  curl -fsSL "https://github.com/${REPO}/releases/download/$1/$2.sha256" -o "$3/$2.sha256"
+  expected=$(awk '{print tolower($1); exit}' "$3/$2.sha256")
+  actual=$(file_sha256 "$3/$2")
+  if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+    echo "checksum mismatch for $2" >&2
+    return 1
+  fi
+}
+
+install_app_host_from_github() {
+  tag=$1
+  version="${tag#v}"
+  asset="dynapp-app-host-${version}-linux-$(cpu)"
+  tmpdir=$(mktemp -d)
+  if ! download_verified "$tag" "$asset" "$tmpdir"; then
+    rm -rf "$tmpdir"
+    exit 1
+  fi
+  dest=$(install_file "${tmpdir}/${asset}" "$(bin_dir)" dynapp-app-host)
+  rm -rf "$tmpdir"
+  echo "installed ${dest} from ${tag}"
+  if need_cmd ldconfig && ! ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then
+    echo "Native apps also need GTK 3 and WebKitGTK 4.1: install libwebkit2gtk-4.1-0 (Debian/Ubuntu), webkit2gtk4.1 (Fedora), or webkit2gtk-4.1 (Arch)." >&2
+  fi
+}
+
 bin_dir() {
   echo "${DYNAPP_AGENT_BIN_DIR:-/usr/local/bin}"
 }
@@ -64,7 +106,7 @@ bin_dir() {
 install_file() {
   src=$1
   dest_dir=$2
-  dest="${dest_dir}/dynapp-shell-agent"
+  dest="${dest_dir}/${3:-dynapp-shell-agent}"
   if [ -d "$dest_dir" ] && [ -w "$dest_dir" ]; then
     install -m 0755 "$src" "$dest"
   elif mkdir -p "$dest_dir" 2>/dev/null && [ -w "$dest_dir" ]; then
@@ -99,6 +141,9 @@ install_from_github() {
   dest=$(install_file "${tmpdir}/${asset}" "$(bin_dir)")
   rm -rf "$tmpdir"
   echo "installed ${dest} from ${tag}"
+  if want_app_host; then
+    install_app_host_from_github "$tag"
+  fi
 }
 
 install_with_apt() {
@@ -106,7 +151,11 @@ install_with_apt() {
   if curl -fsSL "$APT_REPO/Packages" >/dev/null 2>&1; then
     echo "deb [trusted=yes] ${APT_REPO} ./" | run_root tee /etc/apt/sources.list.d/dynapp-agent.list >/dev/null
     run_root apt-get update -y
-    run_root apt-get install -y dynapp-shell-agent
+    if want_app_host; then
+      run_root apt-get install -y dynapp-shell-agent dynapp-app-host
+    else
+      run_root apt-get install -y dynapp-shell-agent
+    fi
     return
   fi
   tag=$(latest_tag)
@@ -119,6 +168,11 @@ install_with_apt() {
   tmpdir=$(mktemp -d)
   curl -fsSL "https://github.com/${REPO}/releases/download/${tag}/${deb}" -o "${tmpdir}/${deb}"
   run_root apt-get install -y "${tmpdir}/${deb}"
+  if want_app_host; then
+    host_deb="dynapp-app-host_${version}_${arch}.deb"
+    curl -fsSL "https://github.com/${REPO}/releases/download/${tag}/${host_deb}" -o "${tmpdir}/${host_deb}"
+    run_root apt-get install -y "${tmpdir}/${host_deb}"
+  fi
   rm -rf "$tmpdir"
 }
 

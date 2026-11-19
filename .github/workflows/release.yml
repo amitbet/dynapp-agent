@@ -203,6 +203,60 @@ jobs:
           test -s "$asset.sig"
           gh release upload "v${VERSION}" "$asset" "$asset.sha256" "$asset.sig" --repo "$REPOSITORY" --clobber
 
+  linux-host:
+    # dynapp-app-host links GTK 3 and WebKitGTK 4.1 with cgo, so it builds
+    # natively per architecture. Ubuntu 22.04 keeps the glibc floor low.
+    needs: [version, create-release]
+    if: needs.version.outputs.ready == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            runner: ubuntu-22.04
+          - goarch: arm64
+            runner: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install GTK and WebKitGTK headers
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Build app host
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset="dynapp-app-host-${VERSION}-linux-${GOARCH}"
+          CGO_ENABLED=1 go build -tags webkitgtk -trimpath \
+            -ldflags="-s -w -X github.com/amitbet/dynapp-agent/shellagent/linuxhost.Version=${VERSION}" \
+            -o "$asset" ./cmd/dynapp-app-host
+          test "$("./$asset" --version)" = "$VERSION"
+          sha256sum "$asset" > "$asset.sha256"
+          echo "asset=$asset" >> "$GITHUB_ENV"
+      - name: Sign release asset
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: node scripts/sign-release-asset.mjs "$asset"
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test -s "$asset.sig"
+          gh release upload "v${VERSION}" "$asset" "$asset.sha256" "$asset.sig" --repo "$REPOSITORY" --clobber
+
   macos:
     needs: [version, create-release]
     if: needs.version.outputs.ready == 'true'
@@ -262,7 +316,7 @@ jobs:
           gh release upload "v${VERSION}" "$asset" "$asset.sha256" "$asset.sig" --repo "$REPOSITORY" --clobber
 
   packages:
-    needs: [version, binaries, macos]
+    needs: [version, binaries, macos, linux-host]
     if: needs.version.outputs.ready == 'true' && github.event.inputs.prerelease != 'true'
     runs-on: ubuntu-latest
     steps:
@@ -280,6 +334,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist apt-repo
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'dynapp-shell-agent-*'
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'dynapp-app-host-*'
       - name: Build Debian packages
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -288,11 +343,13 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y dpkg-dev
-          chmod +x scripts/package-deb.sh scripts/publish-apt-repo.sh
+          chmod +x scripts/package-deb.sh scripts/package-host-deb.sh scripts/publish-apt-repo.sh
           for arch in amd64 arm64; do
             ./scripts/package-deb.sh "dist/dynapp-shell-agent-${VERSION}-linux-${arch}" "$VERSION" "$arch"
+            ./scripts/package-host-deb.sh "dist/dynapp-app-host-${VERSION}-linux-${arch}" "$VERSION" "$arch"
           done
           mv dynapp-shell-agent_"${VERSION}"_amd64.deb dynapp-shell-agent_"${VERSION}"_arm64.deb apt-repo/
+          mv dynapp-app-host_"${VERSION}"_amd64.deb dynapp-app-host_"${VERSION}"_arm64.deb apt-repo/
           ./scripts/publish-apt-repo.sh apt-repo
           cd apt-repo
           for deb in *.deb; do
@@ -352,7 +409,7 @@ jobs:
           git push origin HEAD:${{ github.event.repository.default_branch }}
 
   summary:
-    needs: [version, binaries, macos, packages]
+    needs: [version, binaries, macos, linux-host, packages]
     if: needs.version.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:

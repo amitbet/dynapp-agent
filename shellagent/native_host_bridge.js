@@ -10,11 +10,18 @@
   // installed origin; its replies arrive as message events on the same object.
   const androidChannel = config.platform === "android" ? window.dynappNativeHost : null;
   if (config.platform === "android" && !androidChannel) return;
+  // WebKitGTK exposes script message handlers to every frame and does not
+  // say which frame posted, so the Linux host wraps this script with a
+  // per-launch token that only the top-level app document can see.
+  const linuxToken = config.platform === "linux" && typeof __dynappHostToken === "string" ? __dynappHostToken : "";
+  if (config.platform === "linux" && !linuxToken) return;
   const post = config.platform === "windows"
     ? (message) => window.chrome.webview.postMessage(JSON.stringify({ dynappNativeHost: 1, ...message }))
-    : androidChannel
-      ? (message) => androidChannel.postMessage(JSON.stringify({ dynappNativeHost: 1, ...message }))
-      : (message) => window.webkit.messageHandlers.dynappNativeHost.postMessage({ dynappNativeHost: 1, ...message });
+    : config.platform === "linux"
+      ? (message) => window.webkit.messageHandlers.dynappNativeHost.postMessage(JSON.stringify({ dynappNativeHost: 1, ...message, hostToken: linuxToken }))
+      : androidChannel
+        ? (message) => androidChannel.postMessage(JSON.stringify({ dynappNativeHost: 1, ...message }))
+        : (message) => window.webkit.messageHandlers.dynappNativeHost.postMessage({ dynappNativeHost: 1, ...message });
 
   const toBase64 = (bytes) => {
     let text = "";

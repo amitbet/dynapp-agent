@@ -361,6 +361,7 @@ func (s *Server) ListenAndServe() error {
 	// No idle relay socket: a browser that cannot reach this machine directly
 	// asks Dyner for one, and the sync loop below opens it on demand.
 	s.startSelfUpdater()
+	go s.updateNativeHostBinary()
 	s.startChromiumDesktopRepair()
 	s.startNativeHost()
 	hydrateExecutablePath()

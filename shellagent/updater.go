@@ -303,11 +303,16 @@ func (s *Server) waitForIdleBridges(ctx context.Context, limit time.Duration) (f
 }
 
 func fetchLatestRelease(ctx context.Context, config SelfUpdateConfig) (githubRelease, error) {
+	return fetchRelease(ctx, config, "latest")
+}
+
+// fetchRelease reads releases/latest or releases/tags/<tag>.
+func fetchRelease(ctx context.Context, config SelfUpdateConfig, which string) (githubRelease, error) {
 	if !validRepository(config.Repository) {
 		return githubRelease{}, errors.New("invalid GitHub repository")
 	}
 	base := strings.TrimRight(config.APIBaseURL, "/")
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/repos/"+config.Repository+"/releases/latest", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/repos/"+config.Repository+"/releases/"+which, nil)
 	if err != nil {
 		return githubRelease{}, err
 	}

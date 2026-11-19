@@ -90,8 +90,8 @@ func applyNativeDecision(app NativeApp, kind string, ask, granted []string, outc
 // and &, so the request cannot end the script element it is written into.
 func nativePermissionPage(kind, appName, origin string, groups []map[string]any, focus []string) string {
 	platform := "darwin"
-	if nativePlatformName() == "windows" {
-		platform = "windows"
+	if name := nativePlatformName(); name == "windows" || name == "linux" {
+		platform = name
 	}
 	if focus == nil {
 		focus = []string{}

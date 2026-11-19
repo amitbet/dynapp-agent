@@ -14,6 +14,10 @@ curl -fsSL https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/i
 ```
 
 That downloads the latest GitHub release into `/usr/local/bin`. Debian and Ubuntu use apt when it is present.
+On a Linux desktop (when `DISPLAY` or `WAYLAND_DISPLAY` is set) it also installs
+`dynapp-app-host`, which runs native desktop apps; set `DYNAPP_APP_HOST=1` to
+install it anyway or `DYNAPP_APP_HOST=0` to skip it. Headless machines get only
+the agent, with no GUI libraries.
 
 macOS, Homebrew:
 
@@ -31,6 +35,8 @@ Debian or Ubuntu, apt:
 echo "deb [trusted=yes] https://amitbet.github.io/dynapp-agent/deb ./" | sudo tee /etc/apt/sources.list.d/dynapp-agent.list
 sudo apt update
 sudo apt install dynapp-shell-agent
+# on a desktop, for native apps (pulls in GTK 3 and WebKitGTK 4.1):
+sudo apt install dynapp-app-host
 ```
 
 Windows, PowerShell (elevated; installs into `C:\Program Files\DynApp` and the machine PATH):
@@ -129,8 +135,11 @@ A successful push to `main` patch-bumps the latest `v*` tag (first release is
 - `darwin-amd64` / `darwin-arm64` (CGO, codesigned)
 - `linux-amd64` / `linux-arm64`
 - `windows-amd64` / `windows-arm64`
+- `dynapp-app-host-<version>-linux-amd64` / `-linux-arm64`, the Linux native
+  app host (CGO with GTK 3 and WebKitGTK 4.1, built on Ubuntu 22.04)
 
-Each release also uploads `.deb` packages, publishes an apt repo and winget
+Each release also uploads `.deb` packages (`dynapp-shell-agent` and
+`dynapp-app-host`), publishes an apt repo and winget
 manifests to GitHub Pages, and updates `Formula/dynapp-shell-agent.rb` plus
 `winget/`. You can still stamp a version yourself:
 
@@ -263,11 +272,41 @@ Dyner calls the authority-only `apps` RPC methods `nativeSupport`,
   own AppUserModelID. It needs the Microsoft Edge WebView2 Runtime. The
   [Windows test plan](docs/native-apps-windows-test.md) lists what to verify
   after host changes.
+- **Linux (preview):** each app gets a launcher entry
+  `~/.local/share/applications/io.dynapp.app.<owner>.<slug>.desktop` that runs
+  `dynapp-app-host`, a separate GTK 3 / WebKitGTK 4.1 binary
+  (`cmd/dynapp-app-host`, `shellagent/linuxhost/`). The agent stays pure Go,
+  so headless machines need no GUI libraries. Each app is its own
+  `GtkApplication` whose ID is also the `.desktop` name, Wayland `app_id` and
+  X11 `WM_CLASS`, so it gets its own dock entry and a second launch focuses
+  the running window. The host connects to `<stateDir>/native-host.sock`; the
+  agent checks `SO_PEERCRED` (same user) and `/proc/<pid>/exe` (the host
+  binary). It stays off until `DYNAPP_NATIVE_APPS=1` is set for the agent or
+  `nativeAppsEnabled` is `true` in its config, and it needs a graphical
+  session: a systemd user agent reads `DISPLAY`/`WAYLAND_DISPLAY` from
+  `systemctl --user show-environment`. A host next to the agent (install.sh)
+  is replaced with the matching signed release at agent start; apt updates
+  the packaged one. Not yet on Linux: the shared title bar and automation.
 
 macOS bundle icons use the hosted maskable PNG and the macOS rounded icon
 grid, keeping the glyph at its original size to match Chrome-installed PWAs.
 Older hosts without a maskable PNG fall back to the ordinary PNG. Reinstall
 an existing app from Dyner after updating the agent to refresh its icon.
+
+Linux installs list the manifest's `launch.fileTypes` as `MimeType=` in the
+app's `.desktop` entry, defining `application/x-dynapp-<owner>-<slug>-<ext>`
+in `~/.local/share/mime/packages/` for extensions without a declared MIME
+type. Like Windows, they never change the user's default apps. Web data lives
+in `~/.local/share/dynapp/native/<owner>/<slug>/webkit` and stays after
+uninstall; `host.log` sits beside it.
+
+Test the Linux host on a desktop or under Xvfb:
+
+```sh
+CGO_ENABLED=1 go build -tags webkitgtk -o /tmp/dynapp-app-host ./cmd/dynapp-app-host
+DYNAPP_APP_HOST=/tmp/dynapp-app-host DYNAPP_SHEET_SCREENSHOT=/tmp \
+  dbus-run-session -- xvfb-run -a go test -tags nativee2e -run TestNativeLinux -v ./shellagent/
+```
 
 Windows installs register the manifest's `launch.fileTypes` in **Open with**
 and **Settings > Apps > Default apps**, using per-user, owner-scoped ProgIDs
