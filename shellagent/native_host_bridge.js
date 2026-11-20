@@ -366,10 +366,10 @@
       platform: config.platform,
       storeId: config.storeId,
       origin: config.origin,
-      // Advertised by the host binary, so an updated agent never enables
-      // overlay chrome in an older installed macOS bundle.
+      // Only a host that implements window controls advertises them. Linux has
+      // its own property so older runtimes retain the complete GTK header.
       ...(window.__DYNAPP_NATIVE_TITLEBAR__ === true ? {
-        titlebar: Object.freeze({
+        [config.platform === "linux" ? "linuxTitlebar" : "titlebar"]: Object.freeze({
           setEnabled: (enabled) => post({ op: "titlebar", enabled: Boolean(enabled) }),
           drag: () => post({ op: "titlebarDrag" }),
           toggleMaximize: () => post({ op: "titlebarZoom" }),

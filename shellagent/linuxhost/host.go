@@ -491,6 +491,16 @@ func (h *host) requestReview(rid string) {
 
 func (h *host) handleBridge(message BridgeMessage) {
 	switch message.Op {
+	case "titlebar":
+		if message.Enabled {
+			C.host_titlebar(1)
+		} else {
+			C.host_titlebar(0)
+		}
+	case "titlebarDrag":
+		C.host_titlebar_drag()
+	case "titlebarZoom":
+		C.host_titlebar_zoom()
 	case "open":
 		h.mu.Lock()
 		_, exists := h.sockets[message.SID]

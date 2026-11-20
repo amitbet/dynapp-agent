@@ -11,6 +11,11 @@ static GtkApplication *application;
 static GtkWidget *main_window;
 static WebKitWebView *main_view;
 static gboolean has_bridge;
+static GtkWidget *fallback_header;
+static GtkWidget *caption_controls;
+static GtkWidget *caption_maximize;
+static GdkEvent *caption_press;
+static gboolean caption_drag;
 
 // Navigation verdicts from Go (policy.go).
 enum { POLICY_ALLOW = 0, POLICY_IGNORE = 1 };
@@ -72,6 +77,84 @@ static void on_bridge_message(WebKitUserContentManager *manager, WebKitJavascrip
 
 void host_eval(const char *script) {
   if (main_view) webkit_web_view_evaluate_javascript(main_view, script, -1, NULL, NULL, NULL, NULL, NULL);
+}
+
+static void layout_caption_controls(void) {
+  double zoom = webkit_web_view_get_zoom_level(main_view);
+  gtk_widget_set_size_request(caption_controls, -1, MAX(36, (int)(36 * zoom)));
+  gint width;
+  gtk_widget_get_preferred_width(caption_controls, NULL, &width);
+  char pixels[G_ASCII_DTOSTR_BUF_SIZE];
+  char height[G_ASCII_DTOSTR_BUF_SIZE];
+  g_ascii_dtostr(pixels, sizeof pixels, (width + 10) / zoom);
+  g_ascii_dtostr(height, sizeof height, MAX(36, 36 / zoom));
+  char *script = g_strdup_printf(
+      "document.documentElement?.style.setProperty('--dynapp-linux-caption-width', '%spx');"
+      "document.documentElement?.style.setProperty('--dynapp-linux-caption-height', '%spx');", pixels, height);
+  host_eval(script);
+  g_free(script);
+}
+
+static void clear_caption_press(void) {
+  g_clear_pointer(&caption_press, gdk_event_free);
+  caption_drag = FALSE;
+}
+
+void host_titlebar(int enabled) {
+  if (!main_window || !caption_controls) return;
+  if (gtk_widget_get_visible(caption_controls) == (enabled != 0)) return;
+  gtk_widget_set_visible(fallback_header, !enabled);
+  gtk_widget_set_visible(caption_controls, enabled);
+  if (enabled) layout_caption_controls();
+  else clear_caption_press();
+}
+
+static gboolean on_caption_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+  (void)widget;
+  (void)data;
+  if (event->type == GDK_BUTTON_PRESS && event->button == GDK_BUTTON_PRIMARY) {
+    clear_caption_press();
+    if (gtk_widget_get_visible(caption_controls)) caption_press = gdk_event_copy((GdkEvent *)event);
+  }
+  return FALSE;
+}
+
+static gboolean on_caption_release(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+  (void)widget;
+  (void)data;
+  if (event->button == GDK_BUTTON_PRIMARY) clear_caption_press();
+  return FALSE;
+}
+
+static gboolean on_caption_motion(GtkWidget *widget, GdkEventMotion *event, gpointer data) {
+  (void)data;
+  if (!caption_drag || !caption_press || !(event->state & GDK_BUTTON1_MASK)) return FALSE;
+  const GdkEventButton *press = &caption_press->button;
+  if (!gtk_drag_check_threshold(widget, press->x_root, press->y_root, event->x_root, event->y_root)) return FALSE;
+  GdkWindow *window = gtk_widget_get_window(main_window);
+  GdkDevice *device = gdk_event_get_device(caption_press);
+  gboolean started = window && device;
+  if (started)
+    gdk_window_begin_move_drag_for_device(window, device, press->button, press->x_root, press->y_root, press->time);
+  clear_caption_press();
+  return started;
+}
+
+void host_titlebar_drag(void) {
+  caption_drag = caption_press != NULL;
+}
+
+void host_titlebar_zoom(void) {
+  if (!main_window || !gtk_widget_get_visible(caption_controls)) return;
+  GtkWindow *window = GTK_WINDOW(main_window);
+  if (gtk_window_is_maximized(window)) gtk_window_unmaximize(window);
+  else gtk_window_maximize(window);
+}
+
+static void on_main_load(WebKitWebView *view, WebKitLoadEvent load_event, gpointer data) {
+  (void)view;
+  (void)data;
+  if (load_event == WEBKIT_LOAD_STARTED) host_titlebar(FALSE);
 }
 
 void host_load(const char *url) {
@@ -496,6 +579,10 @@ static void on_main_destroy(GtkWidget *widget, gpointer data) {
   (void)data;
   main_window = NULL;
   main_view = NULL;
+  fallback_header = NULL;
+  caption_controls = NULL;
+  caption_maximize = NULL;
+  clear_caption_press();
   goWindowClosed();
 }
 
@@ -522,6 +609,7 @@ static void action_zoom(GSimpleAction *action, GVariant *parameter, gpointer dat
   if (level < 0.3) level = 0.3;
   if (level > 3.0) level = 3.0;
   webkit_web_view_set_zoom_level(main_view, level);
+  if (gtk_widget_get_visible(caption_controls)) layout_caption_controls();
 }
 
 static void action_fullscreen(GSimpleAction *action, GVariant *parameter, gpointer data) {
@@ -552,6 +640,48 @@ static void add_action(const char *name, GCallback callback, gpointer data, cons
   if (accel1) gtk_application_set_accels_for_action(application, detailed, accels);
 }
 
+static GtkWidget *caption_menu(GMenuModel *menu) {
+  GtkWidget *button = gtk_menu_button_new();
+  gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(button), menu);
+  gtk_button_set_image(GTK_BUTTON(button), gtk_image_new_from_icon_name("open-menu-symbolic", GTK_ICON_SIZE_BUTTON));
+  gtk_widget_set_tooltip_text(button, "Menu");
+  return button;
+}
+
+static GtkWidget *caption_button(const char *icon, const char *label, GCallback callback) {
+  GtkWidget *button = gtk_button_new_from_icon_name(icon, GTK_ICON_SIZE_BUTTON);
+  gtk_widget_set_tooltip_text(button, label);
+  g_signal_connect(button, "clicked", callback, NULL);
+  return button;
+}
+
+static void minimize_caption(GtkButton *button, gpointer data) {
+  (void)button;
+  (void)data;
+  gtk_window_iconify(GTK_WINDOW(main_window));
+}
+
+static void maximize_caption(GtkButton *button, gpointer data) {
+  (void)button;
+  (void)data;
+  host_titlebar_zoom();
+}
+
+static void close_caption(GtkButton *button, gpointer data) {
+  (void)button;
+  (void)data;
+  gtk_window_close(GTK_WINDOW(main_window));
+}
+
+static void update_maximize_caption(GtkWindow *window, GParamSpec *spec, gpointer data) {
+  (void)spec;
+  (void)data;
+  gboolean maximized = gtk_window_is_maximized(window);
+  gtk_image_set_from_icon_name(GTK_IMAGE(gtk_button_get_image(GTK_BUTTON(caption_maximize))),
+                               maximized ? "window-restore-symbolic" : "window-maximize-symbolic", GTK_ICON_SIZE_BUTTON);
+  gtk_widget_set_tooltip_text(caption_maximize, maximized ? "Restore" : "Maximize");
+}
+
 void host_create_window(const char *title, const char *icon, const char *data_dir, const char *cache_dir,
                         const char *user_script, int debug) {
   WebKitWebsiteDataManager *manager =
@@ -567,8 +697,11 @@ void host_create_window(const char *title, const char *icon, const char *data_di
   WebKitUserContentManager *content = webkit_user_content_manager_new();
   has_bridge = user_script != NULL;
   if (has_bridge) {
-    WebKitUserScript *script = webkit_user_script_new(user_script, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+    char *source = g_strconcat("Object.defineProperty(window, '__DYNAPP_NATIVE_TITLEBAR__', { value: true });\n",
+                               user_script, NULL);
+    WebKitUserScript *script = webkit_user_script_new(source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
                                                       WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+    g_free(source);
     webkit_user_content_manager_add_script(content, script);
     webkit_user_script_unref(script);
     webkit_user_content_manager_register_script_message_handler(content, "dynappNativeHost");
@@ -630,22 +763,46 @@ void host_create_window(const char *title, const char *icon, const char *data_di
   g_menu_append(view, "Full Screen", "app.fullscreen");
   if (debug) g_menu_append(view, "Web Inspector", "app.inspector");
   g_menu_append_section(menu, NULL, G_MENU_MODEL(view));
-  GtkWidget *button = gtk_menu_button_new();
-  gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(button), G_MENU_MODEL(menu));
-  gtk_button_set_image(GTK_BUTTON(button), gtk_image_new_from_icon_name("open-menu-symbolic", GTK_ICON_SIZE_BUTTON));
-  gtk_widget_set_tooltip_text(button, "Menu");
+  GtkWidget *button = caption_menu(G_MENU_MODEL(menu));
   g_object_unref(top);
   g_object_unref(view);
-  g_object_unref(menu);
 
   GtkWidget *header = gtk_header_bar_new();
   gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header), TRUE);
   gtk_header_bar_set_title(GTK_HEADER_BAR(header), title);
   gtk_header_bar_pack_end(GTK_HEADER_BAR(header), button);
   gtk_window_set_titlebar(GTK_WINDOW(main_window), header);
+  fallback_header = header;
   g_signal_connect(main_view, "notify::title", G_CALLBACK(on_title_changed), header);
 
-  gtk_container_add(GTK_CONTAINER(main_window), GTK_WIDGET(main_view));
+  GtkWidget *overlay = gtk_overlay_new();
+  gtk_container_add(GTK_CONTAINER(overlay), GTK_WIDGET(main_view));
+  caption_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_set_halign(caption_controls, GTK_ALIGN_END);
+  gtk_widget_set_valign(caption_controls, GTK_ALIGN_START);
+  gtk_widget_set_margin_end(caption_controls, 4);
+  gtk_widget_set_no_show_all(caption_controls, TRUE);
+  caption_maximize = caption_button("window-maximize-symbolic", "Maximize", G_CALLBACK(maximize_caption));
+  GtkWidget *buttons[] = {
+      caption_menu(G_MENU_MODEL(menu)),
+      caption_button("window-minimize-symbolic", "Minimize", G_CALLBACK(minimize_caption)),
+      caption_maximize,
+      caption_button("window-close-symbolic", "Close", G_CALLBACK(close_caption)),
+  };
+  g_object_unref(menu);
+  for (guint index = 0; index < G_N_ELEMENTS(buttons); index++) {
+    gtk_button_set_relief(GTK_BUTTON(buttons[index]), GTK_RELIEF_NONE);
+    gtk_box_pack_start(GTK_BOX(caption_controls), buttons[index], FALSE, FALSE, 0);
+    gtk_widget_show_all(buttons[index]);
+  }
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), caption_controls);
+  g_signal_connect(main_window, "notify::is-maximized", G_CALLBACK(update_maximize_caption), NULL);
+  g_signal_connect(main_view, "load-changed", G_CALLBACK(on_main_load), NULL);
+  gtk_widget_add_events(GTK_WIDGET(main_view), GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
+  g_signal_connect(main_view, "button-press-event", G_CALLBACK(on_caption_press), NULL);
+  g_signal_connect(main_view, "button-release-event", G_CALLBACK(on_caption_release), NULL);
+  g_signal_connect(main_view, "motion-notify-event", G_CALLBACK(on_caption_motion), NULL);
+  gtk_container_add(GTK_CONTAINER(main_window), overlay);
   g_signal_connect(main_window, "destroy", G_CALLBACK(on_main_destroy), NULL);
   gtk_widget_show_all(main_window);
   gtk_widget_grab_focus(GTK_WIDGET(main_view));

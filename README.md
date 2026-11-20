@@ -292,7 +292,8 @@ in its config turns them off.
   binary). It needs a graphical session: a systemd user agent reads `DISPLAY`/`WAYLAND_DISPLAY` from
   `systemctl --user show-environment`. A host next to the agent (install.sh)
   is replaced with the matching signed release at agent start; apt updates
-  the packaged one. Not yet on Linux: the shared title bar and automation.
+  the packaged one. The shared title bar reserves room for the GTK window
+  buttons and menu. Native automation is not yet available on Linux.
 
 macOS bundle icons use the hosted maskable PNG and the macOS rounded icon
 grid, keeping the glyph at its original size to match Chrome-installed PWAs.
