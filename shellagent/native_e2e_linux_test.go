@@ -405,7 +405,11 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	drainReports()
 	// xdotool key name -> the page's combo; Alt+F4 is the window manager's.
-	keys := [][2]string{{"Escape", "Escape"}, {"alt+x", "alt+x"}, {"Alt_L", "alt+Alt"}}
+	keys := [][2]string{{"Escape", "Escape"}, {"Alt_L", "alt+Alt"}}
+	// Alt+letter opens Commander's quick search.
+	for _, c := range "abcdefghijklmnopqrstuvwxyz0123456789" {
+		keys = append(keys, [2]string{"alt+" + string(c), "alt+" + string(c)})
+	}
 	for n := 1; n <= 12; n++ {
 		f := fmt.Sprintf("F%d", n)
 		keys = append(keys, [2]string{f, f}, [2]string{"shift+" + f, "shift+" + f}, [2]string{"ctrl+" + f, "ctrl+" + f})
@@ -436,7 +440,7 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 	if !waitReport(func(r map[string]any) bool { return r["loaded"] == true }, 10*time.Second) {
 		t.Fatalf("an unhandled Ctrl+R did not reload the page; host log:\n%s", hostLog(app))
 	}
-	t.Logf("the page received %d keys (F1-F12 with Shift/Ctrl/Alt, Esc, Alt) without a reload; unhandled Ctrl+R reloaded it", len(keys))
+	t.Logf("the page received %d keys (F1-F12 with Shift/Ctrl/Alt, Esc, Alt, Alt+letters/digits) without a reload; unhandled Ctrl+R reloaded it", len(keys))
 
 	// Only the app host binary may use the app's channel.
 	conn, err := net.Dial("unix", agent.nativeEndpoint())
