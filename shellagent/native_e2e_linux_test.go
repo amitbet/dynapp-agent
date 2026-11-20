@@ -37,10 +37,14 @@ const report = (data) => fetch("/report", { method: "POST", body: JSON.stringify
   if (!host) return report({ ok: false, error: "window.__DYNAPP_NATIVE_HOST__ is missing" });
   if (!host.linuxTitlebar || host.titlebar) throw new Error("Linux title bar bridge was not advertised separately");
   host.linuxTitlebar.setEnabled(true);
-  for (let attempt = 0; !document.documentElement.style.getPropertyValue("--dynapp-linux-caption-width"); attempt++) {
-    if (attempt >= 100) throw new Error("GTK did not reserve space for its title bar controls");
+  const captionStyle = document.documentElement.style;
+  for (let attempt = 0; !captionStyle.getPropertyValue("--dynapp-linux-caption-scheme"); attempt++) {
+    if (attempt >= 100) throw new Error("GTK did not supply the title bar palette");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+  if (!captionStyle.getPropertyValue("--dynapp-linux-caption-width") ||
+      !CSS.supports("color", captionStyle.getPropertyValue("--dynapp-linux-caption-bg")) ||
+      !CSS.supports("color", captionStyle.getPropertyValue("--dynapp-linux-caption-fg"))) throw new Error("GTK title bar styling is incomplete");
   const socket = host.openAgentSocket();
   const frames = [];
   socket.addEventListener("message", (event) => frames.push(typeof event.data === "string" ? JSON.parse(event.data) : { binaryBytes: event.data.byteLength }));

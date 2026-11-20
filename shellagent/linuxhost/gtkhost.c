@@ -79,6 +79,36 @@ void host_eval(const char *script) {
   if (main_view) webkit_web_view_evaluate_javascript(main_view, script, -1, NULL, NULL, NULL, NULL, NULL);
 }
 
+static gboolean is_dark_color(const GdkRGBA *color) {
+  return 0.2126 * color->red + 0.7152 * color->green + 0.0722 * color->blue < 0.5;
+}
+
+static void update_caption_palette(void) {
+  GtkStyleContext *style = gtk_widget_get_style_context(caption_controls);
+  GdkRGBA foreground, background;
+  if (!gtk_style_context_lookup_color(style, "theme_fg_color", &foreground))
+    gtk_style_context_get_color(style, GTK_STATE_FLAG_NORMAL, &foreground);
+  if (!gtk_style_context_lookup_color(style, "theme_bg_color", &background) || background.alpha < 1)
+    gdk_rgba_parse(&background, is_dark_color(&foreground) ? "#ffffff" : "#2e2e2e");
+
+  char *fg = gdk_rgba_to_string(&foreground);
+  char *bg = gdk_rgba_to_string(&background);
+  char *script = g_strdup_printf(
+      "document.documentElement?.style.setProperty('--dynapp-linux-caption-bg', '%s');"
+      "document.documentElement?.style.setProperty('--dynapp-linux-caption-fg', '%s');"
+      "document.documentElement?.style.setProperty('--dynapp-linux-caption-scheme', '%s');",
+      bg, fg, is_dark_color(&background) ? "dark" : "light");
+  host_eval(script);
+  g_free(script);
+  g_free(bg);
+  g_free(fg);
+}
+
+static void on_caption_style_updated(GtkWidget *widget, gpointer data) {
+  (void)data;
+  if (main_view && gtk_widget_get_visible(widget)) update_caption_palette();
+}
+
 static void layout_caption_controls(void) {
   double zoom = webkit_web_view_get_zoom_level(main_view);
   gtk_widget_set_size_request(caption_controls, -1, MAX(36, (int)(36 * zoom)));
@@ -105,8 +135,10 @@ void host_titlebar(int enabled) {
   if (gtk_widget_get_visible(caption_controls) == (enabled != 0)) return;
   gtk_widget_set_visible(fallback_header, !enabled);
   gtk_widget_set_visible(caption_controls, enabled);
-  if (enabled) layout_caption_controls();
-  else clear_caption_press();
+  if (enabled) {
+    layout_caption_controls();
+    update_caption_palette();
+  } else clear_caption_press();
 }
 
 static gboolean on_caption_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
@@ -790,12 +822,21 @@ void host_create_window(const char *title, const char *icon, const char *data_di
       caption_button("window-close-symbolic", "Close", G_CALLBACK(close_caption)),
   };
   g_object_unref(menu);
+  GtkCssProvider *caption_style = gtk_css_provider_new();
+  gtk_css_provider_load_from_data(caption_style,
+      "button:not(:hover):not(:active):not(:checked) {"
+      "  background-color: transparent; background-image: none; border-color: transparent; box-shadow: none;"
+      "}", -1, NULL);
   for (guint index = 0; index < G_N_ELEMENTS(buttons); index++) {
+    gtk_style_context_add_provider(gtk_widget_get_style_context(buttons[index]),
+                                   GTK_STYLE_PROVIDER(caption_style), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     gtk_button_set_relief(GTK_BUTTON(buttons[index]), GTK_RELIEF_NONE);
     gtk_box_pack_start(GTK_BOX(caption_controls), buttons[index], FALSE, FALSE, 0);
     gtk_widget_show_all(buttons[index]);
   }
+  g_object_unref(caption_style);
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), caption_controls);
+  g_signal_connect(caption_controls, "style-updated", G_CALLBACK(on_caption_style_updated), NULL);
   g_signal_connect(main_window, "notify::is-maximized", G_CALLBACK(update_maximize_caption), NULL);
   g_signal_connect(main_view, "load-changed", G_CALLBACK(on_main_load), NULL);
   gtk_widget_add_events(GTK_WIDGET(main_view), GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
