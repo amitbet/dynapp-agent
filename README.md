@@ -14,6 +14,11 @@ curl -fsSL https://raw.githubusercontent.com/amitbet/dynapp-agent/main/scripts/i
 ```
 
 That downloads the latest GitHub release into `/usr/local/bin`. Debian and Ubuntu use apt when it is present.
+On Linux, run it from a terminal as your normal user. The installer uses
+`sudo` for package installation and starts the agent as a systemd user
+service. Reload Dyner after setup. If you installed as root or without a
+systemd user session, run `dynapp-shell-agent install && dynapp-shell-agent start`
+from your Linux user session.
 On a Linux desktop (when `DISPLAY` or `WAYLAND_DISPLAY` is set) it also installs
 `dynapp-app-host`, which runs native desktop apps; set `DYNAPP_APP_HOST=1` to
 install it anyway or `DYNAPP_APP_HOST=0` to skip it. Headless machines get only

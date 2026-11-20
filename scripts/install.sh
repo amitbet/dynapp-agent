@@ -176,6 +176,20 @@ install_with_apt() {
   rm -rf "$tmpdir"
 }
 
+start_linux_agent() {
+  if [ "$(id -u)" -eq 0 ] || ! systemctl --user show-environment >/dev/null 2>&1; then
+    echo "DynApp agent installed. To start it, run dynapp-shell-agent install && dynapp-shell-agent start from your Linux user session." >&2
+    return
+  fi
+
+  if ! systemctl --user cat dynapp-shell-agent.service >/dev/null 2>&1; then
+    "$1" install
+  fi
+  systemctl --user add-wants default.target dynapp-shell-agent.service
+  systemctl --user start dynapp-shell-agent.service
+  echo "DynApp agent is running. Reload Dyner to detect it."
+}
+
 os=$(uname -s)
 case "$os" in
   MINGW* | MSYS* | CYGWIN*)
@@ -186,13 +200,16 @@ esac
 
 if [ "$os" = Darwin ]; then
   install_from_github
-elif need_cmd apt-get; then
-  install_with_apt
+  echo "installed dynapp-shell-agent. Start it with: dynapp-shell-agent install && dynapp-shell-agent start"
 elif [ "$os" = Linux ]; then
-  install_from_github
+  if need_cmd apt-get; then
+    install_with_apt
+    start_linux_agent /usr/bin/dynapp-shell-agent
+  else
+    install_from_github
+    start_linux_agent "$(bin_dir)/dynapp-shell-agent"
+  fi
 else
   echo "download a release from https://github.com/${REPO}/releases/latest" >&2
   exit 1
 fi
-
-echo "installed dynapp-shell-agent. Start it with: dynapp-shell-agent install && dynapp-shell-agent start"
