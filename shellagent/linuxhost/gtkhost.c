@@ -2,6 +2,10 @@
 
 #include <gtk/gtk.h>
 #include <webkit2/webkit2.h>
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
+#include <stdlib.h>
 #include <string.h>
 
 #include "gtkhost.h"
@@ -20,8 +24,28 @@ static gboolean caption_drag;
 // Navigation verdicts from Go (policy.go).
 enum { POLICY_ALLOW = 0, POLICY_IGNORE = 1 };
 
+// WebKitGTK draws the page through a GPU path (accelerated compositing and,
+// since 2.42, the DMA-BUF renderer) and copies frames into the window later.
+// An X11 desktop without a compositing manager, such as a VNC or Xvfb session,
+// keeps no copy of covered windows, so an uncovered area stays stale until the
+// page paints again: a window dragged over a DynApp leaves a smear. On such a
+// display, fall back to WebKit's plain software painting. A variable the user
+// set already wins.
+static void choose_webkit_rendering(void) {
+#ifdef GDK_WINDOWING_X11
+  GdkDisplay *display = gdk_display_get_default();
+  if (!display || !GDK_IS_X11_DISPLAY(display)) return;
+  if (gdk_screen_is_composited(gdk_display_get_default_screen(display))) return;
+  if (getenv("WEBKIT_DISABLE_COMPOSITING_MODE") || getenv("WEBKIT_DISABLE_DMABUF_RENDERER")) return;
+  setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
+  setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 0);
+  g_message("X11 display without a compositor: using WebKit software rendering");
+#endif
+}
+
 const char *host_check(void) {
   if (!gtk_init_check(NULL, NULL)) return "cannot open the display";
+  choose_webkit_rendering();
   return NULL;
 }
 

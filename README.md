@@ -317,6 +317,11 @@ in its config turns them off.
   release at agent start. apt updates the packaged one. `DYNAPP_APP_HOST=<path>`
   uses that host and turns the downloads off. The shared title bar reserves room for the GTK window
   buttons and menu. Native automation is not yet available on Linux.
+  On an X11 desktop without a compositing manager (common over VNC), the
+  host sets `WEBKIT_DISABLE_COMPOSITING_MODE=1` and
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` before WebKit starts. WebKit's GPU path
+  leaves stale pixels when another window uncovers a DynApp there. Software
+  rendering has no WebGL. Set either variable yourself to override the choice.
 
 macOS bundle icons use the hosted maskable PNG and the macOS rounded icon
 grid, keeping the glyph at its original size to match Chrome-installed PWAs.
