@@ -32,6 +32,13 @@ const linuxE2EPage = `<!doctype html><meta charset="utf-8"><title>e2e</title><bo
 <iframe src="__FOREIGN__/frame" width="200" height="80"></iframe>
 <script>
 const report = (data) => fetch("/report", { method: "POST", body: JSON.stringify(data) });
+report({ loaded: true });
+// The page owns F5; the host's Reload accelerator must not take it.
+addEventListener("keydown", (event) => {
+  if (event.key !== "F5") return;
+  event.preventDefault();
+  report({ key: "F5" });
+});
 (async () => {
   const host = window.__DYNAPP_NATIVE_HOST__;
   if (!host) return report({ ok: false, error: "window.__DYNAPP_NATIVE_HOST__ is missing" });
@@ -236,6 +243,9 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 				}
 				continue
 			}
+			if report["loaded"] != nil || report["key"] != nil {
+				continue
+			}
 			t.Logf("page report: %v", report)
 			if report["ok"] != true {
 				t.Fatalf("page failed: %v\nhost log:\n%s", report["error"], hostLog(app))
@@ -357,6 +367,56 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 		}
 	}
 	t.Logf("file open delivered after agent restart")
+
+	// Keys reach the page before the host's accelerators: a page that
+	// handles F5 keeps running, and an unhandled Ctrl+R still reloads.
+	drainReports := func() {
+		for {
+			select {
+			case <-reports:
+			default:
+				return
+			}
+		}
+	}
+	waitReport := func(match func(map[string]any) bool, within time.Duration) bool {
+		deadline := time.After(within)
+		for {
+			select {
+			case report := <-reports:
+				if match(report) {
+					return true
+				}
+			case <-deadline:
+				return false
+			}
+		}
+	}
+	output, _ := exec.Command("xdotool", "search", "--name", "^Native Probe").Output()
+	windows := strings.Fields(string(output))
+	if len(windows) == 0 {
+		t.Fatalf("no app window to send keys to; host log:\n%s", hostLog(app))
+	}
+	window := windows[len(windows)-1]
+	_ = exec.Command("xdotool", "windowactivate", "--sync", window).Run()
+	time.Sleep(500 * time.Millisecond)
+	drainReports()
+	if err := exec.Command("xdotool", "key", "--clearmodifiers", "F5").Run(); err != nil {
+		t.Fatalf("xdotool key F5: %v", err)
+	}
+	if !waitReport(func(r map[string]any) bool { return r["key"] == "F5" }, 10*time.Second) {
+		t.Fatalf("the page never saw F5; host log:\n%s", hostLog(app))
+	}
+	if waitReport(func(r map[string]any) bool { return r["loaded"] == true }, 2*time.Second) {
+		t.Fatalf("F5 reloaded the page although the page handled it")
+	}
+	if err := exec.Command("xdotool", "key", "--clearmodifiers", "ctrl+r").Run(); err != nil {
+		t.Fatalf("xdotool key ctrl+r: %v", err)
+	}
+	if !waitReport(func(r map[string]any) bool { return r["loaded"] == true }, 10*time.Second) {
+		t.Fatalf("an unhandled Ctrl+R did not reload the page; host log:\n%s", hostLog(app))
+	}
+	t.Logf("page-handled F5 kept the page; unhandled Ctrl+R reloaded it")
 
 	// Only the app host binary may use the app's channel.
 	conn, err := net.Dial("unix", agent.nativeEndpoint())

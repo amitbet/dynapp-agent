@@ -625,6 +625,22 @@ static void action_permissions(GSimpleAction *action, GVariant *parameter, gpoin
   goMenuPermissions();
 }
 
+// GtkWindow runs accelerators before the focused widget sees a key, so F5 or
+// Ctrl+R reloaded the page even when the app uses them (Commander's F5 is
+// Copy). Give the page the key first, like WKWebView and WebView2 do.
+// WebKitGTK consumes the key, asks the page, and re-dispatches it to this
+// window only when the page did not handle it; that second pass reaches the
+// accelerators. Always stop here: the default handler would hand the
+// re-dispatched key back to WebKit as a new event.
+static gboolean on_main_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data) {
+  (void)data;
+  GtkWindow *window = GTK_WINDOW(widget);
+  if (!main_view || gtk_window_get_focus(window) != GTK_WIDGET(main_view)) return FALSE;
+  if (gtk_window_propagate_key_event(window, event)) return TRUE;
+  gtk_window_activate_key(window, event);
+  return TRUE;
+}
+
 static void action_reload(GSimpleAction *action, GVariant *parameter, gpointer data) {
   (void)action;
   (void)parameter;
@@ -856,6 +872,7 @@ void host_create_window(const char *title, const char *icon, const char *data_di
   g_signal_connect(main_view, "motion-notify-event", G_CALLBACK(on_caption_motion), NULL);
   gtk_container_add(GTK_CONTAINER(main_window), overlay);
   g_signal_connect(main_window, "destroy", G_CALLBACK(on_main_destroy), NULL);
+  g_signal_connect(main_window, "key-press-event", G_CALLBACK(on_main_key_press), NULL);
   gtk_widget_show_all(main_window);
   gtk_widget_grab_focus(GTK_WIDGET(main_view));
 }
