@@ -187,7 +187,7 @@ start_linux_agent() {
   fi
   systemctl --user add-wants default.target dynapp-shell-agent.service
   systemctl --user start dynapp-shell-agent.service
-  echo "DynApp agent is running. Reload Dyner to detect it."
+  echo "DynApp agent is running. In Dyner, select Check native apps."
 }
 
 os=$(uname -s)
