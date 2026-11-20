@@ -672,11 +672,22 @@ static void add_action(const char *name, GCallback callback, gpointer data, cons
   if (accel1) gtk_application_set_accels_for_action(application, detailed, accels);
 }
 
+// GTK leaves the button tooltip up over its own open menu; suppress it
+// while the menu is showing.
+static void on_caption_menu_active(GObject *button, GParamSpec *pspec, gpointer data) {
+  (void)pspec; (void)data;
+  gboolean active = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(button));
+  gtk_widget_set_has_tooltip(GTK_WIDGET(button), !active);
+  // Re-query so a tooltip that is already visible is hidden now.
+  gtk_widget_trigger_tooltip_query(GTK_WIDGET(button));
+}
+
 static GtkWidget *caption_menu(GMenuModel *menu) {
   GtkWidget *button = gtk_menu_button_new();
   gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(button), menu);
   gtk_button_set_image(GTK_BUTTON(button), gtk_image_new_from_icon_name("open-menu-symbolic", GTK_ICON_SIZE_BUTTON));
   gtk_widget_set_tooltip_text(button, "Menu");
+  g_signal_connect(button, "notify::active", G_CALLBACK(on_caption_menu_active), NULL);
   return button;
 }
 
