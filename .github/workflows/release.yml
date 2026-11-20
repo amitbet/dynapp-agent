@@ -319,14 +319,34 @@ jobs:
     needs: [version, binaries, macos, linux-host]
     if: needs.version.outputs.ready == 'true' && github.event.inputs.prerelease != 'true'
     runs-on: ubuntu-latest
+    # Two pushes close together build two releases at once. Publish one at a
+    # time, and only the newest: the apt pages are replaced wholesale, so an
+    # older release finishing last would roll apt back.
+    concurrency:
+      group: release-packages
+      cancel-in-progress: false
     steps:
+      - name: Skip a superseded release
+        id: newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          if [ "$latest" != "$TAG" ]; then
+            echo "$latest is newer than $TAG; its run publishes the packages."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-node@v4
+        if: steps.newest.outputs.skip != 'true'
         with:
           node-version: 22
       - name: Download signed binaries
+        if: steps.newest.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
@@ -336,6 +356,7 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'dynapp-shell-agent-*'
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'dynapp-app-host-*'
       - name: Build Debian packages
+        if: steps.newest.outputs.skip != 'true'
         env:
           VERSION: ${{ needs.version.outputs.version }}
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -357,6 +378,7 @@ jobs:
             node ../scripts/sign-release-asset.mjs "$deb"
           done
       - name: Upload Debian packages
+        if: steps.newest.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
@@ -365,6 +387,7 @@ jobs:
           set -euo pipefail
           gh release upload "v${VERSION}" apt-repo/*.deb apt-repo/*.deb.sha256 apt-repo/*.deb.sig --repo "$REPOSITORY" --clobber
       - name: Update package manifests
+        if: steps.newest.outputs.skip != 'true'
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
@@ -372,18 +395,21 @@ jobs:
           node scripts/bump-homebrew-formula.mjs "$VERSION" dist
           node scripts/bump-winget-manifest.mjs "$VERSION" dist
       - name: Assemble GitHub Pages
+        if: steps.newest.outputs.skip != 'true'
         run: |
           set -euo pipefail
           mkdir -p pages/deb pages/winget
           cp -a apt-repo/. pages/deb/
           cp winget/*.yaml pages/winget/
       - name: Publish apt and winget pages
+        if: steps.newest.outputs.skip != 'true'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ github.token }}
           publish_dir: pages
           force_orphan: true
       - name: Enable GitHub Pages
+        if: steps.newest.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -391,6 +417,7 @@ jobs:
           printf '%s\n' '{"source":{"branch":"gh-pages","path":"/"}}' |
             gh api -X POST "repos/${GITHUB_REPOSITORY}/pages" --input - >/dev/null || true
       - name: Commit package manifests
+        if: steps.newest.outputs.skip != 'true'
         env:
           VERSION: ${{ needs.version.outputs.version }}
           GH_TOKEN: ${{ github.token }}
