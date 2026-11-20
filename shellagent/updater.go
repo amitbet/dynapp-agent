@@ -93,6 +93,9 @@ type SelfUpdateConfig struct {
 	APIBaseURL string
 	HTTPClient *http.Client
 	OnUpdate   func(context.Context, string, string) error
+	// OnRestart restarts the agent into the binary a package manager already
+	// installed in place (an apt upgrade). The string is the new version.
+	OnRestart func(context.Context, string) error
 	// MaxBridgeDelay is how long active TCP, UDP, or RDP bridges may defer a
 	// staged update. Zero means DefaultMaxBridgeUpdateDelay.
 	MaxBridgeDelay time.Duration
@@ -153,6 +156,21 @@ func (s *Server) startSelfUpdater() {
 		return
 	}
 	s.clearCompletedUpdateAttempt(config.Version)
+	if install, ok := detectPackagedInstall(); ok {
+		if config.OnRestart == nil {
+			log.Printf("self-update disabled: %s owns %s and no restart callback is configured", install.Manager, install.Executable)
+			s.mu.Unlock()
+			return
+		}
+		log.Printf("self-update: %s owns %s and upgrades it; the agent restarts into each newer version it installs", install.Manager, install.Executable)
+		ctx, cancel := context.WithCancel(context.Background())
+		s.selfUpdateCancel = cancel
+		s.selfUpdateConfig = config
+		s.packaged = &install
+		s.mu.Unlock()
+		go s.runPackagedWatcher(ctx, config, install)
+		return
+	}
 	log.Printf("self-update enabled: current=%s repository=%s interval=%s; checking now", config.Version, config.Repository, config.Interval)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.selfUpdateCancel = cancel
@@ -185,7 +203,7 @@ func (s *Server) checkSelfUpdateWithVerifier(ctx context.Context, config SelfUpd
 	log.Printf("self-update check started: current=%s repository=%s", config.Version, config.Repository)
 	release, err := fetchLatestRelease(ctx, config)
 	if err != nil {
-		log.Printf("DynApp Shell agent: update check failed: %v", err)
+		s.updateFailed("update check failed: %v", err)
 		return
 	}
 	if !newerRelease(release.TagName, config.Version) {
@@ -200,12 +218,12 @@ func (s *Server) checkSelfUpdateWithVerifier(ctx context.Context, config SelfUpd
 	}
 	assets, err := selectAgentAssets(release, release.TagName)
 	if err != nil {
-		log.Printf("DynApp Shell agent: release %s has no %s asset: %v", release.TagName, runtime.GOOS, err)
+		s.updateFailed("release %s has no %s asset: %v", release.TagName, runtime.GOOS, err)
 		return
 	}
 	path, expected, err := s.stageAgentUpdate(ctx, assets, release.TagName, verifySignature)
 	if err != nil {
-		log.Printf("DynApp Shell agent: update download failed: %v", err)
+		s.updateFailed("update download failed: %v", err)
 		return
 	}
 	force, proceed := s.waitForIdleBridges(ctx, config.bridgeUpdateDelay())
@@ -223,7 +241,7 @@ func (s *Server) checkSelfUpdateWithVerifier(ctx context.Context, config SelfUpd
 	if err := verifyStagedAgent(path, expected, verifySignature); err != nil {
 		s.cancelUpdate()
 		_ = os.Remove(path)
-		log.Printf("DynApp Shell agent: staged update %s failed re-verification: %v", release.TagName, err)
+		s.updateFailed("staged update %s failed re-verification: %v", release.TagName, err)
 		return
 	}
 	// Recorded first: if the update kills this process without installing
@@ -231,7 +249,7 @@ func (s *Server) checkSelfUpdateWithVerifier(ctx context.Context, config SelfUpd
 	s.recordUpdateAttempt(normalizedReleaseVersion(release.TagName))
 	if err := config.OnUpdate(ctx, path, normalizedReleaseVersion(release.TagName)); err != nil {
 		s.cancelUpdate()
-		log.Printf("DynApp Shell agent: applying update %s failed: %v", release.TagName, err)
+		s.updateFailed("applying update %s failed: %v", release.TagName, err)
 	}
 }
 

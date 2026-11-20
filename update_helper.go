@@ -41,6 +41,17 @@ func (p *program) scheduleSelfUpdate(ctx context.Context, downloadedPath, versio
 	return p.applySelfUpdate(ctx, downloadedPath, version)
 }
 
+// scheduleRestart restarts into the binary a package manager installed in
+// place, with the same handoff as scheduleSelfUpdate.
+func (p *program) scheduleRestart(ctx context.Context, version string) error {
+	done := make(chan struct{})
+	p.updateMu.Lock()
+	p.updateDone = done
+	p.updateMu.Unlock()
+	defer close(done)
+	return p.restartIntoInstalled(ctx, version)
+}
+
 func installedExecutable() (string, error) {
 	path, err := os.Executable()
 	if err != nil {

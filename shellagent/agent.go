@@ -91,8 +91,10 @@ type Server struct {
 	selfUpdateCancel   context.CancelFunc
 	selfUpdateConfig   SelfUpdateConfig // resolved by startSelfUpdater
 	updateNowRunning   atomic.Bool
-	updateForce        atomic.Bool // set by `--update --force`: stop waiting for bridges
-	updateBridgeWait   time.Time   // guarded by updateMu: when a bridge wait gives up, zero when not waiting
+	updateForce        atomic.Bool      // set by `--update --force`: stop waiting for bridges
+	updateBridgeWait   time.Time        // guarded by updateMu: when a bridge wait gives up, zero when not waiting
+	updateError        string           // guarded by updateMu: why the last update attempt failed
+	packaged           *packagedInstall // set by startSelfUpdater when apt owns the binary
 	cliUpdateCancel    context.CancelFunc
 	lanClose           func() error
 	bridgeCounter      atomic.Uint64

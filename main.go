@@ -427,6 +427,7 @@ func main() {
 		selfUpdate.Repository = strings.TrimSpace(*updateRepository)
 	}
 	selfUpdate.OnUpdate = p.scheduleSelfUpdate
+	selfUpdate.OnRestart = p.scheduleRestart
 	p.server.SelfUpdate = selfUpdate
 	serviceOptions := service.KeyValue{}
 	if runtime.GOOS != "windows" {

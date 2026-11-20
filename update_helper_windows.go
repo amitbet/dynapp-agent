@@ -97,3 +97,9 @@ func startDetached(executable string, args []string) error {
 	}
 	return command.Process.Release()
 }
+
+// restartIntoInstalled is for package-managed Linux installs; Windows agents
+// replace themselves.
+func (p *program) restartIntoInstalled(context.Context, string) error {
+	return fmt.Errorf("restarting into a package-managed install is not supported on Windows")
+}

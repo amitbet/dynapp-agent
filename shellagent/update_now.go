@@ -35,6 +35,9 @@ type UpdateStatus struct {
 	// bridges to close; BridgeWaitUntil is when it applies anyway.
 	WaitingForBridges bool      `json:"waitingForBridges"`
 	BridgeWaitUntil   time.Time `json:"bridgeWaitUntil,omitzero"`
+	// Error is why the last update attempt failed, so `--update` can stop
+	// waiting for a restart that will not come.
+	Error string `json:"error,omitempty"`
 }
 
 // updateNowVerifier checks a downloaded release's signature; tests stub it.
@@ -53,6 +56,36 @@ func (s *Server) updateNow(ctx context.Context, force bool) (UpdateNowResult, er
 		return UpdateNowResult{}, errors.New("self-update is off for this agent (a development build, or started with --no-self-update)")
 	}
 	result := UpdateNowResult{Current: config.Version, ActiveBridges: s.ActiveBridges()}
+	s.setUpdateError("")
+	if install := s.packagedInstall(); install != nil {
+		// apt owns the binary: restart into a version it already installed,
+		// otherwise point at the upgrade service that runs as root.
+		version, err := installedAgentVersion(ctx, install.Executable)
+		if err != nil || !newerRelease(version, config.Version) {
+			release, err := fetchLatestRelease(ctx, config)
+			if err != nil {
+				return result, fmt.Errorf("check for updates: %w", err)
+			}
+			result.Latest = normalizedReleaseVersion(release.TagName)
+			if !newerRelease(release.TagName, config.Version) {
+				return result, nil
+			}
+			return result, fmt.Errorf("%s is available; %s", result.Latest, packagedUpgradeHint)
+		}
+		result.Latest, result.Updating = version, true
+		if force {
+			s.updateForce.Store(true)
+		}
+		if !s.updateNowRunning.CompareAndSwap(false, true) {
+			return result, nil
+		}
+		go func() {
+			defer s.updateNowRunning.Store(false)
+			defer s.updateForce.Store(false)
+			s.restartIntoPackagedUpgrade(context.Background(), config, *install)
+		}()
+		return result, nil
+	}
 	release, err := fetchLatestRelease(ctx, config)
 	if err != nil {
 		return result, fmt.Errorf("check for updates: %w", err)
@@ -128,6 +161,7 @@ func (s *Server) updateStatus() UpdateStatus {
 		Current:       current,
 		Updating:      s.updateNowRunning.Load() || pending,
 		ActiveBridges: s.ActiveBridges(),
+		Error:         s.lastUpdateError(),
 	}
 	if deadline := s.bridgeWaitDeadline(); !deadline.IsZero() {
 		status.WaitingForBridges = true

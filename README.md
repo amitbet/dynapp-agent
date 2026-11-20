@@ -50,6 +50,17 @@ sudo apt install dynapp-shell-agent
 sudo apt install dynapp-app-host
 ```
 
+The package keeps itself current. The agent runs as your user and cannot
+replace a binary dpkg owns, so `dynapp-agent-upgrade.timer` (root, at boot and
+hourly) runs apt for `dynapp-shell-agent` and `dynapp-app-host` only, from
+`/etc/apt/sources.list.d/dynapp-agent.list` (the package adds that file when it
+was installed from a downloaded `.deb`). The running agent notices the new
+binary within a minute and restarts into it, after open bridges close as with
+any update. To upgrade right away, run
+`sudo systemctl start dynapp-agent-upgrade.service`; `dynapp-shell-agent update`
+prints that command when a newer release exists. Running native apps keep the
+old app host until they are reopened.
+
 Windows, PowerShell (elevated; installs into `C:\Program Files\DynApp` and the machine PATH):
 
 ```powershell

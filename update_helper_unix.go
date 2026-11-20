@@ -77,3 +77,26 @@ func (p *program) execInstalledUpdate(downloadedPath, executable, version string
 	_ = os.Remove(backup)
 	return nil
 }
+
+// restartIntoInstalled stops the agent and execs the executable path again,
+// now holding the version apt installed. exec keeps the PID, so systemd
+// keeps tracking the service.
+func (p *program) restartIntoInstalled(_ context.Context, version string) error {
+	executable, err := installedExecutable()
+	if err != nil {
+		return err
+	}
+	log.Printf("DynApp Shell agent: restarting into %s", version)
+	shutdownContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := p.server.Shutdown(shutdownContext); err != nil {
+		return fmt.Errorf("stop agent for restart: %w", err)
+	}
+	argv := append([]string{executable}, os.Args[1:]...)
+	if err := execve(executable, argv, os.Environ()); err != nil {
+		log.Printf("DynApp Shell agent: exec of %s failed: %v", version, err)
+		osExit(1)
+		return err
+	}
+	return nil
+}

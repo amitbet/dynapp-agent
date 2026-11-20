@@ -57,6 +57,8 @@ func runUpdateNow(address string, force bool) error {
 			// Waiting on bridges is expected; do not count it against the
 			// restart deadline.
 			deadline = time.Now().Add(updateRestartWait)
+		case ok && !status.Updating && status.Error != "":
+			return fmt.Errorf("the update failed: %s", status.Error)
 		case ok:
 			if lastBridges > 0 {
 				fmt.Println("Bridges closed; installing the update.")
