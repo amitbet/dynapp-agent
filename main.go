@@ -210,6 +210,18 @@ func main() {
 		}
 		return
 	}
+	if flag.Arg(0) == "enroll" {
+		options := flag.NewFlagSet("enroll", flag.ExitOnError)
+		onlyIfNeeded := options.Bool("if-needed", false, "skip sign-in if this agent already has an account")
+		_ = options.Parse(flag.Args()[1:])
+		if options.NArg() != 0 {
+			log.Fatal("usage: dynapp-shell-agent enroll [--if-needed]")
+		}
+		if err := runEnrollment(*address, *onlyIfNeeded); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(flag.Args()) >= 1 && flag.Arg(0) == "open-url" {
 		// Launched by the browser for dynapp:// links: never keep a console.
 		detachConsole()
@@ -476,6 +488,11 @@ func main() {
 		case "start", "stop", "restart":
 			if err := service.Control(svc, flag.Arg(0)); err != nil {
 				log.Fatal(err)
+			}
+			if flag.Arg(0) == "start" && desktopBrowserAvailable() {
+				if err := runEnrollment(*address, true); err != nil {
+					log.Printf("To link this computer, run dynapp-shell-agent enroll: %v", err)
+				}
 			}
 			return
 		}

@@ -499,11 +499,21 @@ func (s *Server) syncBrowserIdentitiesOnce(ctx context.Context) {
 	}
 	s.mu.Lock()
 	s.Config.BrowserIdentities = mergeSyncedIdentities(s.Config.BrowserIdentities, state.BrowserIdentities, s.Config.RevokedBrowserKeys)
+	disableInternet := false
+	if err == nil && state.InternetAccessEnabled != nil && s.Config.relayTicketConfig().DeviceCredential == config.DeviceCredential {
+		disableInternet = s.Config.RelayEnabled && !*state.InternetAccessEnabled
+		s.Config.RelayEnabled = *state.InternetAccessEnabled
+	}
 	snapshot := s.Config
 	s.mu.Unlock()
 	_ = SaveConfig(s.StateDir, snapshot)
-	if err == nil && config.RelayEnabled {
-		s.startPendingICESessions(ctx, config, state.PendingICESessions)
+	if disableInternet {
+		s.stopRelay()
+		s.stopICE()
+		s.endResumableSessions()
+	}
+	if err == nil && snapshot.RelayEnabled {
+		s.startPendingICESessions(ctx, snapshot.relayTicketConfig(), state.PendingICESessions)
 		s.applyRelayRequest(state.RelayRequested)
 	}
 	if err == nil {

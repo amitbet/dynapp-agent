@@ -187,6 +187,9 @@ start_linux_agent() {
   fi
   systemctl --user add-wants default.target dynapp-shell-agent.service
   systemctl --user start dynapp-shell-agent.service
+  if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    "$1" enroll --if-needed || echo "To link this computer, run dynapp-shell-agent enroll." >&2
+  fi
   echo "DynApp agent is running. In Dyner, select Check native apps."
 }
 

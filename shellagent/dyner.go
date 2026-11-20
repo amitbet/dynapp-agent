@@ -123,6 +123,9 @@ type remoteEnvironmentState struct {
 	// RelayRequested is set while a browser that could not reach this machine
 	// directly is waiting for the relay socket to come up.
 	RelayRequested bool `json:"relayRequested"`
+	// Omitted by older Dyner servers. When present, the account owns the
+	// outbound Internet setting independently of the local listener.
+	InternetAccessEnabled *bool `json:"internetAccessEnabled"`
 }
 
 func SyncRemoteEnvironmentState(ctx context.Context, client *http.Client, config Config) (remoteEnvironmentState, error) {

@@ -205,6 +205,7 @@ func (s *Server) handleSettingsLoginCallback(w http.ResponseWriter, r *http.Requ
 	}
 	s.mu.Lock()
 	base := s.Config.DynerBaseURL
+	catalogID := s.Config.catalogAppID()
 	s.mu.Unlock()
 	email, err := s.storeAccountToken(r.Context(), base, token)
 	if err != nil {
@@ -213,7 +214,8 @@ func (s *Server) handleSettingsLoginCallback(w http.ResponseWriter, r *http.Requ
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = io.WriteString(w, `<!doctype html><meta http-equiv="refresh" content="1; url=/settings"><title>Signed in</title><h1>Signed in as `+html.EscapeString(email)+`</h1><p>Returning to the agent settings…</p>`)
+	target := strings.TrimRight(base, "/") + "/app/" + catalogID + "#/environments"
+	_, _ = io.WriteString(w, `<!doctype html><meta http-equiv="refresh" content="0; url=`+html.EscapeString(target)+`"><title>Signed in</title><h1>Signed in as `+html.EscapeString(email)+`</h1><p><a href="`+html.EscapeString(target)+`">Return to Dyner</a></p>`)
 }
 
 // storeAccountToken verifies the token against Dyner, persists it in the same
@@ -263,7 +265,15 @@ func (s *Server) storeAccountToken(ctx context.Context, base, token string) (str
 	}
 	s.mu.Lock()
 	s.AccountToken = token
+	alreadyRegistered := s.Config.EnvironmentID != ""
 	s.mu.Unlock()
+	if alreadyRegistered {
+		// An explicit sign-in also repairs a stale or revoked registration.
+		_ = s.ensureListenerRegistration(ctx)
+	}
 	s.startIdentitySync()
+	if alreadyRegistered {
+		s.requestRemoteSync()
+	}
 	return me.User.Email, nil
 }

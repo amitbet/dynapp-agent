@@ -74,6 +74,7 @@ func (s *Server) lanStatus() (map[string]any, error) {
 	direct := "https://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + RemotePath
 	return map[string]any{
 		"supported": true, "enabled": mode != ListenerOff, "running": running,
+		"enrolled":     config.DeviceCredential != "" || config.HostedDeviceCredential != "",
 		"listenerMode": mode, "host": hostFromAddress(address), "port": port,
 		"protocolVersion": ProtocolVersion, "directEndpoint": direct,
 		"lanEndpoint": endpoint, "lanEndpoints": endpoints, "lanCarrier": "webtransport",

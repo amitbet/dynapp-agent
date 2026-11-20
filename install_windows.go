@@ -103,6 +103,9 @@ func runInstallUser(nativeApps bool) error {
 	if nativeApps {
 		fmt.Println("Native desktop apps are on.")
 	}
+	if err := runEnrollment(defaultAgentAddress, true); err != nil {
+		fmt.Println("To link this computer, run dynapp-shell-agent enroll.")
+	}
 	return nil
 }
 
