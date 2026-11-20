@@ -207,6 +207,38 @@ func TestHostedRelayAuthenticatesAndResetsSessions(t *testing.T) {
 	}
 }
 
+// A pairing replaces the account's access token while the relay is open; the
+// relay re-reads the accepted tokens instead of rejecting the new one until it
+// reconnects, and does so at most every relayAccessRefreshEvery.
+func TestRelayRereadsAcceptedTokensForAnUnknownOne(t *testing.T) {
+	oldHash := strings.Repeat("a", 64)
+	newHash := strings.Repeat("b", 64)
+	refreshes := 0
+	access := newRelayAccess(RelayConnection{AcceptedAuthTokenHashes: []string{oldHash}}, func(context.Context) (RelayConnection, error) {
+		refreshes++
+		return RelayConnection{AcceptedAuthTokenHashes: []string{newHash}}, nil
+	})
+	ctx := context.Background()
+	if _, ok := access.lookup(ctx, oldHash); !ok || refreshes != 0 {
+		t.Fatalf("known token: ok=%v refreshes=%d", ok, refreshes)
+	}
+	// Within the refresh interval of the relay opening, nothing is re-read.
+	if _, ok := access.lookup(ctx, newHash); ok || refreshes != 0 {
+		t.Fatalf("fresh relay must not refresh: ok=%v refreshes=%d", ok, refreshes)
+	}
+	access.refreshed = time.Now().Add(-relayAccessRefreshEvery)
+	if _, ok := access.lookup(ctx, newHash); !ok || refreshes != 1 {
+		t.Fatalf("new token after refresh: ok=%v refreshes=%d", ok, refreshes)
+	}
+	// The replaced token is gone, and another unknown one waits for the interval.
+	if _, ok := access.lookup(ctx, oldHash); ok || refreshes != 1 {
+		t.Fatalf("replaced token: ok=%v refreshes=%d", ok, refreshes)
+	}
+	if _, ok := access.lookup(ctx, ""); ok || refreshes != 1 {
+		t.Fatal("an empty token is never accepted or refreshed")
+	}
+}
+
 func TestRemoteE2EEEnvelopeRoundTrip(t *testing.T) {
 	tokenHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	sealed, err := sealRemoteFrame(tokenHash, []byte("protected remote record"))

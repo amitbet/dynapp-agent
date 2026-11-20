@@ -53,6 +53,9 @@ const (
 // deliberately usable in-process in tests and as a background OS service.
 type Server struct {
 	Address string
+	// relayAccessRefresh replaces IssueRelayTicket when a relay re-reads the
+	// accepted access tokens (tests).
+	relayAccessRefresh func(context.Context, Config) (RelayConnection, error)
 	// networkCategory caches the OS network trust level for the settings page.
 	networkCategory networkCategoryCache
 	StateDir        string

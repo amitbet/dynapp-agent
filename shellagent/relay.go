@@ -257,7 +257,12 @@ func (v *relayVirtualSocket) Close(code websocket.StatusCode, reason string) err
 
 func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, relay RelayConnection, config Config) {
 	socket.SetReadLimit(maxReadBytes + 512*1024)
-	accepted, subjects := relayAcceptedAccess(relay)
+	access := newRelayAccess(relay, func(ctx context.Context) (RelayConnection, error) {
+		if s.relayAccessRefresh != nil {
+			return s.relayAccessRefresh(ctx, config)
+		}
+		return IssueRelayTicket(ctx, nil, config)
+	})
 	e2ee := relay.Transport.E2EEncryption
 	hub := newRelayHub(ctx, socket)
 	defer hub.closeAll()
@@ -266,10 +271,11 @@ func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, 
 		if candidate == "" {
 			candidate = normalizeAuthHash(hello.Token)
 		}
-		if !accepted[candidate] {
+		subject, ok := access.lookup(ctx, candidate)
+		if !ok {
 			return socketAuthentication{}
 		}
-		granted := s.relayGrant(ctx, config, hello, subjects[candidate])
+		granted := s.relayGrant(ctx, config, hello, subject)
 		granted.environment = map[string]any{"id": config.EnvironmentID, "name": "This device", "endpoint": nil, "state": "connected", "source": "relay", "capabilities": granted.capabilities}
 		return granted
 	}
@@ -289,7 +295,7 @@ func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, 
 			continue
 		}
 		if created {
-			virtual.accepted = accepted
+			virtual.accepted = access.snapshot()
 			go s.serveAuthenticatedSocket(ctx, virtual, authenticate, carrier, nil)
 		}
 		frameKind := websocket.MessageText
@@ -303,6 +309,59 @@ func (s *Server) handleRelaySocket(ctx context.Context, socket *websocket.Conn, 
 			return
 		}
 	}
+}
+
+// relayAccess is the set of account access tokens the relay accepts. Dyner
+// sends it with the relay ticket, but a pairing replaces the account's token
+// for the machine while the relay stays open, so an unknown token re-reads the
+// set from Dyner (at most every relayAccessRefreshEvery) instead of being
+// rejected until the relay happens to reconnect.
+const relayAccessRefreshEvery = 10 * time.Second
+
+type relayAccess struct {
+	mu        sync.Mutex
+	accepted  map[string]bool
+	subjects  map[string]sessionSubject
+	refresh   func(context.Context) (RelayConnection, error)
+	refreshed time.Time
+}
+
+func newRelayAccess(relay RelayConnection, refresh func(context.Context) (RelayConnection, error)) *relayAccess {
+	accepted, subjects := relayAcceptedAccess(relay)
+	return &relayAccess{accepted: accepted, subjects: subjects, refresh: refresh, refreshed: time.Now()}
+}
+
+func (a *relayAccess) lookup(ctx context.Context, hash string) (sessionSubject, bool) {
+	if hash == "" {
+		return sessionSubject{}, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.accepted[hash] {
+		return a.subjects[hash], true
+	}
+	if a.refresh == nil || time.Since(a.refreshed) < relayAccessRefreshEvery {
+		return sessionSubject{}, false
+	}
+	a.refreshed = time.Now()
+	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	connection, err := a.refresh(refreshCtx)
+	if err != nil {
+		return sessionSubject{}, false
+	}
+	a.accepted, a.subjects = relayAcceptedAccess(connection)
+	return a.subjects[hash], a.accepted[hash]
+}
+
+func (a *relayAccess) snapshot() map[string]bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make(map[string]bool, len(a.accepted))
+	for hash, ok := range a.accepted {
+		out[hash] = ok
+	}
+	return out
 }
 
 // relayGrant computes a relay socket's capabilities: the synced browser
