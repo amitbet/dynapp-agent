@@ -33,11 +33,14 @@ const linuxE2EPage = `<!doctype html><meta charset="utf-8"><title>e2e</title><bo
 <script>
 const report = (data) => fetch("/report", { method: "POST", body: JSON.stringify(data) });
 report({ loaded: true });
-// The page owns F5; the host's Reload accelerator must not take it.
+// The page owns its keys (Commander: F1-F10, Esc, Alt+F7...); the host's
+// accelerators (F5/Ctrl+R reload, F11, F12) must not take them. Ctrl+R
+// stays unhandled so the host can still reload.
 addEventListener("keydown", (event) => {
-  if (event.key !== "F5") return;
+  const combo = (event.ctrlKey ? "ctrl+" : "") + (event.altKey ? "alt+" : "") + (event.shiftKey ? "shift+" : "") + event.key;
+  if (combo === "ctrl+r") return;
   event.preventDefault();
-  report({ key: "F5" });
+  report({ key: combo });
 });
 (async () => {
   const host = window.__DYNAPP_NATIVE_HOST__;
@@ -401,14 +404,31 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 	_ = exec.Command("xdotool", "windowactivate", "--sync", window).Run()
 	time.Sleep(500 * time.Millisecond)
 	drainReports()
-	if err := exec.Command("xdotool", "key", "--clearmodifiers", "F5").Run(); err != nil {
-		t.Fatalf("xdotool key F5: %v", err)
+	// xdotool key name -> the page's combo; Alt+F4 is the window manager's.
+	keys := [][2]string{{"Escape", "Escape"}, {"alt+x", "alt+x"}, {"Alt_L", "alt+Alt"}}
+	for n := 1; n <= 12; n++ {
+		f := fmt.Sprintf("F%d", n)
+		keys = append(keys, [2]string{f, f}, [2]string{"shift+" + f, "shift+" + f}, [2]string{"ctrl+" + f, "ctrl+" + f})
+		if n != 4 {
+			keys = append(keys, [2]string{"alt+" + f, "alt+" + f})
+		}
 	}
-	if !waitReport(func(r map[string]any) bool { return r["key"] == "F5" }, 10*time.Second) {
-		t.Fatalf("the page never saw F5; host log:\n%s", hostLog(app))
+	for _, key := range keys {
+		if err := exec.Command("xdotool", "key", "--clearmodifiers", key[0]).Run(); err != nil {
+			t.Fatalf("xdotool key %s: %v", key[0], err)
+		}
+		want := key[1]
+		if !waitReport(func(r map[string]any) bool {
+			if r["loaded"] == true {
+				t.Fatalf("%s reloaded the page although the page handled it", want)
+			}
+			return r["key"] == want
+		}, 5*time.Second) {
+			t.Fatalf("the page never saw %s; host log:\n%s", want, hostLog(app))
+		}
 	}
 	if waitReport(func(r map[string]any) bool { return r["loaded"] == true }, 2*time.Second) {
-		t.Fatalf("F5 reloaded the page although the page handled it")
+		t.Fatalf("a page-handled key reloaded the page")
 	}
 	if err := exec.Command("xdotool", "key", "--clearmodifiers", "ctrl+r").Run(); err != nil {
 		t.Fatalf("xdotool key ctrl+r: %v", err)
@@ -416,7 +436,7 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 	if !waitReport(func(r map[string]any) bool { return r["loaded"] == true }, 10*time.Second) {
 		t.Fatalf("an unhandled Ctrl+R did not reload the page; host log:\n%s", hostLog(app))
 	}
-	t.Logf("page-handled F5 kept the page; unhandled Ctrl+R reloaded it")
+	t.Logf("the page received %d keys (F1-F12 with Shift/Ctrl/Alt, Esc, Alt) without a reload; unhandled Ctrl+R reloaded it", len(keys))
 
 	// Only the app host binary may use the app's channel.
 	conn, err := net.Dial("unix", agent.nativeEndpoint())
