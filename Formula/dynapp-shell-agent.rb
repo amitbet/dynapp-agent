@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.94"
+  version "0.1.95"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.94/dynapp-shell-agent-0.1.94-darwin-arm64"
-      sha256 "23a5ed57fc81da8b420f959fb61c850f669b673841ebcb4e88d138aefcb7d269"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.95/dynapp-shell-agent-0.1.95-darwin-arm64"
+      sha256 "48ee4590db3dbdbdb5d569195021e4a89fe8ec2d1fd11e76affa0cdbd1b4090e"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.94/dynapp-shell-agent-0.1.94-darwin-amd64"
-      sha256 "56e620deadd479834a24913065e5aacb4401766dd9d5ce21018a0f4e29bab2eb"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.95/dynapp-shell-agent-0.1.95-darwin-amd64"
+      sha256 "c2dd2ce6d921a15521c5924a9a8769105acb0d88bbff290ebad15b139b6d8b71"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.94/dynapp-shell-agent-0.1.94-linux-arm64"
-      sha256 "689674bf87f3805efff58524b8eca5cf376d5270871354bed69dfaea0479336d"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.95/dynapp-shell-agent-0.1.95-linux-arm64"
+      sha256 "1f171f80c455fc4ac17e66181422586af355f199b465f44ecd3402c61493d080"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.94/dynapp-shell-agent-0.1.94-linux-amd64"
-      sha256 "5a9800d25926a9ccc1ebbcc807c881d5666f117d9413375f117cefee88b96de9"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.95/dynapp-shell-agent-0.1.95-linux-amd64"
+      sha256 "30e47c75ba91f03f94de47ebc2f297af9bbd6635cb31eb1fc30e37a3329d73d5"
     end
   end
 

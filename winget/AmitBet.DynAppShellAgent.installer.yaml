@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: AmitBet.DynAppShellAgent
-PackageVersion: 0.1.94
+PackageVersion: 0.1.95
 InstallerType: portable
 Commands:
   - dynapp-shell-agent
@@ -8,19 +8,19 @@ UpgradeBehavior: install
 Installers:
   - Architecture: x64
     Scope: user
-    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.94/dynapp-shell-agent-0.1.94-windows-amd64.exe
-    InstallerSha256: A3488900FAA50EA8D08FA7E5E73E10F978513C83802F9145DC11A681C3DB2544
+    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.95/dynapp-shell-agent-0.1.95-windows-amd64.exe
+    InstallerSha256: EE82E9183C8407CFC4B372DFD104DFF208AB29F2B8EE388C1F8D59230E8083EF
   - Architecture: x64
     Scope: machine
-    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.94/dynapp-shell-agent-0.1.94-windows-amd64.exe
-    InstallerSha256: A3488900FAA50EA8D08FA7E5E73E10F978513C83802F9145DC11A681C3DB2544
+    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.95/dynapp-shell-agent-0.1.95-windows-amd64.exe
+    InstallerSha256: EE82E9183C8407CFC4B372DFD104DFF208AB29F2B8EE388C1F8D59230E8083EF
   - Architecture: arm64
     Scope: user
-    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.94/dynapp-shell-agent-0.1.94-windows-arm64.exe
-    InstallerSha256: B18A8BA321E5388B8EB3903B2CAE641DA9B88EB48CFE8908F742CD7558893B97
+    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.95/dynapp-shell-agent-0.1.95-windows-arm64.exe
+    InstallerSha256: 17E3A23D54F595C730F18A3638C22D0D0F2C21D334B7E72A653387131C415FB3
   - Architecture: arm64
     Scope: machine
-    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.94/dynapp-shell-agent-0.1.94-windows-arm64.exe
-    InstallerSha256: B18A8BA321E5388B8EB3903B2CAE641DA9B88EB48CFE8908F742CD7558893B97
+    InstallerUrl: https://github.com/amitbet/dynapp-agent/releases/download/v0.1.95/dynapp-shell-agent-0.1.95-windows-arm64.exe
+    InstallerSha256: 17E3A23D54F595C730F18A3638C22D0D0F2C21D334B7E72A653387131C415FB3
 ManifestType: installer
 ManifestVersion: 1.6.0
