@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.99"
+  version "0.1.100"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.99/dynapp-shell-agent-0.1.99-darwin-arm64"
-      sha256 "332c06d34c5734b90f4b05598d8baa8ba0be6851972c4d01f8b2bc0e7b8ca4ec"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.100/dynapp-shell-agent-0.1.100-darwin-arm64"
+      sha256 "777ebe859799cb91e6b746d26a1b3209e754a58b009121be5d0a41992db74dac"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.99/dynapp-shell-agent-0.1.99-darwin-amd64"
-      sha256 "09cb99aed819ad7167bbbfdff890c04832c31d751c522bdc35ae6e1f43d7bb02"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.100/dynapp-shell-agent-0.1.100-darwin-amd64"
+      sha256 "07b2e09648c7ed0b214611e2c5c568e9bd8f21e9b96e041a7385f87b3b54a922"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.99/dynapp-shell-agent-0.1.99-linux-arm64"
-      sha256 "5de085b547c0a222c33148aa5f185e7699ca622ce9149bc045885102fa5ba5bc"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.100/dynapp-shell-agent-0.1.100-linux-arm64"
+      sha256 "a021dd6a035fd7c4de3146e77996a902ef72f2c0c96d14feac141867e393873a"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.99/dynapp-shell-agent-0.1.99-linux-amd64"
-      sha256 "05a3d65f9e4f91bb0ffb1f87b4092fb87a7d656aa5a89a1c8cd10920c182fe09"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.100/dynapp-shell-agent-0.1.100-linux-amd64"
+      sha256 "1b0c1468f936d810315ddfe38e9d58692d8370763a59ab2b2a98921a315cb8b8"
     end
   end
 
