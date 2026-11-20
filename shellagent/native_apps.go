@@ -116,7 +116,11 @@ func (s *Server) nativeAvailable() (bool, string) {
 	if disabled || EnvDisabled("DYNAPP_NATIVE_APPS") {
 		return false, "native apps are turned off on this agent (DYNAPP_NATIVE_APPS=0 or nativeAppsDisabled in the agent config)"
 	}
-	return nativeSupported()
+	supported, reason := nativeSupported()
+	if !supported && s.ensureNativeHost() {
+		return false, "the agent is downloading the DynApp app host; try again in a minute"
+	}
+	return supported, reason
 }
 
 // nativeDocumentType is an app-declared document association.

@@ -158,7 +158,9 @@ func TestNativeLinuxSupportWithoutHost(t *testing.T) {
 	}
 }
 
-func TestReplaceNativeHostBinary(t *testing.T) {
+// fakeHostRelease serves release v1.2.3 with a signed host whose --version
+// prints 1.2.3. *signature can be changed to break the signature.
+func fakeHostRelease(t *testing.T) (*httptest.Server, *string, func([]byte) string) {
 	sign := useTestReleaseKey(t)
 	binary := []byte("#!/bin/sh\necho 1.2.3\n")
 	sum := sha256.Sum256(binary)
@@ -183,7 +185,12 @@ func TestReplaceNativeHostBinary(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
+	return server, &signature, sign
+}
+
+func TestReplaceNativeHostBinary(t *testing.T) {
+	server, signature, sign := fakeHostRelease(t)
 	config := SelfUpdateConfig{Repository: "amitbet/dynapp-agent", APIBaseURL: server.URL, Version: "1.2.3"}
 	host := filepath.Join(t.TempDir(), nativeHostExecutable)
 	if err := os.WriteFile(host, []byte("#!/bin/sh\necho 1.0.0\n"), 0o755); err != nil {
@@ -200,7 +207,7 @@ func TestReplaceNativeHostBinary(t *testing.T) {
 		t.Fatalf("updated version = %q", got)
 	}
 	// A bad signature leaves the installed host alone.
-	signature = sign([]byte("something else"))
+	*signature = sign([]byte("something else"))
 	if err := os.WriteFile(host, []byte("#!/bin/sh\necho 1.0.0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -209,5 +216,39 @@ func TestReplaceNativeHostBinary(t *testing.T) {
 	}
 	if got := nativeHostVersion(ctx, host); got != "1.0.0" {
 		t.Fatalf("host after a refused update = %q", got)
+	}
+}
+
+// A desktop without a host gets one from the agent; install.sh no longer
+// downloads it.
+func TestAgentDownloadsMissingNativeHost(t *testing.T) {
+	if nativeHostPath() != "" && os.Getenv("DYNAPP_APP_HOST") == "" {
+		t.Skip("a host is installed on this machine")
+	}
+	release, _, _ := fakeHostRelease(t)
+	t.Setenv("DYNAPP_APP_HOST", "")
+	t.Setenv("DYNAPP_NATIVE_APPS", "")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	if nativeHostPath() != "" {
+		t.Skip("a host is installed on this machine")
+	}
+	target := nativeHostInstallTarget()
+	t.Cleanup(func() { _ = os.Remove(target) })
+	server := &Server{selfUpdateConfig: SelfUpdateConfig{Enabled: true, Repository: "amitbet/dynapp-agent", APIBaseURL: release.URL, Version: "1.2.3"}}
+	if err := server.maintainNativeHost(); err != nil {
+		t.Fatal(err)
+	}
+	if got := nativeHostPath(); got != target {
+		t.Fatalf("host = %q, want %q", got, target)
+	}
+	if got := nativeHostVersion(context.Background(), target); got != "1.2.3" {
+		t.Fatalf("downloaded host version = %q", got)
+	}
+	// Turned off: nothing is fetched.
+	_ = os.Remove(target)
+	t.Setenv("DYNAPP_NATIVE_APPS", "0")
+	if err := server.maintainNativeHost(); err != nil || nativeHostPath() != "" {
+		t.Fatalf("fetched a host with native apps off: %v", err)
 	}
 }

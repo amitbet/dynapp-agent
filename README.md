@@ -19,10 +19,16 @@ On Linux, run it from a terminal as your normal user. The installer uses
 service. In Dyner, select **Check native apps** after setup. If you installed as root or without a
 systemd user session, run `dynapp-shell-agent install && dynapp-shell-agent start`
 from your Linux user session.
-On a Linux desktop (when `DISPLAY` or `WAYLAND_DISPLAY` is set) it also installs
-`dynapp-app-host`, which runs native desktop apps; set `DYNAPP_APP_HOST=1` to
-install it anyway or `DYNAPP_APP_HOST=0` to skip it. Headless machines get only
-the agent, with no GUI libraries.
+Native desktop apps on Linux run in `dynapp-app-host`, a separate binary.
+With apt on a desktop (when `DISPLAY` or `WAYLAND_DISPLAY` is set) the script
+installs the `dynapp-app-host` package too (`DYNAPP_APP_HOST=1` forces it,
+`DYNAPP_APP_HOST=0` skips it). Otherwise the script installs only the agent,
+and the agent downloads the host itself, with the same checksum and signature
+checks as its own updates, the first time it sees a desktop session: next to
+itself when it may write there, else in `~/.local/share/dynapp/bin`. Endpoint
+protection treats a downloaded script that fetches further programs as a
+dropper, so the script stays out of it. Headless machines never get the host
+or GUI libraries.
 
 macOS, Homebrew:
 
@@ -294,9 +300,11 @@ in its config turns them off.
   the running window. The host connects to `<stateDir>/native-host.sock`; the
   agent checks `SO_PEERCRED` (same user) and `/proc/<pid>/exe` (the host
   binary). It needs a graphical session: a systemd user agent reads `DISPLAY`/`WAYLAND_DISPLAY` from
-  `systemctl --user show-environment`. A host next to the agent (install.sh)
-  is replaced with the matching signed release at agent start; apt updates
-  the packaged one. The shared title bar reserves room for the GTK window
+  `systemctl --user show-environment`. Without a host, the agent downloads
+  the signed release asset when it sees a desktop session; a host next to the
+  agent or in `~/.local/share/dynapp/bin` is replaced with the matching
+  release at agent start. apt updates the packaged one. `DYNAPP_APP_HOST=<path>`
+  uses that host and turns the downloads off. The shared title bar reserves room for the GTK window
   buttons and menu. Native automation is not yet available on Linux.
 
 macOS bundle icons use the hosted maskable PNG and the macOS rounded icon

@@ -69,31 +69,12 @@ want_app_host() {
   [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
 }
 
-# download_verified <tag> <asset> <dir>: downloads a release asset and its
-# checksum, and fails unless they match.
-download_verified() {
-  curl -fsSL "https://github.com/${REPO}/releases/download/$1/$2" -o "$3/$2"
-  curl -fsSL "https://github.com/${REPO}/releases/download/$1/$2.sha256" -o "$3/$2.sha256"
-  expected=$(awk '{print tolower($1); exit}' "$3/$2.sha256")
-  actual=$(file_sha256 "$3/$2")
-  if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-    echo "checksum mismatch for $2" >&2
-    return 1
-  fi
-}
-
-install_app_host_from_github() {
-  tag=$1
-  version="${tag#v}"
-  asset="dynapp-app-host-${version}-linux-$(cpu)"
-  tmpdir=$(mktemp -d)
-  if ! download_verified "$tag" "$asset" "$tmpdir"; then
-    rm -rf "$tmpdir"
-    exit 1
-  fi
-  dest=$(install_file "${tmpdir}/${asset}" "$(bin_dir)" dynapp-app-host)
-  rm -rf "$tmpdir"
-  echo "installed ${dest} from ${tag}"
+# app_host_note: outside apt, this script installs only the agent. The agent
+# downloads dynapp-app-host itself (signed, like its own updates) the first
+# time it runs in a desktop session; a script that fetches further programs
+# is what endpoint protection treats as a dropper.
+app_host_note() {
+  echo "The agent downloads the native app host (dynapp-app-host) itself when it runs in your desktop session."
   if need_cmd ldconfig && ! ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then
     echo "Native apps also need GTK 3 and WebKitGTK 4.1: install libwebkit2gtk-4.1-0 (Debian/Ubuntu), webkit2gtk4.1 (Fedora), or webkit2gtk-4.1 (Arch)." >&2
   fi
@@ -142,7 +123,7 @@ install_from_github() {
   rm -rf "$tmpdir"
   echo "installed ${dest} from ${tag}"
   if want_app_host; then
-    install_app_host_from_github "$tag"
+    app_host_note
   fi
 }
 

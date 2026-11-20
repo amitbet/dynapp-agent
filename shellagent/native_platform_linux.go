@@ -30,7 +30,7 @@ const nativeHostExecutable = "dynapp-app-host"
 func nativePlatformName() string { return "linux" }
 
 // nativeHostPath finds the app host: $DYNAPP_APP_HOST, next to the agent,
-// then the usual install locations and PATH.
+// where the agent downloads it, then the usual install locations and PATH.
 func nativeHostPath() string {
 	if override := os.Getenv("DYNAPP_APP_HOST"); filepath.IsAbs(override) {
 		if info, err := os.Stat(override); err == nil && info.Mode().IsRegular() {
@@ -44,6 +44,9 @@ func nativeHostPath() string {
 			executable = resolved
 		}
 		candidates = append(candidates, filepath.Join(filepath.Dir(executable), nativeHostExecutable))
+	}
+	if dir := nativeAgentHostDir(); dir != "" {
+		candidates = append(candidates, filepath.Join(dir, nativeHostExecutable))
 	}
 	candidates = append(candidates,
 		"/usr/bin/"+nativeHostExecutable,
