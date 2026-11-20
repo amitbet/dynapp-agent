@@ -77,6 +77,7 @@ type Server struct {
 	DynerHTTPClient *http.Client
 
 	mu                 sync.Mutex
+	registrationMu     sync.Mutex
 	http               *http.Server
 	relayCancel        context.CancelFunc
 	relayWantedAt      time.Time
@@ -357,8 +358,10 @@ func (s *Server) ListenAndServe() error {
 		s.lanClose = closeLAN
 		s.mu.Unlock()
 	}
-	if err := s.ensureListenerRegistration(context.Background()); err != nil {
-		log.Printf("DynApp Shell agent: could not register this device with Dyner: %v", err)
+	if config.relayTicketConfig().DeviceCredential != "" {
+		if err := s.ensureListenerRegistration(context.Background()); err != nil {
+			log.Printf("DynApp Shell agent: could not refresh this device with Dyner: %v", err)
+		}
 	}
 	s.startIdentitySync()
 	// No idle relay socket: a browser that cannot reach this machine directly
@@ -422,7 +425,8 @@ func (s *Server) startIdentitySync() {
 	s.reconcileMesh()
 	s.mu.Lock()
 	config := s.Config.relayTicketConfig()
-	if s.identitySyncCancel != nil || config.DeviceCredential == "" {
+	canEnroll := s.AccountToken != "" && config.DynerBaseURL != "" && config.resolvedListenerMode() != ListenerOff
+	if s.identitySyncCancel != nil || (config.DeviceCredential == "" && !canEnroll) {
 		s.mu.Unlock()
 		return
 	}
@@ -472,6 +476,19 @@ func (s *Server) syncBrowserIdentitiesOnce(ctx context.Context) {
 	s.mu.Lock()
 	config := s.Config.relayTicketConfig()
 	s.mu.Unlock()
+	if config.DeviceCredential == "" {
+		// The agent may have started before sign-in or while Dyner was
+		// unavailable. Use the same sync loop to finish enrollment.
+		if err := s.ensureListenerRegistration(ctx); err != nil {
+			return
+		}
+		s.mu.Lock()
+		config = s.Config.relayTicketConfig()
+		s.mu.Unlock()
+		if config.DeviceCredential == "" {
+			return
+		}
+	}
 	state, err := SyncRemoteEnvironmentState(ctx, nil, config)
 	if err != nil {
 		var httpError dynerHTTPError

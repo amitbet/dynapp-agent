@@ -84,7 +84,9 @@ function mountAccount(root) {
     const text = document.createElement("p");
     text.className = "settings-help";
     if (status?.signedIn) {
-      text.textContent = `Signed in to ${status.dynerBaseUrl || "Dyner"}. Remote environments and the relay can be enabled below.`;
+      text.textContent = status.redacted?.enrolled || status.redacted?.hostedEnrolled
+        ? `This machine is registered with your account on ${status.dynerBaseUrl || "Dyner"}.`
+        : "Signed in to Dyner. Registration runs automatically while the listener is enabled.";
       row.append(text);
     } else {
       text.textContent = error || `Not signed in. Sign in to ${status?.dynerBaseUrl || "Dyner"} to register this machine as a remote environment.`;

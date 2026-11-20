@@ -187,11 +187,13 @@ func (s *Server) certificateHashes() ([]map[string]string, error) {
 }
 
 func (s *Server) ensureListenerRegistration(ctx context.Context) error {
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
 	s.mu.Lock()
 	config := s.Config
 	token := s.AccountToken
 	s.mu.Unlock()
-	if config.ListenerMode == ListenerOff || token == "" || config.DynerBaseURL == "" {
+	if config.resolvedListenerMode() == ListenerOff || token == "" || config.DynerBaseURL == "" {
 		return nil
 	}
 	hashes, err := s.certificateHashes()

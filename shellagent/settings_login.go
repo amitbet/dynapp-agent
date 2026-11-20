@@ -264,5 +264,6 @@ func (s *Server) storeAccountToken(ctx context.Context, base, token string) (str
 	s.mu.Lock()
 	s.AccountToken = token
 	s.mu.Unlock()
+	s.startIdentitySync()
 	return me.User.Email, nil
 }

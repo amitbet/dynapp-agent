@@ -202,9 +202,13 @@ the next five-second sync reports `relayRequested`, and the agent dials the
 relay then. The socket closes again once no request has arrived and no session
 has used it for 90 seconds, so an idle machine holds no relay connection.
 The loopback endpoint also serves health, native launcher control, and settings.
-Sign in to Dyner once; the agent then creates a device credential
-(`POST /api/v1/remote-environments` with the account token from
-`DynApp/dyner/auth.json`) and names the environment after this hostname.
+Sign in to Dyner once from the agent's settings page. The running agent
+automatically registers this hostname as an account environment and starts
+syncing access grants. The default listener is loopback-only. Existing account
+credentials also enroll the agent automatically at startup.
+Dyner records access decisions for remote environments. Owners can approve
+their own requests from a native app, and review requests from other people
+under **Permissions** on dynapp.io.
 
 ```sh
 go run .

@@ -8,13 +8,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
 func newSettingsTestServer(t *testing.T, dyner *httptest.Server) (*Server, *httptest.Server) {
 	t.Helper()
-	authPath := filepath.Join(t.TempDir(), "dyner", "auth.json")
-	agent := &Server{Config: Config{DynerBaseURL: dyner.URL}, AccountAuthPath: authPath}
+	stateDir := t.TempDir()
+	authPath := filepath.Join(stateDir, "dyner", "auth.json")
+	config := Config{SchemaVersion: ConfigSchemaVersion, DynerBaseURL: dyner.URL}
+	config.ApplyListenerDefaults(DefaultAddress, false)
+	agent := &Server{StateDir: stateDir, Config: config, AccountAuthPath: authPath}
+	t.Cleanup(func() { _ = agent.Shutdown(t.Context()) })
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/settings/status", agent.handleSettingsStatus)
 	mux.HandleFunc("/api/settings/login/start", agent.handleSettingsLoginStart)
@@ -98,16 +103,42 @@ func TestHostedDynerOriginUsesCatalogHostnameSlug(t *testing.T) {
 }
 
 func TestSettingsLoginStoresVerifiedAccountToken(t *testing.T) {
+	const credential = "env_login.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789"
+	var registered, synced atomic.Bool
 	dyner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/me" {
+		switch r.URL.Path {
+		case "/api/v1/me":
+			if r.Header.Get("Authorization") != "Bearer issued-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"user": map[string]any{"email": "amit@example.com"}})
+		case "/api/v1/remote-environments":
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer issued-token" {
+				t.Errorf("unexpected enrollment request: %s %s", r.Method, r.URL.Path)
+			}
+			var data struct {
+				Transport struct {
+					Endpoint string `json:"endpoint"`
+					Relay    any    `json:"relay"`
+				} `json:"transport"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&data); err != nil || data.Transport.Endpoint != "https://127.0.0.1:9011/dynapp-remote" || data.Transport.Relay != nil {
+				t.Errorf("enrollment must use the loopback listener: %#v, %v", data, err)
+			}
+			registered.Store(true)
+			_ = json.NewEncoder(w).Encode(registerEnvironmentResponse{
+				Environment: remoteEnvironmentRecord{ID: "env_login", Name: "Sandybox"}, DeviceCredential: credential,
+			})
+		case "/api/v1/remote-environments/env_login/browser-identities":
+			if r.Header.Get("Authorization") != "DynApp-Device "+credential {
+				t.Error("identity sync did not use the enrollment credential")
+			}
+			synced.Store(true)
+			_, _ = w.Write([]byte(`{"browserIdentities":[]}`))
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		if r.Header.Get("Authorization") != "Bearer issued-token" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"user": map[string]any{"email": "amit@example.com"}})
 	}))
 	defer dyner.Close()
 	agent, loopback := newSettingsTestServer(t, dyner)
@@ -163,6 +194,13 @@ func TestSettingsLoginStoresVerifiedAccountToken(t *testing.T) {
 	if completed.StatusCode != http.StatusOK || !strings.Contains(string(body), "amit@example.com") {
 		t.Fatalf("sign-in did not complete: %d %s", completed.StatusCode, body)
 	}
+	if !registered.Load() || !synced.Load() {
+		t.Fatal("sign-in did not register the listener and start syncing identities")
+	}
+	config, err := LoadConfig(agent.StateDir)
+	if err != nil || config.EnvironmentID != "env_login" || config.DeviceCredential != credential {
+		t.Fatalf("enrollment was not persisted: id=%q, error=%v", config.EnvironmentID, err)
+	}
 	agent.mu.Lock()
 	token := agent.AccountToken
 	agent.mu.Unlock()
@@ -180,8 +218,46 @@ func TestSettingsLoginStoresVerifiedAccountToken(t *testing.T) {
 	status, _ := http.Get(loopback.URL + "/api/settings/status")
 	var payload map[string]any
 	_ = json.NewDecoder(status.Body).Decode(&payload)
-	if payload["signedIn"] != true {
-		t.Fatalf("status should report signedIn: %v", payload)
+	redacted, _ := payload["redacted"].(map[string]any)
+	if payload["signedIn"] != true || redacted["enrolled"] != true {
+		t.Fatalf("status should report signed-in enrollment: %v", payload)
+	}
+}
+
+func TestEnrollmentRetriesAfterDynerIsUnavailable(t *testing.T) {
+	const credential = "env_retry.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789"
+	var attempts atomic.Int32
+	var synced atomic.Bool
+	dyner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/remote-environments":
+			if attempts.Add(1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(registerEnvironmentResponse{
+				Environment: remoteEnvironmentRecord{ID: "env_retry"}, DeviceCredential: credential,
+			})
+		case "/api/v1/remote-environments/env_retry/browser-identities":
+			_, _ = w.Write([]byte(`{"browserIdentities":[]}`))
+			synced.Store(true)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer dyner.Close()
+	agent, _ := newSettingsTestServer(t, dyner)
+	agent.AccountToken = "user-token"
+	agent.syncBrowserIdentitiesOnce(t.Context())
+	if attempts.Load() != 1 {
+		t.Fatal("agent did not try to enroll on the first sync")
+	}
+	agent.syncBrowserIdentitiesOnce(t.Context())
+	if !synced.Load() {
+		t.Fatal("agent did not retry enrollment and sync identities")
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("registration attempts = %d, want 2", attempts.Load())
 	}
 }
 
