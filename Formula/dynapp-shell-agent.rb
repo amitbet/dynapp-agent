@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.100"
+  version "0.1.101"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.100/dynapp-shell-agent-0.1.100-darwin-arm64"
-      sha256 "777ebe859799cb91e6b746d26a1b3209e754a58b009121be5d0a41992db74dac"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.101/dynapp-shell-agent-0.1.101-darwin-arm64"
+      sha256 "934aaeab2708c316669260cadf6b17dfd17cd428afac7994ce0af36fc02e0930"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.100/dynapp-shell-agent-0.1.100-darwin-amd64"
-      sha256 "07b2e09648c7ed0b214611e2c5c568e9bd8f21e9b96e041a7385f87b3b54a922"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.101/dynapp-shell-agent-0.1.101-darwin-amd64"
+      sha256 "d2fbd170bef5ea818ca80d50e9cf490bf2a59aa818b9b3c50fa398b784ffb4ba"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.100/dynapp-shell-agent-0.1.100-linux-arm64"
-      sha256 "a021dd6a035fd7c4de3146e77996a902ef72f2c0c96d14feac141867e393873a"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.101/dynapp-shell-agent-0.1.101-linux-arm64"
+      sha256 "08801afa2fc22286361c501b7e26634c9eea9e9febfde679da4711de1f12899c"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.100/dynapp-shell-agent-0.1.100-linux-amd64"
-      sha256 "1b0c1468f936d810315ddfe38e9d58692d8370763a59ab2b2a98921a315cb8b8"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.101/dynapp-shell-agent-0.1.101-linux-amd64"
+      sha256 "ec11a5eb3a0d2412dfdb2e83f1b3f3b04464a4482815eb16830f9c51601c27ab"
     end
   end
 
