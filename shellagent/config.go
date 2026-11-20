@@ -59,10 +59,12 @@ type Config struct {
 	// A damaged entry is dropped on load and never blocks the rest of the
 	// configuration (see NativeAppList.UnmarshalJSON).
 	NativeApps NativeAppList `json:"nativeApps,omitempty"`
-	// NativeAppsEnabled opts in to native apps on a platform that is still in
-	// preview (nativeRequiresOptIn). DYNAPP_NATIVE_APPS=1 does the same. No
-	// platform needs it today; older Windows installs may still carry it.
+	// NativeAppsEnabled was the opt-in while native apps were in preview.
+	// They are on by default now; older installs may still carry it.
 	NativeAppsEnabled bool `json:"nativeAppsEnabled,omitempty"`
+	// NativeAppsDisabled turns native apps off. DYNAPP_NATIVE_APPS=0 does the
+	// same.
+	NativeAppsDisabled bool `json:"nativeAppsDisabled,omitempty"`
 }
 
 // DefaultCatalogAppID is the store id of the Dyner client unless configured.
@@ -321,6 +323,15 @@ func DefaultListenerName() string {
 		return "This device"
 	}
 	return strings.TrimSpace(name)
+}
+
+// EnvDisabled reports whether the variable is set to 0, false, no or off.
+func EnvDisabled(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "0", "false", "no", "off":
+		return true
+	}
+	return false
 }
 
 func EnvEnabled(name string) bool {

@@ -11,8 +11,6 @@ var errNativeUnsupported = errors.New("native apps are not supported on this pla
 
 func nativePlatformName() string { return "unsupported" }
 
-func nativeRequiresOptIn() bool { return false }
-
 func nativeSupported() (bool, string) {
 	return false, "native apps are available on macOS, Windows, and Linux"
 }

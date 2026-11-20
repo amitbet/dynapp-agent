@@ -62,8 +62,6 @@ func init() {
 	}
 }
 
-func nativeRequiresOptIn() bool { return false }
-
 func nativeSupported() (bool, string) { return true, "" }
 
 func nativePlatformUsesHostChannel() bool { return true }

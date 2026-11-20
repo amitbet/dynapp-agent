@@ -107,16 +107,14 @@ func (app NativeApp) Validate() error {
 func nativeKeyID(storeID string) string { return nativeKeyPrefix + storeID }
 
 // nativeAvailable reports whether this agent may install and host native
-// apps. Platforms still in preview stay dormant unless the user opts in, so
-// an agent update cannot change their behavior.
+// apps. They are on wherever the platform supports them; DYNAPP_NATIVE_APPS=0
+// or nativeAppsDisabled in the agent config turns them off.
 func (s *Server) nativeAvailable() (bool, string) {
-	if nativeRequiresOptIn() {
-		s.mu.Lock()
-		enabled := s.Config.NativeAppsEnabled
-		s.mu.Unlock()
-		if !enabled && !EnvEnabled("DYNAPP_NATIVE_APPS") {
-			return false, "native apps on " + nativePlatformName() + " are in preview; set DYNAPP_NATIVE_APPS=1 or nativeAppsEnabled in the agent config to try them"
-		}
+	s.mu.Lock()
+	disabled := s.Config.NativeAppsDisabled
+	s.mu.Unlock()
+	if disabled || EnvDisabled("DYNAPP_NATIVE_APPS") {
+		return false, "native apps are turned off on this agent (DYNAPP_NATIVE_APPS=0 or nativeAppsDisabled in the agent config)"
 	}
 	return nativeSupported()
 }

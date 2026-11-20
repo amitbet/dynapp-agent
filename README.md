@@ -259,6 +259,9 @@ Dock or taskbar entry, window, and web storage
 ([contract](https://github.com/amitbet/dynapp/blob/main/docs/native-host.md)).
 Dyner calls the authority-only `apps` RPC methods `nativeSupport`,
 `listNative`, `installNative`, `uninstallNative`, and `launchNative`.
+Native apps are on by default wherever the platform supports them;
+`DYNAPP_NATIVE_APPS=0` in the agent's environment or `"nativeAppsDisabled": true`
+in its config turns them off.
 
 - **macOS:** each app is `~/Applications/DynApp/<Name>.app`, an ad-hoc signed
   bundle around the committed Swift host in `shellagent/nativehost/darwin/`.
@@ -272,7 +275,7 @@ Dyner calls the authority-only `apps` RPC methods `nativeSupport`,
   own AppUserModelID. It needs the Microsoft Edge WebView2 Runtime. The
   [Windows test plan](docs/native-apps-windows-test.md) lists what to verify
   after host changes.
-- **Linux (preview):** each app gets a launcher entry
+- **Linux:** each app gets a launcher entry
   `~/.local/share/applications/io.dynapp.app.<owner>.<slug>.desktop` that runs
   `dynapp-app-host`, a separate GTK 3 / WebKitGTK 4.1 binary
   (`cmd/dynapp-app-host`, `shellagent/linuxhost/`). The agent stays pure Go,
@@ -281,9 +284,7 @@ Dyner calls the authority-only `apps` RPC methods `nativeSupport`,
   X11 `WM_CLASS`, so it gets its own dock entry and a second launch focuses
   the running window. The host connects to `<stateDir>/native-host.sock`; the
   agent checks `SO_PEERCRED` (same user) and `/proc/<pid>/exe` (the host
-  binary). It stays off until `DYNAPP_NATIVE_APPS=1` is set for the agent or
-  `nativeAppsEnabled` is `true` in its config, and it needs a graphical
-  session: a systemd user agent reads `DISPLAY`/`WAYLAND_DISPLAY` from
+  binary). It needs a graphical session: a systemd user agent reads `DISPLAY`/`WAYLAND_DISPLAY` from
   `systemctl --user show-environment`. A host next to the agent (install.sh)
   is replaced with the matching signed release at agent start; apt updates
   the packaged one. Not yet on Linux: the shared title bar and automation.

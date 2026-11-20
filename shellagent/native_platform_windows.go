@@ -24,10 +24,6 @@ import (
 
 func nativePlatformName() string { return "windows" }
 
-// Windows native apps have been verified on real machines and are on by
-// default (Server.nativeAvailable).
-func nativeRequiresOptIn() bool { return false }
-
 func nativeSupported() (bool, string) {
 	if _, err := webView2RuntimeVersion(); err != nil {
 		return false, "the Microsoft Edge WebView2 Runtime is not installed"

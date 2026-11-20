@@ -29,10 +29,6 @@ const nativeHostExecutable = "dynapp-app-host"
 
 func nativePlatformName() string { return "linux" }
 
-// Linux native apps stay behind an explicit opt-in until they have been
-// verified on real desktops (Server.nativeAvailable).
-func nativeRequiresOptIn() bool { return true }
-
 // nativeHostPath finds the app host: $DYNAPP_APP_HOST, next to the agent,
 // then the usual install locations and PATH.
 func nativeHostPath() string {

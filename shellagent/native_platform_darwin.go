@@ -45,8 +45,6 @@ const (
 
 func nativePlatformName() string { return "macos" }
 
-func nativeRequiresOptIn() bool { return false }
-
 func nativeSupported() (bool, string) {
 	if len(nativeHostBinary) < 4096 {
 		return false, "this agent build does not include the macOS app host"

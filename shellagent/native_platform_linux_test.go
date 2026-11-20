@@ -147,14 +147,6 @@ func TestNativeLinuxInstallAndUninstall(t *testing.T) {
 	}
 }
 
-func TestNativeLinuxNeedsOptIn(t *testing.T) {
-	t.Setenv("DYNAPP_NATIVE_APPS", "")
-	server := &Server{}
-	if supported, reason := server.nativeAvailable(); supported || !strings.Contains(reason, "preview") {
-		t.Fatalf("without opt-in: %v %q", supported, reason)
-	}
-}
-
 func TestNativeLinuxSupportWithoutHost(t *testing.T) {
 	t.Setenv("DYNAPP_APP_HOST", filepath.Join(t.TempDir(), "missing"))
 	t.Setenv("PATH", t.TempDir())
