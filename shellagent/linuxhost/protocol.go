@@ -215,6 +215,11 @@ type BridgeMessage struct {
 	Code      int               `json:"code"`
 	Reason    string            `json:"reason"`
 	Enabled   bool              `json:"enabled"`
+	// WebTransport stand-in (webtransport.go).
+	WID    string   `json:"wid"`
+	Stream string   `json:"stream"`
+	URL    string   `json:"url"`
+	Hashes []string `json:"hashes"`
 }
 
 // ParseBridgeMessage accepts a message only with the bridge marker, the
@@ -236,11 +241,12 @@ func ParseBridgeMessage(raw, documentURL, origin, token string) (BridgeMessage, 
 	return message, nil
 }
 
-// WrapBootstrap scopes the per-launch token to the agent's bridge script, so
-// only that closure can sign messages to the host.
+// WrapBootstrap scopes the per-launch token to the agent's bridge script and
+// the host's WebTransport stand-in, so only those closures can sign messages
+// to the host.
 func WrapBootstrap(bootstrap, token string) string {
 	encoded, _ := json.Marshal(token)
-	return "(() => {\nconst __dynappHostToken = " + string(encoded) + ";\n" + bootstrap + "\n})();"
+	return "(() => {\nconst __dynappHostToken = " + string(encoded) + ";\n" + bootstrap + "\n" + webTransportPolyfill + "\n})();"
 }
 
 // PromptAnswer is what the permission page posted.

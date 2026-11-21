@@ -13,10 +13,19 @@ package shellagent
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image/color"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +35,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/webtransport-go"
 )
 
 const linuxE2EPage = `<!doctype html><meta charset="utf-8"><title>e2e</title><body>native e2e
@@ -33,6 +45,30 @@ const linuxE2EPage = `<!doctype html><meta charset="utf-8"><title>e2e</title><bo
 <script>
 const report = (data) => fetch("/report", { method: "POST", body: JSON.stringify(data) });
 report({ loaded: true });
+// WebKitGTK has no WebTransport; the host's stand-in must carry a LAN
+// session: 300 KB out and back through a QUIC echo server.
+(async () => {
+  const sent = new Uint8Array(300000);
+  for (let index = 0; index < sent.length; index += 1) sent[index] = index % 251;
+  const hash = Uint8Array.from(atob("__WT_HASH__"), (character) => character.charCodeAt(0));
+  const transport = new WebTransport("__WT_URL__", { serverCertificateHashes: [{ algorithm: "sha-256", value: hash }] });
+  await transport.ready;
+  const { readable, writable } = await transport.createBidirectionalStream();
+  const writer = writable.getWriter();
+  for (let offset = 0; offset < sent.length; offset += 65536) await writer.write(sent.subarray(offset, offset + 65536));
+  await writer.close();
+  const reader = readable.getReader();
+  let received = 0;
+  let same = true;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (let index = 0; index < value.length; index += 1) if (value[index] !== (received + index) % 251) same = false;
+    received += value.length;
+  }
+  transport.close();
+  report({ webtransport: { ok: same && received === sent.length, received } });
+})().catch((error) => report({ webtransport: { ok: false, error: String(error && error.message || error) } }));
 // The page owns its keys (Commander: F1-F10, Esc, Alt+F7...); the host's
 // accelerators (F5/Ctrl+R reload, F11, F12) must not take them. Ctrl+R
 // stays unhandled so the host can still reload.
@@ -179,9 +215,12 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 		default:
 		}
 	})
+	wtURL, wtHash := startLinuxE2EWebTransportEcho(t)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		file, _ := json.Marshal(secret)
 		page := strings.Replace(linuxE2EPage, "__FILE__", string(file), -1)
+		page = strings.Replace(page, "__WT_URL__", wtURL, -1)
+		page = strings.Replace(page, "__WT_HASH__", wtHash, -1)
 		page = strings.Replace(page, "__FOREIGN__", foreign.URL, -1)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, page)
@@ -232,6 +271,7 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 
 	sawReport := map[string]bool{}
 	sawOpen := false
+	var webTransport map[string]any
 	for _, wantReloaded := range []bool{false, true} {
 		for {
 			var report map[string]any
@@ -247,6 +287,12 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 				continue
 			}
 			if report["loaded"] != nil || report["key"] != nil {
+				continue
+			}
+			if result, ok := report["webtransport"].(map[string]any); ok {
+				if webTransport == nil {
+					webTransport = result
+				}
 				continue
 			}
 			t.Logf("page report: %v", report)
@@ -274,6 +320,21 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 			break
 		}
 	}
+
+	for webTransport == nil {
+		select {
+		case report := <-reports:
+			if result, ok := report["webtransport"].(map[string]any); ok {
+				webTransport = result
+			}
+		case <-ctx.Done():
+			t.Fatalf("the page never reported its WebTransport session; host log:\n%s", hostLog(app))
+		}
+	}
+	if webTransport["ok"] != true {
+		t.Fatalf("WebTransport through the host = %v\nhost log:\n%s", webTransport, hostLog(app))
+	}
+	t.Logf("WebTransport through the host echoed %v bytes", webTransport["received"])
 
 	waitOpen := func(path string) {
 		t.Helper()
@@ -562,4 +623,64 @@ func hostLog(app NativeApp) string {
 		return "(no host log: " + err.Error() + ")"
 	}
 	return string(content)
+}
+
+// startLinuxE2EWebTransportEcho serves WebTransport on this machine's first
+// private IPv4 address (the host refuses loopback): each stream echoes what
+// it reads. It returns the URL and the base64 certificate hash.
+func startLinuxE2EWebTransportEcho(t *testing.T) (string, string) {
+	t.Helper()
+	var address net.IP
+	addresses, _ := net.InterfaceAddrs()
+	for _, candidate := range addresses {
+		if network, ok := candidate.(*net.IPNet); ok && network.IP.To4() != nil && network.IP.IsPrivate() {
+			address = network.IP
+			break
+		}
+	}
+	if address == nil {
+		t.Skip("no private IPv4 address for the WebTransport echo server")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "lan"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), IPAddresses: []net.IP{address}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(der)
+	packet, err := net.ListenUDP("udp", &net.UDPAddr{IP: address})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	server := &webtransport.Server{
+		H3:          &http3.Server{TLSConfig: http3.ConfigureTLSConfig(&tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}), Handler: mux},
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+	webtransport.ConfigureHTTP3Server(server.H3)
+	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
+		session, err := server.Upgrade(w, r)
+		if err != nil {
+			return
+		}
+		go func() {
+			for {
+				stream, err := session.AcceptStream(context.Background())
+				if err != nil {
+					return
+				}
+				go func() {
+					data, _ := io.ReadAll(stream)
+					_, _ = stream.Write(data)
+					_ = stream.Close()
+				}()
+			}
+		}()
+	})
+	go func() { _ = server.Serve(packet) }()
+	t.Cleanup(func() { _ = server.Close() })
+	return fmt.Sprintf("https://%s:%d/echo", address, packet.LocalAddr().(*net.UDPAddr).Port), base64.StdEncoding.EncodeToString(sum[:])
 }
