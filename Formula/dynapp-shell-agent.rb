@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.107"
+  version "0.1.108"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.107/dynapp-shell-agent-0.1.107-darwin-arm64"
-      sha256 "f773b3f3990fa0f4e253710f6553762754ae5f4296cec4fcbea931a5ed6dc4dd"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.108/dynapp-shell-agent-0.1.108-darwin-arm64"
+      sha256 "29a2916bf850b2b084f13e00940e94d81934887adaa11c0bf2e9027f36bbf00e"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.107/dynapp-shell-agent-0.1.107-darwin-amd64"
-      sha256 "80e157b67c14dc0cff1221870294f404f64d6e7bb1bb0d6a72fd47d255b611d9"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.108/dynapp-shell-agent-0.1.108-darwin-amd64"
+      sha256 "5cd1128126552ddd9e0027520da954b74d5493b4411397aed08498a44d75f9ca"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.107/dynapp-shell-agent-0.1.107-linux-arm64"
-      sha256 "d34c79534d7fd37490c71cc7846e56dc0b77ae2bc6b2347a17f3e2f7b9ccbda1"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.108/dynapp-shell-agent-0.1.108-linux-arm64"
+      sha256 "00baac7e3da5caf488136a9f87e8182f3370b37499ea1e9ed8b8885728a0a7ea"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.107/dynapp-shell-agent-0.1.107-linux-amd64"
-      sha256 "ea19268eff0e1446fdb868740cd938f88dea87f2b2f1bf8954fe82b2a25d760d"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.108/dynapp-shell-agent-0.1.108-linux-amd64"
+      sha256 "215ab7793bc30a592135d0b9b6fc498c278a783b16bfc65bd57e9a67dd266ff1"
     end
   end
 
