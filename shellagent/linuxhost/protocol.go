@@ -220,6 +220,17 @@ type BridgeMessage struct {
 	Stream string   `json:"stream"`
 	URL    string   `json:"url"`
 	Hashes []string `json:"hashes"`
+	// RTCPeerConnection stand-in (webrtc.go).
+	PID            string          `json:"pid"`
+	CID            string          `json:"cid"`
+	Label          string          `json:"label"`
+	Ordered        *bool           `json:"ordered"`
+	MaxRetransmits *int            `json:"maxRetransmits"`
+	ICEServers     []RTCServer     `json:"iceServers"`
+	SDP            string          `json:"sdp"`
+	SDPType        string          `json:"sdpType"`
+	Candidate      json.RawMessage `json:"candidate"`
+	IsBinary       bool            `json:"isBinary"`
 }
 
 // ParseBridgeMessage accepts a message only with the bridge marker, the
@@ -246,7 +257,7 @@ func ParseBridgeMessage(raw, documentURL, origin, token string) (BridgeMessage, 
 // to the host.
 func WrapBootstrap(bootstrap, token string) string {
 	encoded, _ := json.Marshal(token)
-	return "(() => {\nconst __dynappHostToken = " + string(encoded) + ";\n" + bootstrap + "\n" + webTransportPolyfill + "\n})();"
+	return "(() => {\nconst __dynappHostToken = " + string(encoded) + ";\n" + bootstrap + "\n" + webTransportPolyfill + "\n" + webRTCPolyfill + "\n})();"
 }
 
 // PromptAnswer is what the permission page posted.

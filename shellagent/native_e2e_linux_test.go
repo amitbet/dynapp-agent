@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/webrtc/v4"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 )
@@ -69,6 +70,46 @@ report({ loaded: true });
   transport.close();
   report({ webtransport: { ok: same && received === sent.length, received } });
 })().catch((error) => report({ webtransport: { ok: false, error: String(error && error.message || error) } }));
+// WebKitGTK has no WebRTC either; the host's stand-in must negotiate with a
+// pion answerer and carry 300 KB over a data channel.
+(async () => {
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  const control = pc.createDataChannel("dynapp-control-v2", { ordered: true });
+  pc.createDataChannel("dynapp-datagram-v2", { ordered: false, maxRetransmits: 0 });
+  control.binaryType = "arraybuffer";
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((resolve) => {
+    if (pc.iceGatheringState === "complete") return resolve();
+    pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") resolve(); });
+    setTimeout(resolve, 3000);
+  });
+  const answer = await (await fetch("/rtc-offer", { method: "POST", body: JSON.stringify(pc.localDescription) })).json();
+  await pc.setRemoteDescription(answer);
+  await new Promise((resolve, reject) => {
+    if (control.readyState === "open") return resolve();
+    control.addEventListener("open", resolve, { once: true });
+    setTimeout(() => reject(new Error("channel never opened; connectionState=" + pc.connectionState)), 10000);
+  });
+  const sent = new Uint8Array(300000);
+  for (let index = 0; index < sent.length; index += 1) sent[index] = index % 251;
+  let received = 0;
+  let same = true;
+  const echoed = new Promise((resolve, reject) => {
+    control.addEventListener("message", (event) => {
+      const value = new Uint8Array(event.data);
+      for (let index = 0; index < value.length; index += 1) if (value[index] !== (received + index) % 251) same = false;
+      received += value.length;
+      if (received >= sent.length) resolve();
+    });
+    setTimeout(() => reject(new Error("echo timed out at " + received)), 10000);
+  });
+  for (let offset = 0; offset < sent.length; offset += 60000) control.send(sent.subarray(offset, offset + 60000));
+  await echoed;
+  const stats = await pc.getStats();
+  const pair = [...stats.values()].find((stat) => stat.type === "candidate-pair" && stat.state === "succeeded");
+  pc.close();
+  report({ webrtc: { ok: same && received === sent.length, received, pair: Boolean(pair) } });
+})().catch((error) => report({ webrtc: { ok: false, error: String(error && error.message || error) } }));
 // The page owns its keys (Commander: F1-F10, Esc, Alt+F7...); the host's
 // accelerators (F5/Ctrl+R reload, F11, F12) must not take them. Ctrl+R
 // stays unhandled so the host can still reload.
@@ -216,6 +257,19 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 		}
 	})
 	wtURL, wtHash := startLinuxE2EWebTransportEcho(t)
+	mux.HandleFunc("/rtc-offer", func(w http.ResponseWriter, r *http.Request) {
+		var offer webrtc.SessionDescription
+		if err := json.NewDecoder(r.Body).Decode(&offer); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		answer, err := linuxE2EWebRTCAnswer(t, offer)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, answer)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		file, _ := json.Marshal(secret)
 		page := strings.Replace(linuxE2EPage, "__FILE__", string(file), -1)
@@ -271,7 +325,7 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 
 	sawReport := map[string]bool{}
 	sawOpen := false
-	var webTransport map[string]any
+	var webTransport, webRTC map[string]any
 	for _, wantReloaded := range []bool{false, true} {
 		for {
 			var report map[string]any
@@ -292,6 +346,12 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 			if result, ok := report["webtransport"].(map[string]any); ok {
 				if webTransport == nil {
 					webTransport = result
+				}
+				continue
+			}
+			if result, ok := report["webrtc"].(map[string]any); ok {
+				if webRTC == nil {
+					webRTC = result
 				}
 				continue
 			}
@@ -321,20 +381,27 @@ func TestNativeLinuxAppEndToEnd(t *testing.T) {
 		}
 	}
 
-	for webTransport == nil {
+	for webTransport == nil || webRTC == nil {
 		select {
 		case report := <-reports:
-			if result, ok := report["webtransport"].(map[string]any); ok {
+			if result, ok := report["webtransport"].(map[string]any); ok && webTransport == nil {
 				webTransport = result
 			}
+			if result, ok := report["webrtc"].(map[string]any); ok && webRTC == nil {
+				webRTC = result
+			}
 		case <-ctx.Done():
-			t.Fatalf("the page never reported its WebTransport session; host log:\n%s", hostLog(app))
+			t.Fatalf("the page never reported WebTransport and WebRTC (%v, %v); host log:\n%s", webTransport, webRTC, hostLog(app))
 		}
 	}
 	if webTransport["ok"] != true {
 		t.Fatalf("WebTransport through the host = %v\nhost log:\n%s", webTransport, hostLog(app))
 	}
 	t.Logf("WebTransport through the host echoed %v bytes", webTransport["received"])
+	if webRTC["ok"] != true || webRTC["pair"] != true {
+		t.Fatalf("WebRTC through the host = %v\nhost log:\n%s", webRTC, hostLog(app))
+	}
+	t.Logf("WebRTC through the host echoed %v bytes", webRTC["received"])
 
 	waitOpen := func(path string) {
 		t.Helper()
@@ -683,4 +750,36 @@ func startLinuxE2EWebTransportEcho(t *testing.T) (string, string) {
 	go func() { _ = server.Serve(packet) }()
 	t.Cleanup(func() { _ = server.Close() })
 	return fmt.Sprintf("https://%s:%d/echo", address, packet.LocalAddr().(*net.UDPAddr).Port), base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// linuxE2EWebRTCAnswer answers the page's offer like the agent's ICE
+// answerer would, and echoes every data channel message.
+func linuxE2EWebRTCAnswer(t *testing.T, offer webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	pc.OnDataChannel(func(channel *webrtc.DataChannel) {
+		channel.OnMessage(func(message webrtc.DataChannelMessage) {
+			if message.IsString {
+				_ = channel.SendText(string(message.Data))
+			} else {
+				_ = channel.Send(message.Data)
+			}
+		})
+	})
+	if err := pc.SetRemoteDescription(offer); err != nil {
+		return nil, err
+	}
+	answer, err := pc.CreateAnswer(nil)
+	if err != nil {
+		return nil, err
+	}
+	gathered := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(answer); err != nil {
+		return nil, err
+	}
+	<-gathered
+	return pc.LocalDescription(), nil
 }

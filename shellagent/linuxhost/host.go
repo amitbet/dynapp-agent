@@ -49,6 +49,7 @@ type host struct {
 	closed    bool
 	sockets   map[string]*FrameConn
 	wt        *WebTransportBridge
+	rtc       *RTCBridge
 	reviews   map[string]bool
 	prompts   map[string]bool // request ids already queued or shown
 
@@ -80,6 +81,7 @@ func Run(options Options) int {
 		startURL: options.URL, sockets: map[string]*FrameConn{}, reviews: map[string]bool{}, prompts: map[string]bool{},
 	}
 	current.wt = &WebTransportBridge{Origin: current.policy.Origin, Deliver: current.deliverWebTransport}
+	current.rtc = &RTCBridge{Deliver: current.deliverRTC}
 	argv := []string{os.Args[0]}
 	for _, file := range options.Files {
 		if absolute, err := filepath.Abs(file); err == nil {
@@ -533,6 +535,8 @@ func (h *host) handleBridge(message BridgeMessage) {
 	default:
 		if strings.HasPrefix(message.Op, "wt-") {
 			h.wt.Handle(message)
+		} else if strings.HasPrefix(message.Op, "rtc-") {
+			h.rtc.Handle(message)
 		}
 	}
 }
@@ -617,6 +621,7 @@ func (h *host) endSocket(sid string, code int, reason string) {
 
 func (h *host) closeAll() {
 	h.wt.Shutdown()
+	h.rtc.Shutdown()
 	h.mu.Lock()
 	h.closed = true
 	sockets := h.sockets
@@ -650,6 +655,16 @@ func (h *host) deliverWebTransport(message map[string]any) {
 		return
 	}
 	script := "window.__dynappWebTransportDeliver && window.__dynappWebTransportDeliver(" + string(data) + ")"
+	dispatch(func() { withCString(script, func(value *C.char) { C.host_eval(value) }) })
+}
+
+// deliverRTC calls the RTCPeerConnection stand-in's receiver in the page.
+func (h *host) deliverRTC(message map[string]any) {
+	data, err := json.Marshal(message)
+	if err != nil {
+		return
+	}
+	script := "window.__dynappRTCDeliver && window.__dynappRTCDeliver(" + string(data) + ")"
 	dispatch(func() { withCString(script, func(value *C.char) { C.host_eval(value) }) })
 }
 
