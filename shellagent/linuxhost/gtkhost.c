@@ -184,14 +184,30 @@ static gboolean on_caption_release(GtkWidget *widget, GdkEventButton *event, gpo
 static gboolean on_caption_motion(GtkWidget *widget, GdkEventMotion *event, gpointer data) {
   (void)data;
   if (!caption_drag || !caption_press || !(event->state & GDK_BUTTON1_MASK)) return FALSE;
-  const GdkEventButton *press = &caption_press->button;
-  if (!gtk_drag_check_threshold(widget, press->x_root, press->y_root, event->x_root, event->y_root)) return FALSE;
+  const GdkEventButton *pressed = &caption_press->button;
+  if (!gtk_drag_check_threshold(widget, pressed->x_root, pressed->y_root, event->x_root, event->y_root)) return FALSE;
+  // Take the press over before synthesizing a release: on_caption_release
+  // clears caption_press.
+  GdkEvent *press = caption_press;
+  caption_press = NULL;
+  caption_drag = FALSE;
   GdkWindow *window = gtk_widget_get_window(main_window);
-  GdkDevice *device = gdk_event_get_device(caption_press);
+  GdkDevice *device = gdk_event_get_device(press);
   gboolean started = window && device;
-  if (started)
-    gdk_window_begin_move_drag_for_device(window, device, press->button, press->x_root, press->y_root, press->time);
-  clear_caption_press();
+  if (started) {
+    // The window manager grabs the pointer for the move, so WebKit never sees
+    // this button's release and keeps extending a selection (or a page drag)
+    // with every later motion. End the press inside the page first.
+    GdkEvent *release = gdk_event_copy(press);
+    release->button.type = GDK_BUTTON_RELEASE;
+    release->button.time = event->time;
+    release->button.state |= GDK_BUTTON1_MASK;
+    gtk_widget_event(widget, release);
+    gdk_event_free(release);
+    gdk_window_begin_move_drag_for_device(window, device, press->button.button, press->button.x_root,
+                                          press->button.y_root, press->button.time);
+  }
+  gdk_event_free(press);
   return started;
 }
 
