@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.106"
+  version "0.1.107"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.106/dynapp-shell-agent-0.1.106-darwin-arm64"
-      sha256 "36af518eba0db1fdebe8d48f9d6e647e1db287392b6cb6036f402dd89c06dd56"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.107/dynapp-shell-agent-0.1.107-darwin-arm64"
+      sha256 "f773b3f3990fa0f4e253710f6553762754ae5f4296cec4fcbea931a5ed6dc4dd"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.106/dynapp-shell-agent-0.1.106-darwin-amd64"
-      sha256 "4593a607e0cd95db34777e4e5746f22b05ea0057205bc1da9fbfed880281f647"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.107/dynapp-shell-agent-0.1.107-darwin-amd64"
+      sha256 "80e157b67c14dc0cff1221870294f404f64d6e7bb1bb0d6a72fd47d255b611d9"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.106/dynapp-shell-agent-0.1.106-linux-arm64"
-      sha256 "c62e07d39dc8134ba8e8425984c317a3ed920194bdf219950e4d360bad61f047"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.107/dynapp-shell-agent-0.1.107-linux-arm64"
+      sha256 "d34c79534d7fd37490c71cc7846e56dc0b77ae2bc6b2347a17f3e2f7b9ccbda1"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.106/dynapp-shell-agent-0.1.106-linux-amd64"
-      sha256 "e26fbfa74e7319de0bb5ff0c5899d4191aa533887ec08bfdd1785949eea4b335"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.107/dynapp-shell-agent-0.1.107-linux-amd64"
+      sha256 "ea19268eff0e1446fdb868740cd938f88dea87f2b2f1bf8954fe82b2a25d760d"
     end
   end
 
