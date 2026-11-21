@@ -1,8 +1,10 @@
 package shellagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -545,5 +547,69 @@ func TestSystemListenerParsersMatchProviderShape(t *testing.T) {
 	listeners = parseSSPorts(ss)
 	if len(listeners) != 1 || listeners[0].ProcessName != "java" || listeners[0].Port != 8080 {
 		t.Fatalf("ss = %#v", listeners)
+	}
+}
+
+type rawFrameSocket struct {
+	testProtocolSocket
+	frames [][]byte
+	kinds  []websocket.MessageType
+}
+
+func (s *rawFrameSocket) Write(_ context.Context, kind websocket.MessageType, data []byte) error {
+	s.kinds = append(s.kinds, kind)
+	s.frames = append(s.frames, append([]byte(nil), data...))
+	return nil
+}
+
+// A client that asks for binaryReply gets the body as raw bytes after a JSON
+// header, for text and binary responses alike, so nothing is base64-encoded
+// or JSON-escaped on the network.
+func TestHTTPRequestBinaryReplySendsTheBodyAsBytes(t *testing.T) {
+	payload := []byte{0xff, 0xd8, 0xff, 0x00, 0x80, '"', '\\'}
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "image/jpeg")
+		_, _ = response.Write(payload)
+	}))
+	defer upstream.Close()
+	for _, wantBinary := range []bool{true, false} {
+		socket := &rawFrameSocket{}
+		request := message{Type: "rpc", ID: "rpc_1", Service: "http", Method: "request", BinaryReply: true,
+			Args: []any{map[string]any{"url": upstream.URL, "binary": wantBinary, "connect": []any{upstream.URL + "/"}}}}
+		(&Server{}).handleRPC(socket, context.Background(), nil, request, nil)
+		if len(socket.frames) != 1 || socket.kinds[0] != websocket.MessageBinary {
+			t.Fatalf("binary=%v: frames = %d kinds = %v", wantBinary, len(socket.frames), socket.kinds)
+		}
+		header, body, err := decodeBinaryFrame(socket.frames[0])
+		if err != nil || header.Type != "rpc-result" || header.ID != "rpc_1" {
+			t.Fatalf("binary=%v: header = %#v, %v", wantBinary, header, err)
+		}
+		if !bytes.Equal(body, payload) {
+			t.Fatalf("binary=%v: body = %v, want %v", wantBinary, body, payload)
+		}
+		var fields struct {
+			Result map[string]any `json:"result"`
+		}
+		headerJSON := socket.frames[0][8 : 8+binary.BigEndian.Uint32(socket.frames[0][4:8])]
+		if err := json.Unmarshal(headerJSON, &fields); err != nil {
+			t.Fatal(err)
+		}
+		result := fields.Result
+		if result["bodyFrame"] != true || result["binary"] != wantBinary || result["status"] != float64(200) {
+			t.Fatalf("binary=%v: result = %#v", wantBinary, result)
+		}
+		if _, ok := result["text"]; ok {
+			t.Fatalf("binary=%v: the body was also sent as text", wantBinary)
+		}
+		if _, ok := result["base64"]; ok {
+			t.Fatalf("binary=%v: the body was also sent as base64", wantBinary)
+		}
+	}
+	// Without the flag the reply stays JSON, as older clients expect.
+	socket := &rawFrameSocket{}
+	(&Server{}).handleRPC(socket, context.Background(), nil, message{Type: "rpc", ID: "rpc_2", Service: "http", Method: "request",
+		Args: []any{map[string]any{"url": upstream.URL, "binary": true, "connect": []any{upstream.URL + "/"}}}}, nil)
+	if len(socket.kinds) != 1 || socket.kinds[0] != websocket.MessageText || !bytes.Contains(socket.frames[0], []byte(`"base64"`)) {
+		t.Fatalf("reply without binaryReply = %s", socket.frames)
 	}
 }

@@ -63,7 +63,15 @@ func (s *Server) handleRPC(socket protocolSocket, ctx context.Context, agents *a
 	}
 	if err != nil {
 		rpcError(socket, ctx, request, err)
-	} else {
-		rpcResult(socket, ctx, request, result)
+		return
 	}
+	if fields, ok := result.(map[string]any); ok {
+		if body, ok := fields[httpReplyBodyKey].(httpReplyBody); ok {
+			delete(fields, httpReplyBodyKey)
+			fields["bodyFrame"] = true
+			sendBinary(socket, ctx, map[string]any{"type": "rpc-result", "id": request.ID, "service": request.Service, "result": fields}, body)
+			return
+		}
+	}
+	rpcResult(socket, ctx, request, result)
 }

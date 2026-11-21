@@ -240,6 +240,14 @@ func (s *Server) handleHTTPRPCBody(ctx context.Context, request message, binaryB
 			return nil, errors.New("HTTP response is too large")
 		}
 		result := map[string]any{"status": response.StatusCode, "ok": response.StatusCode >= 200 && response.StatusCode < 300, "url": response.Request.URL.String(), "headers": headers, "text": string(data)}
+		if request.BinaryReply {
+			// handleRPC sends these bytes after the JSON header; the client
+			// rebuilds text or base64 from them.
+			delete(result, "text")
+			result["binary"] = binary
+			result[httpReplyBodyKey] = httpReplyBody(data)
+			return result, nil
+		}
 		if binary {
 			result["text"] = ""
 			result["base64"] = base64.StdEncoding.EncodeToString(data)
@@ -282,3 +290,9 @@ func (s *Server) handleHTTPRPCBody(ctx context.Context, request message, binaryB
 	}
 	return map[string]any{"status": response.StatusCode, "url": response.Request.URL.String(), "headers": headers, "bytes": written, "path": target}, nil
 }
+
+// httpReplyBodyKey holds the raw response body of an http.request asked for
+// with binaryReply; handleRPC moves it out of the JSON result into the frame.
+const httpReplyBodyKey = "\x00body"
+
+type httpReplyBody []byte

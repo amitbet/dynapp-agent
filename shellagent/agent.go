@@ -672,6 +672,10 @@ type message struct {
 	App   *directLocalApp `json:"app,omitempty"`
 	// Fragments marks a browser that reassembles oversized WebRTC messages.
 	Fragments bool `json:"fragments,omitempty"`
+	// BinaryReply asks for an http.request reply as a binary frame: the
+	// result header as JSON and the response body as raw bytes, instead of a
+	// JSON string or base64. Clients that omit it keep the JSON reply.
+	BinaryReply bool `json:"binaryReply,omitempty"`
 	// Session asks for a resumable session or resumes one (hello only).
 	Session      json.RawMessage `json:"session,omitempty"`
 	Method       string          `json:"method,omitempty"`
@@ -1257,6 +1261,7 @@ func protocolFeatures(version int, carriers ...carrierCapabilities) map[string]b
 	}
 	return map[string]bool{
 		"httpBinaryBody":      true,
+		"httpBinaryReply":     true,
 		"servers":             true,
 		"multiplexedChannels": true,
 		"reliableStreams":     carrier.reliableStreams,
