@@ -45,7 +45,6 @@ static void choose_webkit_rendering(void) {
 
 const char *host_check(void) {
   if (!gtk_init_check(NULL, NULL)) return "cannot open the display";
-  choose_webkit_rendering();
   return NULL;
 }
 
@@ -928,11 +927,20 @@ static void on_open(GApplication *app, GFile **files, gint count, const gchar *h
   g_strfreev(paths);
 }
 
+// startup runs once, in the primary instance, after GTK has opened the
+// display and before any web view exists.
+static void on_startup(GApplication *app, gpointer data) {
+  (void)app;
+  (void)data;
+  choose_webkit_rendering();
+}
+
 int host_run(const char *app_id, int argc, char **argv) {
   g_set_prgname(app_id);
   gdk_set_program_class(app_id);
   if (!g_application_id_is_valid(app_id)) app_id = NULL;
   application = gtk_application_new(app_id, G_APPLICATION_HANDLES_OPEN);
+  g_signal_connect(application, "startup", G_CALLBACK(on_startup), NULL);
   g_signal_connect(application, "activate", G_CALLBACK(on_activate), NULL);
   g_signal_connect(application, "open", G_CALLBACK(on_open), NULL);
   int status = g_application_run(G_APPLICATION(application), argc, argv);
