@@ -126,6 +126,10 @@ type remoteEnvironmentState struct {
 	// Omitted by older Dyner servers. When present, the account owns the
 	// outbound Internet setting independently of the local listener.
 	InternetAccessEnabled *bool `json:"internetAccessEnabled"`
+	// LANAccessEnabled is the account's request for the LAN listener: true
+	// for LAN mode, false for loopback only, nil when the account has not
+	// decided (or Dyner is older) and the local setting stands.
+	LANAccessEnabled *bool `json:"lanAccessEnabled"`
 }
 
 func SyncRemoteEnvironmentState(ctx context.Context, client *http.Client, config Config) (remoteEnvironmentState, error) {

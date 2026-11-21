@@ -519,6 +519,9 @@ func (s *Server) syncBrowserIdentitiesOnce(ctx context.Context) {
 		s.applyRelayRequest(state.RelayRequested)
 	}
 	if err == nil {
+		s.applyAccountLANRequest(state.LANAccessEnabled)
+	}
+	if err == nil {
 		s.noteRemoteSyncSucceeded()
 	}
 	s.reconcileMesh()

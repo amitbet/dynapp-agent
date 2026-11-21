@@ -113,6 +113,48 @@ func UpdateRemoteEnvironment(ctx context.Context, client *http.Client, baseURL, 
 	return nil
 }
 
+// ReportDeviceListener tells Dyner this agent's listener endpoint and
+// certificate with the device credential, which the agent always has (its
+// account token lives only in memory). lanAccess is set only when the user
+// changed the listener on this computer, so the account's request follows
+// that decision.
+func ReportDeviceListener(ctx context.Context, client *http.Client, config Config, endpoint string, hashes []map[string]string, lanAccess *bool) error {
+	if config.DeviceCredential == "" || config.EnvironmentID == "" || config.DynerBaseURL == "" {
+		return nil
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	target, err := dynerAPIURL(config.DynerBaseURL, "/api/v1/remote-environments/"+url.PathEscape(config.EnvironmentID))
+	if err != nil {
+		return err
+	}
+	body := map[string]any{"endpoint": endpoint, "serverCertificateHashes": hashes}
+	if lanAccess != nil {
+		body["lanAccess"] = *lanAccess
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPatch, target, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "DynApp-Device "+config.DeviceCredential)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("Dyner listener report failed: HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
 // MergeRemoteEnvironment atomically transfers grants, browser identities, and
 // outstanding pairings from a superseded record to the surviving environment.
 // Keeping this as a distinct endpoint makes rollout safe: an older Dyner

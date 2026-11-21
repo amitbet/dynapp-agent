@@ -3,8 +3,10 @@ package shellagent
 import (
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/url"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -198,7 +200,15 @@ func (s *Server) setLANEnabled(enabled bool) (map[string]any, error) {
 	return s.setListener(mode, s.Config.ListenerName)
 }
 
+// setListener applies a listener mode the user chose on this computer (the
+// settings page or the lan RPC). The account's LAN request follows it.
 func (s *Server) setListener(mode, name string) (map[string]any, error) {
+	return s.applyListener(mode, name, true)
+}
+
+// applyListener changes the listener. local reports whether the change came
+// from this computer rather than from the account's LAN request.
+func (s *Server) applyListener(mode, name string, local bool) (map[string]any, error) {
 	mode = strings.TrimSpace(mode)
 	if mode == "" {
 		mode = ListenerLocal
@@ -249,9 +259,61 @@ func (s *Server) setListener(mode, name string) (map[string]any, error) {
 			s.mu.Unlock()
 			_ = SaveConfig(s.StateDir, snapshot)
 		}
-	} else if err := s.ensureListenerRegistration(context.Background()); err != nil {
-		return nil, err
+	} else {
+		if err := s.ensureListenerRegistration(context.Background()); err != nil {
+			return nil, err
+		}
+		if err := s.reportListener(context.Background(), local); err != nil {
+			log.Printf("listener: %v", err)
+		}
 	}
 	s.startIdentitySync()
 	return s.lanStatus()
+}
+
+// reportListener sends the current endpoint to Dyner with the device
+// credential. A local change also records whether LAN access is on.
+func (s *Server) reportListener(ctx context.Context, local bool) error {
+	s.mu.Lock()
+	config := s.Config
+	s.mu.Unlock()
+	if config.resolvedListenerMode() == ListenerOff {
+		return nil
+	}
+	hashes, err := s.certificateHashes()
+	if err != nil {
+		return err
+	}
+	var lanAccess *bool
+	if local {
+		on := config.resolvedListenerMode() == ListenerLAN
+		lanAccess = &on
+	}
+	return ReportDeviceListener(ctx, nil, config, config.ListenerEndpoint(), hashes, lanAccess)
+}
+
+// applyAccountLANRequest switches the listener to what the account asked for
+// in Dyner's Environments tab. Android keeps its loopback-only agent.
+func (s *Server) applyAccountLANRequest(requested *bool) {
+	if requested == nil || runtime.GOOS == "android" {
+		return
+	}
+	s.mu.Lock()
+	mode := s.Config.resolvedListenerMode()
+	name := s.Config.ListenerName
+	s.mu.Unlock()
+	want := mode
+	switch {
+	case *requested && mode != ListenerLAN:
+		want = ListenerLAN
+	case !*requested && mode == ListenerLAN:
+		want = ListenerLocal
+	}
+	if want == mode {
+		return
+	}
+	log.Printf("listener: the account asked for %s mode", want)
+	if _, err := s.applyListener(want, name, false); err != nil {
+		log.Printf("listener: cannot switch to %s: %v", want, err)
+	}
 }

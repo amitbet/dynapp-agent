@@ -3,6 +3,8 @@ package shellagent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -292,5 +294,93 @@ func TestEnsureListenerRegistrationReregistersWhenEnvironmentIsGone(t *testing.T
 	}
 	if agent.Config.EnvironmentID != "env_fresh" || agent.Config.DeviceCredential == "" {
 		t.Fatalf("config not refreshed: %#v", agent.Config.EnvironmentID)
+	}
+}
+
+func TestAccountLANRequestSwitchesTheListenerAndReportsIt(t *testing.T) {
+	probe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.LocalAddr().(*net.UDPAddr).Port
+	_ = probe.Close()
+	reports := make(chan map[string]any, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/remote-environments/env_lan" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "DynApp-Device env_lan.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		reports <- body
+		writeJSON(w, map[string]any{"environment": map[string]any{"id": "env_lan"}})
+	}))
+	defer server.Close()
+	agent := &Server{
+		StateDir:           t.TempDir(),
+		Address:            fmt.Sprintf("127.0.0.1:%d", port),
+		identitySyncCancel: func() {},
+		Config: Config{
+			SchemaVersion:    ConfigSchemaVersion,
+			DynerBaseURL:     server.URL,
+			EnvironmentID:    "env_lan",
+			DeviceCredential: "env_lan.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789",
+			ListenerMode:     ListenerLocal,
+			LANEnabled:       true,
+			LANAddress:       fmt.Sprintf("127.0.0.1:%d", port),
+			ListenerName:     "Office PC",
+		},
+	}
+	t.Cleanup(func() {
+		agent.mu.Lock()
+		closeLAN := agent.lanClose
+		agent.mu.Unlock()
+		if closeLAN != nil {
+			_ = closeLAN()
+		}
+	})
+
+	// No account decision: nothing changes.
+	agent.applyAccountLANRequest(nil)
+	if agent.Config.resolvedListenerMode() != ListenerLocal {
+		t.Fatalf("mode = %s without a request", agent.Config.resolvedListenerMode())
+	}
+
+	on := true
+	agent.applyAccountLANRequest(&on)
+	if agent.Config.resolvedListenerMode() != ListenerLAN {
+		t.Fatalf("mode = %s after the account asked for LAN", agent.Config.resolvedListenerMode())
+	}
+	report := <-reports
+	if _, decided := report["lanAccess"]; decided {
+		t.Fatalf("a change the account asked for must not re-record the request: %v", report)
+	}
+	if endpoint, _ := report["endpoint"].(string); strings.Contains(endpoint, "127.0.0.1") || endpoint == "" {
+		t.Fatalf("reported endpoint = %q, want the LAN address", endpoint)
+	}
+	if hashes, _ := report["serverCertificateHashes"].([]any); len(hashes) != 1 {
+		t.Fatalf("certificate hashes = %v", report["serverCertificateHashes"])
+	}
+
+	// The same request again is a no-op.
+	agent.applyAccountLANRequest(&on)
+	select {
+	case extra := <-reports:
+		t.Fatalf("unexpected report %v", extra)
+	default:
+	}
+
+	// Turned off on this computer: the report carries the decision.
+	if _, err := agent.setListener(ListenerLocal, "Office PC"); err != nil {
+		t.Fatal(err)
+	}
+	report = <-reports
+	if report["lanAccess"] != false {
+		t.Fatalf("a local change must record lanAccess=false: %v", report)
+	}
+	if endpoint, _ := report["endpoint"].(string); !strings.Contains(endpoint, "127.0.0.1") {
+		t.Fatalf("reported endpoint = %q, want loopback", endpoint)
 	}
 }
