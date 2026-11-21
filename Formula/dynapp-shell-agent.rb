@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.103"
+  version "0.1.104"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.103/dynapp-shell-agent-0.1.103-darwin-arm64"
-      sha256 "ec36ab1683c659df24f0d7052b8f263089f65a7058e345087468d22ce3be9224"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.104/dynapp-shell-agent-0.1.104-darwin-arm64"
+      sha256 "4150919fa0135b5293af2e0e834abe83bbd6a11196a0533e8831c6f7c2d56eac"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.103/dynapp-shell-agent-0.1.103-darwin-amd64"
-      sha256 "45b4ee048312363d39de6b9a320b10346bec2860ebdf9de8bd3baff0a4b34eb9"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.104/dynapp-shell-agent-0.1.104-darwin-amd64"
+      sha256 "66df919496456041672e5dee6e8f8bb727181c2984ac55915229fbc305f0b428"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.103/dynapp-shell-agent-0.1.103-linux-arm64"
-      sha256 "9ecc3adacfb50df536a17f76e4452ce145273d511f448029f5574cc8104314c9"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.104/dynapp-shell-agent-0.1.104-linux-arm64"
+      sha256 "27c5508e2677633203b8f84d6abd77f060d6c29aa98380631c7e99f9b2889e82"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.103/dynapp-shell-agent-0.1.103-linux-amd64"
-      sha256 "b5babb3fd3d2b8aa63d8c6b66c3b2f27fe9f5e37aed99692115f6a93f1765916"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.104/dynapp-shell-agent-0.1.104-linux-amd64"
+      sha256 "eae680d7a918fc9a9514bc92fbff89cb2b66b56fef657532f83d69744904e7d1"
     end
   end
 
