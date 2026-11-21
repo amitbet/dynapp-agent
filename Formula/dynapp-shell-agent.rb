@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.105"
+  version "0.1.106"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.105/dynapp-shell-agent-0.1.105-darwin-arm64"
-      sha256 "44e974470cbf3399efb3c6477d1f806442489af3528d1f9f0ec5da57704966cd"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.106/dynapp-shell-agent-0.1.106-darwin-arm64"
+      sha256 "36af518eba0db1fdebe8d48f9d6e647e1db287392b6cb6036f402dd89c06dd56"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.105/dynapp-shell-agent-0.1.105-darwin-amd64"
-      sha256 "b92fc52c91b00f362364068eb2d0203113851898844860599d0b76460f895c46"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.106/dynapp-shell-agent-0.1.106-darwin-amd64"
+      sha256 "4593a607e0cd95db34777e4e5746f22b05ea0057205bc1da9fbfed880281f647"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.105/dynapp-shell-agent-0.1.105-linux-arm64"
-      sha256 "4168951240c61582135e2036d6fa2b3799f91067651173a101aa59b8abf3eef8"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.106/dynapp-shell-agent-0.1.106-linux-arm64"
+      sha256 "c62e07d39dc8134ba8e8425984c317a3ed920194bdf219950e4d360bad61f047"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.105/dynapp-shell-agent-0.1.105-linux-amd64"
-      sha256 "6e32625efbcc57818d6e970ac6ec9c92ae5e7d7cece227e1fd716e92d640f99a"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.106/dynapp-shell-agent-0.1.106-linux-amd64"
+      sha256 "e26fbfa74e7319de0bb5ff0c5899d4191aa533887ec08bfdd1785949eea4b335"
     end
   end
 
