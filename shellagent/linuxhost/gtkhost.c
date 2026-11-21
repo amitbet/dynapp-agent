@@ -43,6 +43,31 @@ static void choose_webkit_rendering(void) {
 #endif
 }
 
+// Without the DMA-BUF renderer, WebKitGTK (seen on 2.54) never creates the
+// web process's shared display, yet every WebCodecs video decoder asks it for
+// a GL context (GStreamer setGstElementGLContext -> sharedDisplay()), which
+// aborts the web process. noVNC probes VideoDecoder.isConfigSupported on
+// load, so such a page crashed on every load. Turning the DMA-BUF renderer
+// back on brings the smear back, so hide WebCodecs video instead: pages see no
+// VideoDecoder and use their other codecs.
+static void disable_webcodecs_without_dmabuf(WebKitSettings *settings) {
+  const char *dmabuf = getenv("WEBKIT_DISABLE_DMABUF_RENDERER");
+  if (!dmabuf || !*dmabuf || strcmp(dmabuf, "0") == 0) return;
+#if WEBKIT_CHECK_VERSION(2, 42, 0)
+  WebKitFeatureList *features = webkit_settings_get_all_features();
+  for (gsize index = 0; index < webkit_feature_list_get_length(features); index++) {
+    WebKitFeature *feature = webkit_feature_list_get(features, index);
+    if (g_strcmp0(webkit_feature_get_identifier(feature), "WebCodecsVideo") == 0) {
+      webkit_settings_set_feature_enabled(settings, feature, FALSE);
+      g_message("DMA-BUF renderer off: WebCodecs video disabled");
+    }
+  }
+  webkit_feature_list_unref(features);
+#else
+  (void)settings;
+#endif
+}
+
 const char *host_check(void) {
   if (!gtk_init_check(NULL, NULL)) return "cannot open the display";
   return NULL;
@@ -627,9 +652,34 @@ void host_close_permission_page(const char *id) {
 
 // ---- Main window ---------------------------------------------------------
 
+// A page that crashes WebKit on every load would otherwise reload forever,
+// flashing between the page and a blank view. Reload after a crash only while
+// crashes stay rare; after three within a minute, show what happened and let
+// the user reload by hand (menu Reload, Ctrl+R or F5).
+static gint64 crash_times[3];
+
 static void on_web_process_terminated(WebKitWebView *view, WebKitWebProcessTerminationReason reason, gpointer data) {
   (void)data;
-  if (reason != WEBKIT_WEB_PROCESS_TERMINATED_BY_API) webkit_web_view_reload(view);
+  if (reason == WEBKIT_WEB_PROCESS_TERMINATED_BY_API) return;
+  gint64 now = g_get_monotonic_time();
+  memmove(crash_times, crash_times + 1, sizeof(crash_times) - sizeof(crash_times[0]));
+  crash_times[G_N_ELEMENTS(crash_times) - 1] = now;
+  if (crash_times[0] == 0 || now - crash_times[0] > 60 * G_USEC_PER_SEC) {
+    webkit_web_view_reload(view);
+    return;
+  }
+  memset(crash_times, 0, sizeof(crash_times));
+  const char *what = reason == WEBKIT_WEB_PROCESS_EXCEEDED_MEMORY_LIMIT ? "ran out of memory" : "crashed";
+  char *html = g_strdup_printf(
+      "<!doctype html><meta charset=utf-8><body style=\"font:15px system-ui,sans-serif;margin:48px;color:#222\">"
+      "<h2 style=\"font-weight:600\">This app %s</h2>"
+      "<p>WebKit stopped the page several times in a row, so it was not reloaded again.</p>"
+      "<p>Choose Reload in the window menu, or press Ctrl+R, to try again.</p>",
+      what);
+  g_warning("web process %s three times within a minute; not reloading", what);
+  // The failed page's URI as base keeps Reload pointed at the app.
+  webkit_web_view_load_alternate_html(view, html, webkit_web_view_get_uri(view), NULL);
+  g_free(html);
 }
 
 static void on_view_close(WebKitWebView *view, gpointer data) {
@@ -823,6 +873,7 @@ void host_create_window(const char *title, const char *icon, const char *data_di
   for (int index = 0; enabled[index]; index++) {
     if (g_object_class_find_property(settings_class, enabled[index])) g_object_set(settings, enabled[index], TRUE, NULL);
   }
+  disable_webcodecs_without_dmabuf(settings);
 
   g_signal_connect(main_view, "decide-policy", G_CALLBACK(on_decide_policy), NULL);
   g_signal_connect(main_view, "create", G_CALLBACK(on_create), NULL);

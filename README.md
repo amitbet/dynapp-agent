@@ -322,6 +322,11 @@ in its config turns them off.
   `WEBKIT_DISABLE_DMABUF_RENDERER=1` before WebKit starts. WebKit's GPU path
   leaves stale pixels when another window uncovers a DynApp there. Software
   rendering has no WebGL. Set either variable yourself to override the choice.
+  While `WEBKIT_DISABLE_DMABUF_RENDERER` is set, the host also turns off
+  WebCodecs video (`VideoDecoder`): on WebKitGTK 2.54 the first decoder probe
+  aborts the web process without the DMA-BUF renderer. After three
+  web-process crashes within a minute the host stops reloading and shows a
+  message; Reload tries again.
 
 macOS bundle icons use the hosted maskable PNG and the macOS rounded icon
 grid, keeping the glyph at its original size to match Chrome-installed PWAs.
