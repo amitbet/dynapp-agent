@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.108"
+  version "0.1.109"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.108/dynapp-shell-agent-0.1.108-darwin-arm64"
-      sha256 "29a2916bf850b2b084f13e00940e94d81934887adaa11c0bf2e9027f36bbf00e"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.109/dynapp-shell-agent-0.1.109-darwin-arm64"
+      sha256 "8fef6d1cf287516f75120eba006511b6749d2bc4df18fac116d30ddc92bade67"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.108/dynapp-shell-agent-0.1.108-darwin-amd64"
-      sha256 "5cd1128126552ddd9e0027520da954b74d5493b4411397aed08498a44d75f9ca"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.109/dynapp-shell-agent-0.1.109-darwin-amd64"
+      sha256 "6cb93d9403bceef36efb0de14ca21c232e69bc3ab0f5b98399dcd44f9c4a4419"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.108/dynapp-shell-agent-0.1.108-linux-arm64"
-      sha256 "00baac7e3da5caf488136a9f87e8182f3370b37499ea1e9ed8b8885728a0a7ea"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.109/dynapp-shell-agent-0.1.109-linux-arm64"
+      sha256 "ce289f09b6da2ce44f4aaa36d46cf5726d69edcada40affa833c91fe6ea8bb09"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.108/dynapp-shell-agent-0.1.108-linux-amd64"
-      sha256 "215ab7793bc30a592135d0b9b6fc498c278a783b16bfc65bd57e9a67dd266ff1"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.109/dynapp-shell-agent-0.1.109-linux-amd64"
+      sha256 "8e5c5505cb022ccafa592d12da092a6f58289cb078dab8302055dbd8e8d050bc"
     end
   end
 
