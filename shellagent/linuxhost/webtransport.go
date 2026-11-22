@@ -47,6 +47,9 @@ const (
 	wtMaxURLLength    = 2048
 	wtMaxHashes       = 8
 	wtWriteQueueDepth = 64
+	// wtReadAhead is how many read requests the page keeps out (READ_AHEAD
+	// in webtransport_polyfill.js).
+	wtReadAhead = 4
 )
 
 // WebTransportBridge serves the page's WebTransport stand-in.
@@ -133,7 +136,7 @@ func (b *WebTransportBridge) Handle(message BridgeMessage) {
 			case stream.reads <- struct{}{}:
 			case <-stream.done:
 			default:
-				// One read is already queued; the page waits for it.
+				// The page already has its read-ahead queued.
 			}
 		}
 	case "wt-abort":
@@ -452,7 +455,7 @@ func (b *WebTransportBridge) openStream(s *wtSession, session *webtransport.Sess
 		return
 	}
 	// Reserve the id so writes queued before the open completes find it.
-	stream := &wtStream{id: id, writes: make(chan wtWrite, wtWriteQueueDepth), reads: make(chan struct{}, 1), done: make(chan struct{})}
+	stream := &wtStream{id: id, writes: make(chan wtWrite, wtWriteQueueDepth), reads: make(chan struct{}, wtReadAhead), done: make(chan struct{})}
 	s.mu.Lock()
 	s.streams[id] = stream
 	s.mu.Unlock()
@@ -512,8 +515,8 @@ func (b *WebTransportBridge) queueWrite(sessionID, streamID string, write wtWrit
 	case stream.writes <- write:
 	case <-stream.done:
 	default:
-		// The page waits for each write's ack, so a full queue means a
-		// misbehaving page rather than ordinary buffering.
+		// The page keeps at most 32 writes unacknowledged, so a full queue
+		// means a misbehaving page rather than ordinary buffering.
 		b.Deliver(map[string]any{"wid": sessionID, "stream": streamID, "event": "write-error", "error": "too many unacknowledged writes"})
 	}
 }
@@ -552,7 +555,8 @@ func writeResult(sessionID, streamID, event string, err error) map[string]any {
 }
 
 // readLoop reads one chunk for each request from the page, so the page's
-// ReadableStream sets the pace.
+// ReadableStream sets the pace; the page keeps a few requests out so the
+// next chunk is read while it handles the last.
 func (b *WebTransportBridge) readLoop(sessionID string, stream *wtStream) {
 	buffer := make([]byte, wtReadChunk)
 	for {

@@ -41,6 +41,15 @@
   })();
   let nextId = 0;
   const sessions = new Map();
+  // A round trip to the host per chunk caps one stream well below the
+  // bridge's speed, so several chunks travel at once each way. Writes
+  // resolve while the host has acknowledged all but WRITE_WINDOW bytes (and
+  // fewer than WRITE_SLOTS writes; the host queues 64). Reads keep up to
+  // READ_AHEAD requests out, each answered with at most 256 KiB, and never
+  // more than the ReadableStream's queue has room for.
+  const WRITE_WINDOW = 1024 * 1024;
+  const WRITE_SLOTS = 32;
+  const READ_AHEAD = 4;
 
   class WebTransportError extends Error {
     constructor(message, { closeCode = null, reason = "", source = "session" } = {}) {
@@ -151,39 +160,50 @@
       this.done = false;
       this.readEnded = false;
       this.writeEnded = false;
-      this.pendingRead = null;
-      this.pendingWrites = [];
+      this.controller = null;
+      this.readsOut = 0;
+      this.pullWaiter = null;
+      this.inFlight = [];
+      this.inFlightBytes = 0;
+      this.writeWaiter = null;
+      this.closeWaiter = null;
+      this.writeError = null;
       this.opened = new Promise((resolve, reject) => { this.resolveOpen = resolve; this.rejectOpen = reject; });
       this.opened.catch(() => {});
       const stream = this;
       this.readable = new ReadableStream({
-        // The first pull runs as soon as the stream object exists; the host
-        // ignores reads for a stream it has not opened yet.
-        pull(controller) {
+        start(controller) { stream.controller = controller; },
+        // Reads are only requested once the host has opened the stream; it
+        // ignores reads for a stream it does not know yet.
+        pull() {
           return stream.opened.then(() => {
             if (stream.readEnded) return undefined;
-            return new Promise((resolve, reject) => {
-              stream.pendingRead = { controller, resolve, reject };
-              post({ op: "wt-read", wid: stream.wid, stream: stream.id });
-            });
+            stream.requestReads();
+            if (stream.readsOut === 0) return undefined;
+            return new Promise((resolve, reject) => { stream.pullWaiter = { resolve, reject }; });
           });
         },
         cancel() {
           stream.readEnded = true;
           stream.abort();
         },
-      }, { highWaterMark: 1 });
+      }, { highWaterMark: READ_AHEAD });
       this.writable = new WritableStream({
         write(chunk) {
+          if (stream.writeError) throw stream.writeError;
           const bytes = toBytes(chunk);
-          return new Promise((resolve, reject) => {
-            stream.pendingWrites.push({ resolve, reject });
-            post({ op: "wt-write", wid: stream.wid, stream: stream.id, binary: toBase64(bytes) });
-          });
+          stream.inFlight.push(bytes.byteLength);
+          stream.inFlightBytes += bytes.byteLength;
+          post({ op: "wt-write", wid: stream.wid, stream: stream.id, binary: toBase64(bytes) });
+          if (stream.hasRoom()) return undefined;
+          return new Promise((resolve, reject) => { stream.writeWaiter = { resolve, reject }; });
         },
         close() {
+          if (stream.writeError) throw stream.writeError;
+          // The host acks writes and the FIN in order, so "fin" also means
+          // every write before it is done.
           return new Promise((resolve, reject) => {
-            stream.pendingWrites.push({ resolve, reject, fin: true });
+            stream.closeWaiter = { resolve, reject };
             post({ op: "wt-fin", wid: stream.wid, stream: stream.id });
           });
         },
@@ -192,6 +212,24 @@
           stream.abort();
         },
       });
+    }
+
+    hasRoom() {
+      return this.inFlightBytes < WRITE_WINDOW && this.inFlight.length < WRITE_SLOTS;
+    }
+
+    requestReads() {
+      const room = Math.max(0, this.controller?.desiredSize ?? 0);
+      while (!this.readEnded && this.readsOut < Math.min(READ_AHEAD, room)) {
+        this.readsOut += 1;
+        post({ op: "wt-read", wid: this.wid, stream: this.id });
+      }
+    }
+
+    wakePull() {
+      const waiter = this.pullWaiter;
+      this.pullWaiter = null;
+      waiter?.resolve();
     }
 
     abort() {
@@ -208,49 +246,63 @@
         case "stream-error":
           this.fail(new WebTransportError(event.error || "Failed to create bidirectional stream.", { source: "stream" }));
           break;
-        case "data": {
-          const read = this.pendingRead;
-          this.pendingRead = null;
-          if (!read) break;
-          try { read.controller.enqueue(fromBase64(event.binary || "")); } catch { /* cancelled */ }
-          read.resolve();
+        case "data":
+          this.readsOut = Math.max(0, this.readsOut - 1);
+          if (this.readEnded) break;
+          try { this.controller.enqueue(fromBase64(event.binary || "")); } catch { /* cancelled */ }
+          this.wakePull();
           break;
-        }
-        case "end": {
+        case "end":
           this.readEnded = true;
-          const read = this.pendingRead;
-          this.pendingRead = null;
-          if (read) {
-            try { read.controller.close(); } catch { /* cancelled */ }
-            read.resolve();
-          }
+          this.readsOut = 0;
+          try { this.controller.close(); } catch { /* cancelled */ }
+          this.wakePull();
           this.settle();
           break;
-        }
         case "read-error": {
           this.readEnded = true;
-          const read = this.pendingRead;
-          this.pendingRead = null;
-          read?.reject(new WebTransportError(event.error || "WebTransport stream reset", { source: "stream" }));
+          this.readsOut = 0;
+          const error = new WebTransportError(event.error || "WebTransport stream reset", { source: "stream" });
+          try { this.controller.error(error); } catch { /* cancelled */ }
+          const waiter = this.pullWaiter;
+          this.pullWaiter = null;
+          waiter?.reject(error);
           this.settle();
           break;
         }
-        case "ack":
+        case "ack": {
+          this.inFlightBytes -= this.inFlight.shift() ?? 0;
+          if (this.writeWaiter && this.hasRoom()) {
+            const waiter = this.writeWaiter;
+            this.writeWaiter = null;
+            waiter.resolve();
+          }
+          break;
+        }
         case "fin": {
-          const write = this.pendingWrites.shift();
-          if (event.event === "fin") this.writeEnded = true;
-          write?.resolve();
-          this.settle();
-          break;
-        }
-        case "write-error": {
           this.writeEnded = true;
-          const error = new WebTransportError(event.error || "WebTransport stream write failed", { source: "stream" });
-          for (const write of this.pendingWrites.splice(0)) write.reject(error);
+          this.inFlight = [];
+          this.inFlightBytes = 0;
+          const waiter = this.closeWaiter;
+          this.closeWaiter = null;
+          waiter?.resolve();
           this.settle();
           break;
         }
+        case "write-error":
+          this.writeEnded = true;
+          this.failWrites(new WebTransportError(event.error || "WebTransport stream write failed", { source: "stream" }));
+          this.settle();
+          break;
       }
+    }
+
+    failWrites(error) {
+      this.writeError ??= error;
+      const waiters = [this.writeWaiter, this.closeWaiter];
+      this.writeWaiter = null;
+      this.closeWaiter = null;
+      for (const waiter of waiters) waiter?.reject(error);
     }
 
     settle() {
@@ -259,13 +311,16 @@
 
     fail(error) {
       this.done = true;
-      this.readEnded = true;
-      this.writeEnded = true;
       this.rejectOpen(error);
-      const read = this.pendingRead;
-      this.pendingRead = null;
-      read?.reject(error);
-      for (const write of this.pendingWrites.splice(0)) write.reject(error);
+      if (!this.readEnded) {
+        this.readEnded = true;
+        try { this.controller?.error(error); } catch { /* cancelled */ }
+      }
+      const waiter = this.pullWaiter;
+      this.pullWaiter = null;
+      waiter?.reject(error);
+      this.writeEnded = true;
+      this.failWrites(error);
     }
   }
 

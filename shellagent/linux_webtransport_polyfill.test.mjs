@@ -48,7 +48,7 @@ function echoHost(message, window) {
       break;
     case "wt-read": {
       const buffer = buffers.get(key);
-      buffer.waiting = true;
+      buffer.waiting = (buffer.waiting || 0) + 1;
       serveRead(buffer, message.stream, deliver);
       break;
     }
@@ -58,13 +58,14 @@ function echoHost(message, window) {
   }
 }
 
-// Like the Go host, a read request blocks until data or the end arrives.
+// Like the Go host, each read request blocks until data or the end arrives.
 function serveRead(buffer, stream, deliver) {
-  if (!buffer.waiting) return;
-  if (buffer.data.length) deliver({ stream, event: "data", binary: buffer.data.shift() });
-  else if (buffer.fin) deliver({ stream, event: "end" });
-  else return;
-  buffer.waiting = false;
+  while (buffer.waiting) {
+    if (buffer.data.length) deliver({ stream, event: "data", binary: buffer.data.shift() });
+    else if (buffer.fin) { deliver({ stream, event: "end" }); buffer.waiting = 0; return; }
+    else return;
+    buffer.waiting -= 1;
+  }
 }
 
 const hash = { algorithm: "sha-256", value: new Uint8Array(32).fill(7) };
@@ -128,4 +129,64 @@ test("the stand-in stays out of the way when the engine has WebTransport", () =>
   const { window, posted } = page({ nativeWebTransport: true });
   assert.equal(window.WebTransport.name, "NativeWebTransport");
   assert.equal(posted.length, 0);
+});
+
+test("several writes and reads are in flight at once, within the window", async () => {
+  // A host that holds acks and data until the test releases them.
+  const held = [];
+  let readsOut = 0;
+  const { window, posted } = page({
+    host(message, context) {
+      const deliver = (event) => context.__dynappWebTransportDeliver({ wid: message.wid, ...event });
+      if (message.op === "wt-open") setTimeout(() => deliver({ event: "ready" }), 0);
+      else if (message.op === "wt-stream") setTimeout(() => deliver({ stream: message.stream, event: "stream-ready" }), 0);
+      else if (message.op === "wt-write") held.push(() => deliver({ stream: message.stream, event: "ack" }));
+      else if (message.op === "wt-fin") held.push(() => deliver({ stream: message.stream, event: "fin" }));
+      else if (message.op === "wt-read") { readsOut += 1; held.push(() => { readsOut -= 1; deliver({ stream: message.stream, event: "data", binary: btoa("x") }); }); }
+    },
+  });
+  const transport = new window.WebTransport("https://192.168.1.81:9011/dynapp-remote", { serverCertificateHashes: [hash] });
+  await transport.ready;
+  const { readable, writable } = await transport.createBidirectionalStream();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(readsOut, 4, "the page keeps four reads out before any data arrives");
+
+  const writer = writable.getWriter();
+  const chunk = new Uint8Array(256 * 1024);
+  const results = [];
+  for (let index = 0; index < 5; index += 1) writer.write(chunk).then(() => results.push(index));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const writes = posted.filter((message) => message.op === "wt-write").length;
+  assert.equal(writes, 4, "1 MiB of writes goes out before any ack; the next waits");
+  assert.deepEqual(results, [0, 1, 2], "writes resolve while under 1 MiB is unacknowledged");
+
+  // Release every held ack and read; then the writer and reader catch up.
+  const release = async () => { while (held.length) held.shift()(); await new Promise((resolve) => setTimeout(resolve, 0)); };
+  while (results.length < 5) await release();
+  assert.deepEqual(results, [0, 1, 2, 3, 4]);
+  const reader = readable.getReader();
+  for (let index = 0; index < 4; index += 1) assert.equal(new TextDecoder().decode((await reader.read()).value), "x");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(readsOut > 0 && readsOut <= 4, `reads are requested again as the reader drains (${readsOut})`);
+  const closing = writer.close();
+  await release();
+  await closing;
+});
+
+test("a write error rejects the waiting write and later ones", async () => {
+  const { window } = page({
+    host(message, context) {
+      const deliver = (event) => setTimeout(() => context.__dynappWebTransportDeliver({ wid: message.wid, ...event }), 0);
+      if (message.op === "wt-open") deliver({ event: "ready" });
+      else if (message.op === "wt-stream") deliver({ stream: message.stream, event: "stream-ready" });
+      else if (message.op === "wt-write") deliver({ stream: message.stream, event: "write-error", error: "stream reset by peer" });
+    },
+  });
+  const transport = new window.WebTransport("https://192.168.1.81:9011/dynapp-remote", { serverCertificateHashes: [hash] });
+  await transport.ready;
+  const { writable } = await transport.createBidirectionalStream();
+  const writer = writable.getWriter();
+  await writer.write(new Uint8Array(10)); // under the window: resolves before the host answers
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await assert.rejects(writer.write(new Uint8Array(10)), /stream reset by peer/);
 });
