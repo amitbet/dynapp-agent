@@ -52,7 +52,18 @@ type rtcPeer struct {
 	id       string
 	pc       *webrtc.PeerConnection
 	mu       sync.Mutex
-	channels map[string]*webrtc.DataChannel
+	channels map[string]*rtcChannel
+}
+
+// rtcChannel is one data channel and what the page knows of its sends. The
+// page counts bytes it posted; each "buffered" event says how many of them
+// the host has handed to pion (acked) and how many pion still queues
+// (amount), so the page's bufferedAmount covers both.
+type rtcChannel struct {
+	dc    *webrtc.DataChannel
+	mu    sync.Mutex
+	acked uint64
+	seq   uint64
 }
 
 // RTCServer is one entry of the page's iceServers.
@@ -84,7 +95,13 @@ func (b *RTCBridge) Handle(message BridgeMessage) {
 	case "rtc-channel-close":
 		if peer := b.peer(message.PID); peer != nil {
 			if channel := peer.channel(message.CID); channel != nil {
-				_ = channel.Close()
+				_ = channel.dc.Close()
+			}
+		}
+	case "rtc-threshold":
+		if peer := b.peer(message.PID); peer != nil && message.Size >= 0 {
+			if channel := peer.channel(message.CID); channel != nil {
+				channel.dc.SetBufferedAmountLowThreshold(uint64(message.Size))
 			}
 		}
 	case "rtc-offer", "rtc-local", "rtc-remote", "rtc-candidate", "rtc-stats":
@@ -162,7 +179,7 @@ func (b *RTCBridge) newPeer(message BridgeMessage) {
 		fail(err)
 		return
 	}
-	peer := &rtcPeer{id: message.PID, pc: pc, channels: map[string]*webrtc.DataChannel{}}
+	peer := &rtcPeer{id: message.PID, pc: pc, channels: map[string]*rtcChannel{}}
 	b.mu.Lock()
 	b.peers[message.PID] = peer
 	b.mu.Unlock()
@@ -192,12 +209,13 @@ func (b *RTCBridge) newPeer(message BridgeMessage) {
 		if channel.ID() != nil {
 			id = "remote-" + strconv.Itoa(int(*channel.ID()))
 		}
-		if !peer.add(id, channel) {
+		entry := peer.add(id, channel)
+		if entry == nil {
 			_ = channel.Close()
 			return
 		}
 		b.Deliver(map[string]any{"pid": peer.id, "event": "datachannel", "cid": id, "label": channel.Label(), "ordered": channel.Ordered()})
-		b.watchChannel(peer, id, channel)
+		b.watchChannel(peer, id, entry)
 	})
 }
 
@@ -246,17 +264,18 @@ func (b *RTCBridge) closePeer(id string) {
 	go func() { _ = peer.pc.Close() }()
 }
 
-func (p *rtcPeer) add(id string, channel *webrtc.DataChannel) bool {
+func (p *rtcPeer) add(id string, dc *webrtc.DataChannel) *rtcChannel {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if _, exists := p.channels[id]; exists || len(p.channels) >= rtcMaxChannels {
-		return false
+		return nil
 	}
+	channel := &rtcChannel{dc: dc}
 	p.channels[id] = channel
-	return true
+	return channel
 }
 
-func (p *rtcPeer) channel(id string) *webrtc.DataChannel {
+func (p *rtcPeer) channel(id string) *rtcChannel {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.channels[id]
@@ -295,15 +314,32 @@ func (b *RTCBridge) createChannel(message BridgeMessage) {
 		fail(err)
 		return
 	}
-	if !peer.add(message.CID, channel) {
+	entry := peer.add(message.CID, channel)
+	if entry == nil {
 		_ = channel.Close()
 		fail(errors.New("too many data channels"))
 		return
 	}
-	b.watchChannel(peer, message.CID, channel)
+	b.watchChannel(peer, message.CID, entry)
 }
 
-func (b *RTCBridge) watchChannel(peer *rtcPeer, id string, channel *webrtc.DataChannel) {
+// reportBuffered tells the page how much of its sending the host has taken
+// and how much pion still queues. The lock keeps seq in delivery order.
+func (b *RTCBridge) reportBuffered(peer *rtcPeer, id string, channel *rtcChannel, size int) {
+	channel.mu.Lock()
+	defer channel.mu.Unlock()
+	if size > 0 {
+		channel.acked += uint64(size)
+	}
+	channel.seq++
+	b.Deliver(map[string]any{"pid": peer.id, "cid": id, "event": "buffered", "acked": channel.acked, "amount": channel.dc.BufferedAmount(), "seq": channel.seq})
+}
+
+func (b *RTCBridge) watchChannel(peer *rtcPeer, id string, entry *rtcChannel) {
+	channel := entry.dc
+	// pion calls this when its queue drops to the threshold the page set
+	// (0 until it sets one).
+	channel.OnBufferedAmountLow(func() { b.reportBuffered(peer, id, entry, 0) })
 	channel.OnOpen(func() {
 		b.Deliver(map[string]any{"pid": peer.id, "cid": id, "event": "open"})
 	})
@@ -330,10 +366,11 @@ func (b *RTCBridge) send(message BridgeMessage) {
 	if peer == nil {
 		return
 	}
-	channel := peer.channel(message.CID)
-	if channel == nil {
+	entry := peer.channel(message.CID)
+	if entry == nil {
 		return
 	}
+	channel := entry.dc
 	var err error
 	if message.Binary != "" || message.IsBinary {
 		var data []byte
@@ -354,6 +391,9 @@ func (b *RTCBridge) send(message BridgeMessage) {
 	if err != nil {
 		b.Deliver(map[string]any{"pid": peer.id, "cid": message.CID, "event": "channel-error", "error": err.Error()})
 	}
+	// Acknowledge the page's count even when the send failed, so its
+	// bufferedAmount does not stay high forever.
+	b.reportBuffered(peer, message.CID, entry, message.Size)
 }
 
 // call runs one request that the page awaits.

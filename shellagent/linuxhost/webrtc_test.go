@@ -132,7 +132,7 @@ func TestRTCBridgeConnectsAndEchoesOverDataChannels(t *testing.T) {
 	events.wait(t, func(e map[string]any) bool { return e["event"] == "connectionstatechange" && e["state"] == "connected" })
 	events.wait(t, func(e map[string]any) bool { return e["event"] == "open" && e["cid"] == "control" })
 
-	bridge.Handle(BridgeMessage{Op: "rtc-send", PID: "p1", CID: "control", Text: `{"type":"hello"}`})
+	bridge.Handle(BridgeMessage{Op: "rtc-send", PID: "p1", CID: "control", Text: `{"type":"hello"}`, Size: 16})
 	if text := events.wait(t, func(e map[string]any) bool { return e["event"] == "message" && e["cid"] == "control" })["text"]; text != `echo:{"type":"hello"}` {
 		t.Fatalf("text echo = %v", text)
 	}
@@ -140,7 +140,34 @@ func TestRTCBridgeConnectsAndEchoesOverDataChannels(t *testing.T) {
 	for index := range payload {
 		payload[index] = byte(index % 251)
 	}
-	bridge.Handle(BridgeMessage{Op: "rtc-send", PID: "p1", CID: "control", Binary: base64.StdEncoding.EncodeToString(payload), IsBinary: true})
+	bridge.Handle(BridgeMessage{Op: "rtc-send", PID: "p1", CID: "control", Text: `{"type":"hello"}`, Size: 16})
+	bridge.Handle(BridgeMessage{Op: "rtc-threshold", PID: "p1", CID: "control", Size: 64 * 1024})
+	bridge.Handle(BridgeMessage{Op: "rtc-send", PID: "p1", CID: "control", Binary: base64.StdEncoding.EncodeToString(payload), IsBinary: true, Size: len(payload)})
+	// Each send is acknowledged with the page's running byte count; pion's
+	// low-queue callback adds reports in between. seq only grows.
+	var lastSeq uint64
+	var final map[string]any
+	for _, want := range []uint64{16, 32, 32 + uint64(len(payload))} {
+		for {
+			report := events.wait(t, func(e map[string]any) bool { return e["event"] == "buffered" && e["cid"] == "control" })
+			if seq := report["seq"].(uint64); seq <= lastSeq {
+				t.Fatalf("seq went from %d to %d", lastSeq, seq)
+			}
+			lastSeq = report["seq"].(uint64)
+			if report["acked"].(uint64) > want {
+				t.Fatalf("acked %v before reaching %d", report["acked"], want)
+			}
+			if report["acked"] == want {
+				final = report
+				break
+			}
+		}
+	}
+	// If pion still queued part of the 200 KiB message, it reports again
+	// once its queue falls to the page's threshold.
+	for final["amount"].(uint64) > 64*1024 {
+		final = events.wait(t, func(e map[string]any) bool { return e["event"] == "buffered" && e["cid"] == "control" })
+	}
 	echoed := events.wait(t, func(e map[string]any) bool {
 		return e["event"] == "message" && e["cid"] == "control" && e["binary"] != nil
 	})

@@ -36,6 +36,7 @@
     if (tag === "[object ArrayBuffer]" || tag === "[object SharedArrayBuffer]") return new Uint8Array(value);
     return null;
   };
+  const encoder = new TextEncoder();
   const pageId = (() => {
     const bytes = new Uint8Array(8);
     crypto.getRandomValues(bytes);
@@ -83,7 +84,16 @@
   };
   const descriptionObject = (value) => (value && value.type ? { type: String(value.type), sdp: String(value.sdp ?? "") } : null);
 
+  // bufferedAmount is bytes the page posted that the host has not handed to
+  // pion yet, plus what pion still queues; the host reports both in
+  // "buffered" events.
   class RTCDataChannel extends Emitter {
+    #posted = 0;
+    #acked = 0;
+    #queued = 0;
+    #seq = 0;
+    #threshold = 0;
+
     constructor(peer, id, label, { ordered = true, maxRetransmits = null } = {}) {
       super();
       this.peer = peer;
@@ -94,12 +104,26 @@
       this.maxRetransmits = maxRetransmits;
       this.readyState = "connecting";
       this.binaryType = "blob";
-      this.bufferedAmount = 0;
-      this.bufferedAmountLowThreshold = 0;
       this.onopen = null;
+      this.onbufferedamountlow = null;
       this.onmessage = null;
       this.onclose = null;
       this.onerror = null;
+    }
+
+    get bufferedAmount() {
+      return Math.max(0, this.#posted - this.#acked) + this.#queued;
+    }
+
+    get bufferedAmountLowThreshold() {
+      return this.#threshold;
+    }
+
+    set bufferedAmountLowThreshold(value) {
+      const threshold = Math.max(0, Math.floor(Number(value)) || 0);
+      if (threshold === this.#threshold) return;
+      this.#threshold = threshold;
+      if (this.readyState !== "closed") post({ op: "rtc-threshold", pid: this.peer, cid: this.channelId, size: threshold });
     }
 
     send(data) {
@@ -109,12 +133,15 @@
         throw error;
       }
       if (typeof data === "string") {
-        post({ op: "rtc-send", pid: this.peer, cid: this.channelId, text: data });
+        const size = encoder.encode(data).byteLength;
+        this.#posted += size;
+        post({ op: "rtc-send", pid: this.peer, cid: this.channelId, text: data, size });
         return;
       }
       const bytes = toBytes(data);
       if (!bytes) throw new TypeError("RTCDataChannel.send accepts strings and BufferSource");
-      post({ op: "rtc-send", pid: this.peer, cid: this.channelId, binary: toBase64(bytes), isBinary: true });
+      this.#posted += bytes.byteLength;
+      post({ op: "rtc-send", pid: this.peer, cid: this.channelId, binary: toBase64(bytes), isBinary: true, size: bytes.byteLength });
     }
 
     close() {
@@ -139,6 +166,16 @@
             data = this.binaryType === "arraybuffer" || typeof Blob !== "function" ? buffer : new Blob([buffer]);
           }
           this.dispatch("message", { data });
+          break;
+        }
+        case "buffered": {
+          const seq = Number(event.seq) || 0;
+          if (seq <= this.#seq) break;
+          this.#seq = seq;
+          const before = this.bufferedAmount;
+          this.#acked = Math.max(this.#acked, Number(event.acked) || 0);
+          this.#queued = Math.max(0, Number(event.amount) || 0);
+          if (before > this.#threshold && this.bufferedAmount <= this.#threshold && this.readyState !== "closed") this.dispatch("bufferedamountlow");
           break;
         }
         case "channel-error":

@@ -10,7 +10,7 @@ const polyfill = readFileSync(new URL("./linuxhost/webrtc_polyfill.js", import.m
 function page(host) {
   const posted = [];
   const context = {
-    btoa, atob, crypto, setTimeout, Map, TypeError, Blob,
+    btoa, atob, crypto, setTimeout, Map, TypeError, Blob, TextEncoder,
     webkit: { messageHandlers: { dynappNativeHost: { postMessage: (raw) => { const message = JSON.parse(raw); posted.push(message); host?.(message, deliver); } } } },
   };
   const deliver = (event) => setTimeout(() => context.__dynappRTCDeliver(event), 0);
@@ -138,4 +138,45 @@ test("the stand-in stays out of the way when the engine has WebRTC", () => {
   vm.runInContext(`const __dynappHostToken = "t";\n${polyfill}`, context);
   assert.equal(context.RTCPeerConnection.name, "NativePeer");
   assert.equal(posted.length, 0);
+});
+
+test("bufferedAmount counts unacknowledged sends and fires bufferedamountlow", async () => {
+  const acks = [];
+  const { window, posted, deliver } = page((message, send) => {
+    if (message.op === "rtc-send") acks.push(message);
+    else scriptedHost(message, send);
+  });
+  const pc = new window.RTCPeerConnection();
+  const channel = pc.createDataChannel("bulk");
+  await pc.setLocalDescription(await pc.createOffer());
+  await pc.setRemoteDescription({ type: "answer", sdp: offerSDP });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(channel.readyState, "open");
+  assert.throws(() => { "use strict"; channel.bufferedAmount = 5; }, TypeError, "bufferedAmount is read-only");
+
+  channel.bufferedAmountLowThreshold = 100;
+  assert.deepEqual(posted.at(-1), { dynappNativeHost: 1, op: "rtc-threshold", pid: posted.at(-1).pid, cid: posted.at(-1).cid, size: 100, hostToken: "launch-token" });
+  let lows = 0;
+  channel.onbufferedamountlow = () => { lows += 1; };
+  channel.send(new Uint8Array(300));
+  channel.send("héllo"); // 6 UTF-8 bytes
+  assert.equal(channel.bufferedAmount, 306);
+  assert.deepEqual(acks.map((message) => message.size), [300, 6]);
+
+  const { pid, cid } = acks[0];
+  // The host took the first send but pion still queues 200 of it.
+  deliver({ pid, cid, event: "buffered", acked: 300, amount: 200, seq: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(channel.bufferedAmount, 206);
+  assert.equal(lows, 0);
+  // A stale report is ignored.
+  deliver({ pid, cid, event: "buffered", acked: 0, amount: 999, seq: 1 });
+  deliver({ pid, cid, event: "buffered", acked: 306, amount: 50, seq: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(channel.bufferedAmount, 50);
+  assert.equal(lows, 1);
+  deliver({ pid, cid, event: "buffered", acked: 306, amount: 0, seq: 3 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(channel.bufferedAmount, 0);
+  assert.equal(lows, 1, "fires only on crossing the threshold");
 });

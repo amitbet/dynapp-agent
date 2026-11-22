@@ -103,12 +103,19 @@ report({ loaded: true });
     });
     setTimeout(() => reject(new Error("echo timed out at " + received)), 10000);
   });
+  // bufferedAmount counts sends until the host reports them taken, then
+  // drains to the threshold with a bufferedamountlow event.
+  control.bufferedAmountLowThreshold = 1000;
+  const drained = new Promise((resolve) => control.addEventListener("bufferedamountlow", resolve, { once: true }));
   for (let offset = 0; offset < sent.length; offset += 60000) control.send(sent.subarray(offset, offset + 60000));
+  const peak = control.bufferedAmount;
   await echoed;
+  await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 5000))]);
+  const buffered = { peak, after: control.bufferedAmount };
   const stats = await pc.getStats();
   const pair = [...stats.values()].find((stat) => stat.type === "candidate-pair" && stat.state === "succeeded");
   pc.close();
-  report({ webrtc: { ok: same && received === sent.length, received, pair: Boolean(pair) } });
+  report({ webrtc: { ok: same && received === sent.length && peak === sent.length && buffered.after <= 1000, received, pair: Boolean(pair), buffered } });
 })().catch((error) => report({ webrtc: { ok: false, error: String(error && error.message || error) } }));
 // The page owns its keys (Commander: F1-F10, Esc, Alt+F7...); the host's
 // accelerators (F5/Ctrl+R reload, F11, F12) must not take them. Ctrl+R

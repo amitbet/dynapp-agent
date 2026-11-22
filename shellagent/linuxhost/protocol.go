@@ -231,6 +231,8 @@ type BridgeMessage struct {
 	SDPType        string          `json:"sdpType"`
 	Candidate      json.RawMessage `json:"candidate"`
 	IsBinary       bool            `json:"isBinary"`
+	// Size is a send's byte count, or a channel's bufferedAmountLowThreshold.
+	Size int `json:"size"`
 }
 
 // ParseBridgeMessage accepts a message only with the bridge marker, the
