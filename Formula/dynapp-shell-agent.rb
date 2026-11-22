@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.109"
+  version "0.1.110"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.109/dynapp-shell-agent-0.1.109-darwin-arm64"
-      sha256 "8fef6d1cf287516f75120eba006511b6749d2bc4df18fac116d30ddc92bade67"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.110/dynapp-shell-agent-0.1.110-darwin-arm64"
+      sha256 "4d9d0a7ca5bfd057d847afee2df0e5e8c3516c8937a4f4d9259fe131c8c26dda"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.109/dynapp-shell-agent-0.1.109-darwin-amd64"
-      sha256 "6cb93d9403bceef36efb0de14ca21c232e69bc3ab0f5b98399dcd44f9c4a4419"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.110/dynapp-shell-agent-0.1.110-darwin-amd64"
+      sha256 "bfe4cdef6b582b4eace1e90ba4ffddd01d208409a7b92a251fe3e7abdb93d6ec"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.109/dynapp-shell-agent-0.1.109-linux-arm64"
-      sha256 "ce289f09b6da2ce44f4aaa36d46cf5726d69edcada40affa833c91fe6ea8bb09"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.110/dynapp-shell-agent-0.1.110-linux-arm64"
+      sha256 "5d0e43c305ca5f1df0466ef005dd3d8f4819769fb258ce596095b05ab84ca3ae"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.109/dynapp-shell-agent-0.1.109-linux-amd64"
-      sha256 "8e5c5505cb022ccafa592d12da092a6f58289cb078dab8302055dbd8e8d050bc"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.110/dynapp-shell-agent-0.1.110-linux-amd64"
+      sha256 "beb9861826256592a737364a82cb6e22381e149766e7cf4d9d3022ff557163ae"
     end
   end
 
