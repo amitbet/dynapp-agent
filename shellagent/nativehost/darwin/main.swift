@@ -270,6 +270,8 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   let settings: HostSettings
   var window: NSWindow!
   var webView: HostWebView!
+  var fullscreenObservation: NSKeyValueObservation?
+  var contentWindow: NSWindow? { webView?.window ?? window }
   var pendingOpenFiles: [[String]] = []
   var control: AgentConnection?
   var controlReconnectPending = false
@@ -308,13 +310,13 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-    window?.makeKeyAndOrderFront(nil)
+    contentWindow?.makeKeyAndOrderFront(nil)
     return true
   }
 
   func application(_ sender: NSApplication, openFiles filenames: [String]) {
     pendingOpenFiles.append(filenames)
-    window?.makeKeyAndOrderFront(nil)
+    contentWindow?.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
     flushOpenFiles()
   }
@@ -471,6 +473,15 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
       self?.deliver(["event": "drop", "paths": paths, "x": point.x, "y": point.y])
     }
     window.contentView = webView
+    fullscreenObservation = webView.observe(\.fullscreenState) { [weak self] view, _ in
+      // WebKit moves the live view into a fullscreen Space and leaves a
+      // clickable snapshot in the original window. Hide it once the Space
+      // is ready. WebKit puts the view back and shows the window on exit.
+      guard view.fullscreenState == .inFullscreen, let window = self?.window,
+        let fullscreenWindow = view.window, fullscreenWindow !== window
+      else { return }
+      window.orderOut(nil)
+    }
     webView.load(URLRequest(url: url))
   }
 
@@ -579,7 +590,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   }
 
   func showNextPermissionRequest() {
-    guard !permissionSheetOpen, !permissionQueue.isEmpty, let window else { return }
+    guard !permissionSheetOpen, !permissionQueue.isEmpty, let window = contentWindow else { return }
     let (frame, reply) = permissionQueue.removeFirst()
     permissionSheetOpen = true
     let done: (PermissionAnswer) -> Void = { [weak self] answer in
@@ -672,7 +683,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     if let directory = ProcessInfo.processInfo.environment["DYNAPP_HOST_SNAPSHOT"] {
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
         snapshot(alert.window, to: directory + "/permission-sheet.png")
-        if let main = self.window { snapshot(main, to: directory + "/window.png") }
+        snapshot(window, to: directory + "/window.png")
       }
     }
     alert.beginSheetModal(for: window) { response in
@@ -689,7 +700,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   }
 
   func showError(_ text: String) {
-    guard let window else { return }
+    guard let window = contentWindow else { return }
     let alert = NSAlert()
     alert.messageText = settings.appName
     alert.informativeText = text
@@ -753,7 +764,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     }
     if op == "consent" { return presentAutomationConsent(reply) }
     guard automationEnabled else { return reply(nil, "Automation is off for this app") }
-    guard let webView, let window else { return reply(nil, "The app has not loaded a page yet") }
+    guard let webView, let window = contentWindow else { return reply(nil, "The app has not loaded a page yet") }
     switch op {
     case "eval":
       guard let script = frame["script"] as? String else { return reply(nil, "No script") }
@@ -981,7 +992,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
 
   /// Asks the user in this app's window. Only the user can turn automation on.
   func presentAutomationConsent(_ reply: @escaping (Any?, String?) -> Void) {
-    guard let window else { return reply(nil, "The app has no window yet") }
+    guard let window = contentWindow else { return reply(nil, "The app has no window yet") }
     if permissionSheetOpen || window.attachedSheet != nil {
       return reply(nil, "Another dialog is open in the app; answer it first")
     }
@@ -1104,7 +1115,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
       if FileManager.default.fileExists(atPath: url.path) { try? FileManager.default.removeItem(at: url) }
       completionHandler(url)
     }
-    if let window, window.isVisible { panel.beginSheetModal(for: window, completionHandler: finish) }
+    if let window = contentWindow, window.isVisible { panel.beginSheetModal(for: window, completionHandler: finish) }
     else { finish(panel.runModal()) }
   }
 
@@ -1149,7 +1160,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     panel.allowsMultipleSelection = parameters.allowsMultipleSelection
     panel.canChooseDirectories = parameters.allowsDirectories
     panel.canChooseFiles = true
-    panel.beginSheetModal(for: window) { response in
+    panel.beginSheetModal(for: webView.window ?? window) { response in
       completionHandler(response == .OK ? panel.urls : nil)
     }
   }
@@ -1158,7 +1169,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
                initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
     let alert = NSAlert()
     alert.messageText = message
-    alert.beginSheetModal(for: window) { _ in completionHandler() }
+    alert.beginSheetModal(for: webView.window ?? window) { _ in completionHandler() }
   }
 
   func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
@@ -1167,7 +1178,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     alert.messageText = message
     alert.addButton(withTitle: "OK")
     alert.addButton(withTitle: "Cancel")
-    alert.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn) }
+    alert.beginSheetModal(for: webView.window ?? window) { completionHandler($0 == .alertFirstButtonReturn) }
   }
 
   func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?,
@@ -1180,7 +1191,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
     alert.addButton(withTitle: "OK")
     alert.addButton(withTitle: "Cancel")
     alert.window.initialFirstResponder = field
-    alert.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn ? field.stringValue : nil) }
+    alert.beginSheetModal(for: webView.window ?? window) { completionHandler($0 == .alertFirstButtonReturn ? field.stringValue : nil) }
   }
 
   func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
