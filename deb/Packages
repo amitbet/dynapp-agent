@@ -1,0 +1,72 @@
+Package: dynapp-app-host
+Version: 0.1.112
+Architecture: arm64
+Maintainer: DynApp <amit.bet@gmail.com>
+Depends: dynapp-shell-agent (>= 0.1.112), libgtk-3-0, libwebkit2gtk-4.1-0 (>= 2.40), libglib2.0-0, desktop-file-utils, shared-mime-info
+Recommends: gstreamer1.0-plugins-good, xdg-utils
+Filename: ./dynapp-app-host_0.1.112_arm64.deb
+Size: 3309946
+MD5sum: 47c677bdafa42ddaca1d476ee41578f4
+SHA1: 4e1d4da2473f691482a1bc9dcf33037dccd964e1
+SHA256: d74a0ca9b55fc6ba3b997a56b4107f6e9fc1aa0237217b15a59ee059ff8ed986
+Section: utils
+Priority: optional
+Homepage: https://github.com/amitbet/dynapp-agent
+Description: Native desktop windows for DynApps
+ Runs DynApps installed from Dyner as desktop apps, each in its own
+ window with its own launcher entry, using GTK and WebKitGTK. The DynApp
+ agent starts it.
+
+Package: dynapp-app-host
+Version: 0.1.112
+Architecture: amd64
+Maintainer: DynApp <amit.bet@gmail.com>
+Depends: dynapp-shell-agent (>= 0.1.112), libgtk-3-0, libwebkit2gtk-4.1-0 (>= 2.40), libglib2.0-0, desktop-file-utils, shared-mime-info
+Recommends: gstreamer1.0-plugins-good, xdg-utils
+Filename: ./dynapp-app-host_0.1.112_amd64.deb
+Size: 3708664
+MD5sum: db72e688fbb69e95ec7b9d0b22fc381a
+SHA1: b5feebf1be94aca1ccdca2657d430147e4662eaf
+SHA256: e7e81cbeb24c206d866e57e90ea3bca50d3104c09c638142c8228b5f99d232db
+Section: utils
+Priority: optional
+Homepage: https://github.com/amitbet/dynapp-agent
+Description: Native desktop windows for DynApps
+ Runs DynApps installed from Dyner as desktop apps, each in its own
+ window with its own launcher entry, using GTK and WebKitGTK. The DynApp
+ agent starts it.
+
+Package: dynapp-shell-agent
+Version: 0.1.112
+Architecture: arm64
+Maintainer: DynApp <amit.bet@gmail.com>
+Suggests: dynapp-app-host
+Filename: ./dynapp-shell-agent_0.1.112_arm64.deb
+Size: 5627036
+MD5sum: ea51b0babc5d9a0dee30ae44f95ec386
+SHA1: b465c399f7c10a5b63b51fbd8ef55bf8a051bdce
+SHA256: 2c613939af0e92f874b13b219ebb3c80af85097e20620ab950bc0d05028728d3
+Section: utils
+Priority: optional
+Homepage: https://github.com/amitbet/dynapp-agent
+Description: Local DynApp agent
+ The agent lets hosted DynApps use local files, network, processes,
+ and other approved capabilities.
+
+Package: dynapp-shell-agent
+Version: 0.1.112
+Architecture: amd64
+Maintainer: DynApp <amit.bet@gmail.com>
+Suggests: dynapp-app-host
+Filename: ./dynapp-shell-agent_0.1.112_amd64.deb
+Size: 6322928
+MD5sum: fac649d3d40e95eb3038693bce50841c
+SHA1: 7965ed30b86a0d6d6d5741050392a940a7ab8dfb
+SHA256: 79b040f970d6b55a2099c799eacab2efb95bd80c94813686aaa69ed50798df0c
+Section: utils
+Priority: optional
+Homepage: https://github.com/amitbet/dynapp-agent
+Description: Local DynApp agent
+ The agent lets hosted DynApps use local files, network, processes,
+ and other approved capabilities.
+

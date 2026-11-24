@@ -1,0 +1,11 @@
+Origin: DynApp Agent
+Label: dynapp-agent
+Architectures: amd64 arm64
+Description: DynApp agent packages
+Date: Tue, 24 Nov 2026 11:28:09 +0000
+MD5Sum:
+ e2fcaf9863d591668b3b0ce98a14dcb6 2748 Packages
+ 0b0e4ec220cf6696ed78fb9814eff3ea 975 Packages.gz
+SHA256:
+ 72906f9f261db8979210c05e510952099507afdf269c2e4050067b664f1f4c68 2748 Packages
+ 792b67fe2145dd2911cfd7eb461d7084fd3805a8aac7a78caea320f6854fc8c0 975 Packages.gz
