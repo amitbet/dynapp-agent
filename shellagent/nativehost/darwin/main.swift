@@ -271,6 +271,7 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   var window: NSWindow!
   var webView: HostWebView!
   var fullscreenObservation: NSKeyValueObservation?
+  private var nativeFullscreen = false
   var contentWindow: NSWindow? { webView?.window ?? window }
   var pendingOpenFiles: [[String]] = []
   var control: AgentConnection?
@@ -308,6 +309,25 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+  func windowWillEnterFullScreen(_ notification: Notification) {
+    setNativeFullscreen(true)
+  }
+
+  func windowDidExitFullScreen(_ notification: Notification) {
+    setNativeFullscreen(false)
+  }
+
+  func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+    setNativeFullscreen(false)
+  }
+
+  private func setNativeFullscreen(_ enabled: Bool) {
+    nativeFullscreen = enabled
+    guard let webView else { return }
+    installUserScripts(webView.configuration.userContentController)
+    webView.evaluateJavaScript("window.__dynappSetNativeFullscreen?.(\(enabled));", completionHandler: nil)
+  }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
     contentWindow?.makeKeyAndOrderFront(nil)
@@ -714,6 +734,33 @@ final class HostController: NSObject, NSApplicationDelegate, WKScriptMessageHand
   /// takes effect from the next page load without a new bridge.
   func installUserScripts(_ content: WKUserContentController) {
     content.removeAllUserScripts()
+    // Toggling WKPreferences can hide the Fullscreen API for the lifetime
+    // of a document. Keep its bindings and reject requests only while the
+    // app's own window already occupies a fullscreen Space.
+    let fullscreenGuard = """
+      (() => {
+        let nativeFullscreen = \(nativeFullscreen);
+        Object.defineProperty(window, "__dynappSetNativeFullscreen", {
+          value: (enabled) => { nativeFullscreen = enabled; }
+        });
+        const element = Element.prototype;
+        for (const name of ["requestFullscreen", "webkitRequestFullscreen", "webkitRequestFullScreen"]) {
+          const descriptor = Object.getOwnPropertyDescriptor(element, name);
+          if (typeof descriptor?.value !== "function") continue;
+          const request = descriptor.value;
+          Object.defineProperty(element, name, {
+            ...descriptor,
+            value: function (...args) {
+              if (!nativeFullscreen) return Reflect.apply(request, this, args);
+              if (name === "requestFullscreen") {
+                return Promise.reject(new TypeError("The app window is already fullscreen."));
+              }
+            }
+          });
+        }
+      })();
+      """
+    content.addUserScript(WKUserScript(source: fullscreenGuard, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
     guard let bootstrap = bootstrapScript, !bootstrap.isEmpty else { return }
     content.addUserScript(WKUserScript(source: "Object.defineProperty(window, '__DYNAPP_NATIVE_TITLEBAR__', {value: true});", injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
     if automationEnabled {
