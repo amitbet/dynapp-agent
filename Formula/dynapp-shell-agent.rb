@@ -1,7 +1,7 @@
 class DynappShellAgent < Formula
   desc "Local agent so DynApps can use files, network, and processes"
   homepage "https://github.com/amitbet/dynapp-agent"
-  version "0.1.111"
+  version "0.1.112"
   license :cannot_represent
 
   livecheck do
@@ -11,23 +11,23 @@ class DynappShellAgent < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.111/dynapp-shell-agent-0.1.111-darwin-arm64"
-      sha256 "a41dca6b4b338caed0b7238ed42c64feff65bffdf4f42f7776f788a8ca4f88e0"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.112/dynapp-shell-agent-0.1.112-darwin-arm64"
+      sha256 "bc68e55106dfb679cf262e1cd6a352489643575a6a71a37b8f384cf1f277aff7"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.111/dynapp-shell-agent-0.1.111-darwin-amd64"
-      sha256 "cdc1a9d38e1b3f1f97abbc65ab4aa1e6ace42549449db763a9a7fac60f4c1365"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.112/dynapp-shell-agent-0.1.112-darwin-amd64"
+      sha256 "0fb34617d078ecd92fed5e863eefbb4cf68cc893b54067c238f25dc565576a3b"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.111/dynapp-shell-agent-0.1.111-linux-arm64"
-      sha256 "7fbc00c41bf157a07e70a8c9cff13b1941bffa93d6d735cf2a6bd57648a5ab29"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.112/dynapp-shell-agent-0.1.112-linux-arm64"
+      sha256 "3266b715f9a0ccefb0e1023204c85947e358e074ba3ac9f134b23a842efd10e2"
     end
     on_intel do
-      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.111/dynapp-shell-agent-0.1.111-linux-amd64"
-      sha256 "52248b25429636ae31a858ac6460de6d54889c09faca391ace90d4443587ccbf"
+      url "https://github.com/amitbet/dynapp-agent/releases/download/v0.1.112/dynapp-shell-agent-0.1.112-linux-amd64"
+      sha256 "45d688cceaa1e1768640f8c4c3ce7a300ddd8a863514d5a51c69b16da0d3a34f"
     end
   end
 
